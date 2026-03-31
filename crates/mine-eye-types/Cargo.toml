@@ -1,0 +1,12 @@
+[package]
+name = "mine-eye-types"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Canonical domain types, port semantics, and job envelopes for mine-eye"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,1 @@
+ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_error TEXT;

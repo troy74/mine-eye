@@ -1,0 +1,57 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #0f1419;
+  color: #e6edf3;
+}
+
+@keyframes mineeye-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes mineeye-node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(88, 166, 255, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(88, 166, 255, 0.12);
+  }
+}
+
+.mineeye-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-right: 2px;
+  padding: 0;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  background: #21262d;
+  color: #e6edf3;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.mineeye-play:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mineeye-play-running .mineeye-play-icon {
+  animation: mineeye-spin 0.9s linear infinite;
+}
+
+.mineeye-node-running {
+  animation: mineeye-node-pulse 1.4s ease-in-out infinite;
+}

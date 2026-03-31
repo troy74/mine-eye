@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mine_eye
+    ports:
+      # Host 5433 avoids clashing with a local Postgres on 5432
+      - "5433:5432"
+    volumes:
+      - mine_eye_pg:/var/lib/postgresql/data
+
+volumes:
+  mine_eye_pg:

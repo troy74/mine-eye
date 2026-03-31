@@ -1,0 +1,16 @@
+[package]
+name = "mine-eye-graph"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "DAG, node wiring, and staleness for mine-eye"
+
+[dependencies]
+mine-eye-types = { path = "../mine-eye-types" }
+serde = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+petgraph = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,49 @@
+const PROJECTS_KEY = "mineeye:projects:v1";
+const ACTIVE_KEY = "mineeye:activeProjectId";
+
+export type StoredProject = {
+  /** Client-generated id for UI + chat keys */
+  localId: string;
+  name: string;
+  workspaceId: string;
+  graphId: string;
+  createdAt: number;
+};
+
+function safeParse<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function loadProjects(): StoredProject[] {
+  const list = safeParse<StoredProject[]>(localStorage.getItem(PROJECTS_KEY), []);
+  return Array.isArray(list) ? list : [];
+}
+
+export function saveProjects(projects: StoredProject[]) {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects));
+}
+
+export function getActiveProjectId(): string | null {
+  return localStorage.getItem(ACTIVE_KEY);
+}
+
+export function setActiveProjectId(localId: string | null) {
+  if (localId) localStorage.setItem(ACTIVE_KEY, localId);
+  else localStorage.removeItem(ACTIVE_KEY);
+}
+
+export function upsertProject(p: StoredProject) {
+  const all = loadProjects().filter((x) => x.localId !== p.localId);
+  all.push(p);
+  all.sort((a, b) => b.createdAt - a.createdAt);
+  saveProjects(all);
+}
+
+export function findProjectByGraphId(graphId: string): StoredProject | undefined {
+  return loadProjects().find((p) => p.graphId === graphId);
+}

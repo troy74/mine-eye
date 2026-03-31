@@ -1,0 +1,169 @@
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use mine_eye_types::{JobEnvelope, JobResult};
+use crate::kinds::{
+    run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
+    run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_survey_ingest,
+};
+use crate::NodeError;
+
+pub struct ExecutionContext<'a> {
+    pub artifact_root: &'a Path,
+}
+
+#[async_trait]
+pub trait NodeExecutor: Send + Sync {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError>;
+}
+
+pub struct RegistryExecutor {
+    inner: HashMap<String, Arc<dyn NodeExecutor>>,
+}
+
+impl RegistryExecutor {
+    pub fn new() -> Self {
+        let mut inner: HashMap<String, Arc<dyn NodeExecutor>> = HashMap::new();
+        inner.insert(
+            "drillhole_ingest".into(),
+            Arc::new(DrillholeIngestExecutor),
+        );
+        inner.insert("collar_ingest".into(), Arc::new(CollarIngestExecutor));
+        inner.insert("survey_ingest".into(), Arc::new(SurveyIngestExecutor));
+        inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
+        inner.insert("drillhole_merge".into(), Arc::new(DrillholeMergeExecutor));
+        inner.insert(
+            "desurvey_trajectory".into(),
+            Arc::new(DesurveyExecutor),
+        );
+        inner.insert("dem_integrate".into(), Arc::new(DemExecutor));
+        inner.insert("block_model_basic".into(), Arc::new(BlockModelExecutor));
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl NodeExecutor for RegistryExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        let Some(ex) = self.inner.get(&job.node_kind) else {
+            return Err(NodeError::UnknownKind(job.node_kind.clone()));
+        };
+        ex.execute(ctx, job).await
+    }
+}
+
+struct CollarIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for CollarIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_collar_ingest(ctx, job).await
+    }
+}
+
+struct SurveyIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for SurveyIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_survey_ingest(ctx, job).await
+    }
+}
+
+struct AssayIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for AssayIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_assay_ingest(ctx, job).await
+    }
+}
+
+struct DrillholeMergeExecutor;
+
+#[async_trait]
+impl NodeExecutor for DrillholeMergeExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_drillhole_merge(ctx, job).await
+    }
+}
+
+struct DrillholeIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for DrillholeIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_drillhole_ingest(ctx, job).await
+    }
+}
+
+struct DesurveyExecutor;
+
+#[async_trait]
+impl NodeExecutor for DesurveyExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_desurvey_trajectory(ctx, job).await
+    }
+}
+
+struct DemExecutor;
+
+#[async_trait]
+impl NodeExecutor for DemExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_dem_integrate_stub(ctx, job).await
+    }
+}
+
+struct BlockModelExecutor;
+
+#[async_trait]
+impl NodeExecutor for BlockModelExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_block_model_stub(ctx, job).await
+    }
+}
+
+pub type NodeExecutorRegistry = RegistryExecutor;

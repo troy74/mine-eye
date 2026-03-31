@@ -1,0 +1,19 @@
+[package]
+name = "mine-eye-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Postgres graph persistence, job queue, and object storage abstraction"
+
+[dependencies]
+mine-eye-types = { path = "../mine-eye-types" }
+mine-eye-graph = { path = "../mine-eye-graph" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
