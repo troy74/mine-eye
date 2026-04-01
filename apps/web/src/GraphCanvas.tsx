@@ -92,11 +92,14 @@ function computeExecTone(
   node: ApiNode,
   incomingPortCount: number,
   kind: string,
-  hasOutputArtifact: boolean
+  hasOutputArtifact: boolean,
+  hasUpstreamArtifact: boolean
 ): ExecTone {
   const ex = node.execution;
   const cache = node.cache;
-  const isFailed = ex === "failed" || (node.last_error ?? "").trim().length > 0;
+  const viewerVirtualOk = kind === "plan_view_2d" && hasUpstreamArtifact;
+  const isFailed =
+    !viewerVirtualOk && (ex === "failed" || (node.last_error ?? "").trim().length > 0);
   if (isFailed) return "error";
 
   const ui = (
@@ -114,7 +117,13 @@ function computeExecTone(
   if (noWiredInputs || missingInputConfig) return "unset";
 
   if (node.policy.recompute === "manual") return "locked";
-  if (ex === "succeeded" && cache === "hit" && hasOutputArtifact) return "current";
+  if (
+    ex === "succeeded" &&
+    cache === "hit" &&
+    (hasOutputArtifact || viewerVirtualOk)
+  ) {
+    return "current";
+  }
   if (cache === "stale" || cache === "miss") return "stale";
   return "stale";
 }
@@ -501,6 +510,7 @@ function toFlowElements(
   const positions = layoutNodes(nodes, edges);
   const saved = loadSavedPositions(graphId);
   const feeds = incomingFeedLabels(nodes, edges);
+  const hasArtifactByNode = new Set(artifacts.map((a) => a.node_id));
   const n: Node[] = nodes.map((node) => {
     const auto = positions.get(node.id) ?? { x: 0, y: 0 };
     const p = saved[node.id] ?? auto;
@@ -508,12 +518,16 @@ function toFlowElements(
     const title = kind.replace(/_/g, " ");
     const role = nodeRole(kind) ?? `Node · ${kind}`;
     const incomingPorts = incomingPortIds(node.id, kind, edges);
-    const hasOutputArtifact = artifacts.some((a) => a.node_id === node.id);
+    const hasOutputArtifact = hasArtifactByNode.has(node.id);
+    const hasUpstreamArtifact = edges.some(
+      (e) => e.to_node === node.id && hasArtifactByNode.has(e.from_node)
+    );
     const nodeState = computeExecTone(
       node,
       incomingPorts.length,
       kind,
-      hasOutputArtifact
+      hasOutputArtifact,
+      hasUpstreamArtifact
     );
     const isRunning = node.execution === "running" || node.execution === "pending";
     const isLocked = node.policy.recompute === "manual";

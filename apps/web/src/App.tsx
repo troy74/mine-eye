@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GraphCanvas } from "./GraphCanvas";
 import { GraphErrorBoundary } from "./GraphErrorBoundary";
 import {
@@ -61,6 +61,7 @@ export default function App() {
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [revisionDiff, setRevisionDiff] = useState<ApiRevisionDiff | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const autoRunOnLoadRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -301,6 +302,36 @@ export default function App() {
   }, [graphId, refreshArtifacts, refreshGraphEdges, refreshBranching]);
 
   useEffect(() => {
+    if (!graphId) return;
+    if (autoRunOnLoadRef.current.has(graphId)) return;
+    if (graphNodes.length === 0) return;
+    if (artifacts.length > 0) return;
+    autoRunOnLoadRef.current.add(graphId);
+    setStatus("No artifacts found for this graph yet; auto-queuing run…");
+    void (async () => {
+      try {
+        const res = await runGraph(graphId);
+        const nq = res.queued?.length ?? 0;
+        const ns = res.skipped_manual?.length ?? 0;
+        if (nq === 0) {
+          setStatus(
+            ns > 0
+              ? `Auto-run queued 0 jobs (${ns} manual).`
+              : "Auto-run queued 0 jobs."
+          );
+        } else {
+          setStatus(
+            `Auto-run queued ${nq} job(s)${ns ? `; ${ns} skipped (manual)` : ""}.`
+          );
+        }
+        refreshAll();
+      } catch (e) {
+        setStatus(`Auto-run failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }, [artifacts.length, graphId, graphNodes.length, refreshAll]);
+
+  useEffect(() => {
     if (!graphId || !activeBranchId) return;
     let cancelled = false;
     const run = async () => {
@@ -388,6 +419,19 @@ export default function App() {
       const upstream = graphEdges
         .filter((e) => e.to_node === nodeId)
         .map((e) => e.from_node);
+
+      if (node.execution === "failed") {
+        setStatus("2D viewer node is failed; re-queuing that node now…");
+        void (async () => {
+          try {
+            await runGraph(graphId, { dirtyRoots: [nodeId], includeManual: true });
+            refreshAll();
+          } catch (e) {
+            setStatus(e instanceof Error ? e.message : String(e));
+          }
+        })();
+      }
+
       if (upstream.length === 0) return;
       const upstreamSet = new Set(upstream);
       const hasUpstreamArtifacts = artifacts.some((a) => upstreamSet.has(a.node_id));
@@ -413,6 +457,7 @@ export default function App() {
           setStatus(e instanceof Error ? e.message : String(e));
         }
       })();
+
     },
     [artifacts, graphEdges, graphId, graphNodes, refreshAll]
   );

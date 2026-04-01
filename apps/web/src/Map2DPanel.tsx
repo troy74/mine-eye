@@ -40,6 +40,10 @@ type SourceData = {
   measureNames: string[];
 };
 
+function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
+  return `mineeye:map2d:source:${graphId ?? ""}:${viewerNodeId ?? ""}`;
+}
+
 type PointShape = "circle" | "square" | "diamond";
 type ChannelMode = "fixed" | "measure";
 
@@ -231,6 +235,17 @@ export function Map2DPanel({
       lastViewContextRef.current = ctx;
       userMovedMapRef.current = false;
       lastArtifactSigRef.current = "";
+      try {
+        const raw = localStorage.getItem(cacheKeyForView(graphId, viewerNodeId));
+        if (raw) {
+          const parsed = JSON.parse(raw) as SourceData[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setSourceData(parsed);
+          }
+        }
+      } catch {
+        // ignore cache parse issues
+      }
     }
   }, [graphId, viewerNodeId]);
 
@@ -326,7 +341,6 @@ export function Map2DPanel({
       lastViewContextRef.current = viewCtx;
       userMovedMapRef.current = false;
       lastArtifactSigRef.current = "";
-      setSourceData([]);
     }
 
     if (!graphId || !viewerNodeId) {
@@ -426,6 +440,13 @@ export function Map2DPanel({
 
       if (token !== loadTokenRef.current || !mountedRef.current) return;
       setSourceData(all);
+      if (all.length > 0) {
+        try {
+          localStorage.setItem(cacheKeyForView(graphId, viewerNodeId), JSON.stringify(all));
+        } catch {
+          // ignore localStorage quota failures
+        }
+      }
       if (all.length === 0) {
         setStatus("No drawable points parsed.");
         return;
