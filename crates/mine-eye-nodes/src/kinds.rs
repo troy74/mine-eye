@@ -871,6 +871,7 @@ pub async fn run_assay_heatmap(
         },
         "heatmap_config": {
             "measure": selected_measure,
+            "render_measure": "__heatmap_value",
             "method": method,
             "scale": scale,
             "palette": palette,
@@ -889,6 +890,15 @@ pub async fn run_assay_heatmap(
             "gradient_enabled": gradient_enabled,
             "gradient_mode": gradient_mode,
             "opacity": 0.52
+        },
+        "display_contract": {
+            "renderer": "heat_surface",
+            "editable": ["visible", "opacity", "palette"],
+            "defaults": {
+                "measure": "__heatmap_value",
+                "opacity": 0.52,
+                "palette": palette
+            }
         },
         "surface_grid": {
             "nx": nx,

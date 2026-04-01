@@ -11,10 +11,12 @@ import {
 import { isPlanViewInputSemantic } from "./portTaxonomy";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 import {
+  extractDisplayContractFromJson,
   epsgFromCollarJson,
   extractHeatmapConfigFromJson,
   extractMeasuredPlanPointsFromJson,
   extractPlanViewPointsFromJson,
+  type DisplayContractHint,
   type HeatmapConfigHint,
 } from "./spatialExtract";
 
@@ -41,6 +43,7 @@ type SourceData = {
   points: RenderPoint[];
   measureNames: string[];
   heatmapHint?: HeatmapConfigHint | null;
+  displayContract?: DisplayContractHint | null;
 };
 
 function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
@@ -82,6 +85,7 @@ function hintSig(hint: HeatmapConfigHint | null | undefined): string {
   if (!hint) return "";
   return JSON.stringify({
     measure: hint.measure ?? "",
+    renderMeasure: hint.renderMeasure ?? "",
     method: hint.method ?? "",
     scale: hint.scale ?? "",
     clampLowPct: hint.clampLowPct ?? null,
@@ -118,8 +122,13 @@ function jsonArtifactsForNodes(
 
 function defaultLayerForSource(s: SourceData): SourceLayerConfig {
   const hint = s.heatmapHint ?? {};
+  const dc = s.displayContract ?? {};
+  const lockedRenderer = dc.renderer === "heat_surface";
+  const preferredMeasure = hint.renderMeasure ?? hint.measure ?? "";
   const hintMeasure =
-    hint.measure && s.measureNames.includes(hint.measure) ? hint.measure : s.measureNames[0] ?? "";
+    preferredMeasure && s.measureNames.includes(preferredMeasure)
+      ? preferredMeasure
+      : s.measureNames[0] ?? "";
   const hintMethod = String(hint.method ?? "idw").toLowerCase();
   const defaultSmoothness =
     typeof hint.smoothness === "number" && Number.isFinite(hint.smoothness)
@@ -149,15 +158,15 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
       shape: "circle",
       colorMode: "fixed",
       color: "#38bdf8",
-      colorMeasure: s.measureNames[0] ?? "",
+      colorMeasure: hintMeasure,
       sizeMode: "fixed",
       sizePx: 6,
-      sizeMeasure: s.measureNames[0] ?? "",
+      sizeMeasure: hintMeasure,
       sizeMinPx: 4,
       sizeMaxPx: 12,
     },
     heatmap: {
-      enabled: hintMeasure.length > 0,
+      enabled: lockedRenderer ? true : hintMeasure.length > 0,
       measure: hintMeasure,
       opacity: defaultOpacity,
       smoothness: defaultSmoothness,
@@ -468,6 +477,7 @@ export function Map2DPanel({
           art.key.split("/").pop() ?? art.key
         );
         const heatmapHint = extractHeatmapConfigFromJson(text);
+        const displayContract = extractDisplayContractFromJson(text);
         if (basic.length === 0 && measured.length === 0) continue;
 
         const mByXY = new Map<string, Record<string, number>>();
@@ -496,11 +506,12 @@ export function Map2DPanel({
           (a, b) => a.localeCompare(b)
         );
         all.push({
-          id: `${art.node_id}:${art.key}`,
+          id: `${art.node_id}:${art.key}:${art.content_hash}`,
           label: art.key.split("/").pop() ?? art.key,
           points,
           measureNames,
           heatmapHint,
+          displayContract,
         });
         total += points.length;
       }
@@ -542,6 +553,7 @@ export function Map2DPanel({
         const id = `src:${s.id}`;
         const defaultFromSource = defaultLayerForSource(s);
         const nextHintSig = hintSig(s.heatmapHint);
+        const lockedRenderer = s.displayContract?.renderer === "heat_surface";
         const ex = prevById.get(id);
         if (!ex) return defaultFromSource;
         const hintChanged =
@@ -553,6 +565,7 @@ export function Map2DPanel({
             sourceId: s.id,
             sourceHintSig: nextHintSig,
             heatmap: defaultFromSource.heatmap,
+            points: lockedRenderer ? defaultFromSource.points : ex.points,
           };
         }
         return {
@@ -560,23 +573,38 @@ export function Map2DPanel({
           sourceId: s.id,
           sourceHintSig: nextHintSig,
           points: {
-            ...ex.points,
+            ...(lockedRenderer ? defaultFromSource.points : ex.points),
             colorMeasure:
-              ex.points.colorMeasure && s.measureNames.includes(ex.points.colorMeasure)
-                ? ex.points.colorMeasure
+              (lockedRenderer ? defaultFromSource.points.colorMeasure : ex.points.colorMeasure) &&
+              s.measureNames.includes(
+                lockedRenderer ? defaultFromSource.points.colorMeasure : ex.points.colorMeasure
+              )
+                ? (lockedRenderer
+                    ? defaultFromSource.points.colorMeasure
+                    : ex.points.colorMeasure)
                 : s.measureNames[0] ?? "",
             sizeMeasure:
-              ex.points.sizeMeasure && s.measureNames.includes(ex.points.sizeMeasure)
-                ? ex.points.sizeMeasure
+              (lockedRenderer ? defaultFromSource.points.sizeMeasure : ex.points.sizeMeasure) &&
+              s.measureNames.includes(
+                lockedRenderer ? defaultFromSource.points.sizeMeasure : ex.points.sizeMeasure
+              )
+                ? (lockedRenderer
+                    ? defaultFromSource.points.sizeMeasure
+                    : ex.points.sizeMeasure)
                 : s.measureNames[0] ?? "",
           },
           heatmap: {
-            ...ex.heatmap,
+            ...(lockedRenderer ? defaultFromSource.heatmap : ex.heatmap),
             measure:
-              ex.heatmap.measure && s.measureNames.includes(ex.heatmap.measure)
-                ? ex.heatmap.measure
+              (lockedRenderer ? defaultFromSource.heatmap.measure : ex.heatmap.measure) &&
+              s.measureNames.includes(
+                lockedRenderer ? defaultFromSource.heatmap.measure : ex.heatmap.measure
+              )
+                ? (lockedRenderer
+                    ? defaultFromSource.heatmap.measure
+                    : ex.heatmap.measure)
                 : s.measureNames[0] ?? "",
-            enabled: s.measureNames.length > 0 ? ex.heatmap.enabled : false,
+            enabled: s.measureNames.length > 0 ? (lockedRenderer ? true : ex.heatmap.enabled) : false,
           },
         };
       });
@@ -803,6 +831,7 @@ export function Map2DPanel({
               {layers.map((layer, i) => {
                 const src = sourceById.get(layer.sourceId);
                 const measures = src?.measureNames ?? [];
+                const lockedRenderer = src?.displayContract?.renderer === "heat_surface";
                 return (
                   <div
                     key={layer.id}
@@ -907,6 +936,7 @@ export function Map2DPanel({
                           <span>Shape</span>
                           <select
                             value={layer.points.shape}
+                            disabled={lockedRenderer}
                             onChange={(e) =>
                               setLayers((prev) =>
                                 prev.map((l) =>
@@ -927,8 +957,9 @@ export function Map2DPanel({
                           <label style={fieldInline}>
                             <span>Color</span>
                             <select
-                              value={layer.points.colorMode}
-                              onChange={(e) =>
+                            value={layer.points.colorMode}
+                            disabled={lockedRenderer}
+                            onChange={(e) =>
                                 setLayers((prev) =>
                                   prev.map((l) =>
                                     l.id === layer.id
@@ -949,6 +980,7 @@ export function Map2DPanel({
                               <input
                                 type="color"
                                 value={layer.points.color}
+                                disabled={lockedRenderer}
                                 onChange={(e) =>
                                   setLayers((prev) =>
                                     prev.map((l) =>
@@ -965,6 +997,7 @@ export function Map2DPanel({
                               <span>Measure</span>
                               <select
                                 value={layer.points.colorMeasure}
+                                disabled={lockedRenderer}
                                 onChange={(e) =>
                                   setLayers((prev) =>
                                     prev.map((l) =>
@@ -991,6 +1024,7 @@ export function Map2DPanel({
                             <span>Size</span>
                             <select
                               value={layer.points.sizeMode}
+                              disabled={lockedRenderer}
                               onChange={(e) =>
                                 setLayers((prev) =>
                                   prev.map((l) =>
@@ -1014,6 +1048,7 @@ export function Map2DPanel({
                                 min={2}
                                 max={18}
                                 value={layer.points.sizePx}
+                                disabled={lockedRenderer}
                                 onChange={(e) =>
                                   setLayers((prev) =>
                                     prev.map((l) =>
@@ -1030,6 +1065,7 @@ export function Map2DPanel({
                               <span>Measure</span>
                               <select
                                 value={layer.points.sizeMeasure}
+                                disabled={lockedRenderer}
                                 onChange={(e) =>
                                   setLayers((prev) =>
                                     prev.map((l) =>
@@ -1060,6 +1096,7 @@ export function Map2DPanel({
                               min={2}
                               max={20}
                               value={layer.points.sizeMinPx}
+                              disabled={lockedRenderer}
                               onChange={(e) =>
                                 setLayers((prev) =>
                                   prev.map((l) =>
@@ -1084,6 +1121,7 @@ export function Map2DPanel({
                               min={3}
                               max={24}
                               value={layer.points.sizeMaxPx}
+                              disabled={lockedRenderer}
                               onChange={(e) =>
                                 setLayers((prev) =>
                                   prev.map((l) =>
@@ -1111,7 +1149,7 @@ export function Map2DPanel({
                           <input
                             type="checkbox"
                             checked={layer.heatmap.enabled}
-                            disabled={measures.length === 0}
+                            disabled={measures.length === 0 || lockedRenderer}
                             onChange={(e) =>
                               setLayers((prev) =>
                                 prev.map((l) =>
@@ -1130,6 +1168,7 @@ export function Map2DPanel({
                               <span>Measure</span>
                               <select
                                 value={layer.heatmap.measure}
+                                disabled={lockedRenderer}
                                 onChange={(e) =>
                                   setLayers((prev) =>
                                     prev.map((l) =>
@@ -1175,56 +1214,65 @@ export function Map2DPanel({
                                 }
                               />
                             </label>
-                            <label style={field}>
-                              <span>Smoothness ({layer.heatmap.smoothness})</span>
-                              <input
-                                type="range"
-                                min={128}
-                                max={512}
-                                step={32}
-                                value={layer.heatmap.smoothness}
-                                onChange={(e) =>
-                                  setLayers((prev) =>
-                                    prev.map((l) =>
-                                      l.id === layer.id
-                                        ? {
-                                            ...l,
-                                            heatmap: {
-                                              ...l.heatmap,
-                                              smoothness: Number(e.target.value),
-                                            },
-                                          }
-                                        : l
-                                    )
-                                  )
-                                }
-                              />
-                            </label>
-                            <label style={field}>
-                              <span>Blend power ({layer.heatmap.power.toFixed(1)})</span>
-                              <input
-                                type="range"
-                                min={1}
-                                max={4}
-                                step={0.1}
-                                value={layer.heatmap.power}
-                                onChange={(e) =>
-                                  setLayers((prev) =>
-                                    prev.map((l) =>
-                                      l.id === layer.id
-                                        ? {
-                                            ...l,
-                                            heatmap: {
-                                              ...l.heatmap,
-                                              power: Number(e.target.value),
-                                            },
-                                          }
-                                        : l
-                                    )
-                                  )
-                                }
-                              />
-                            </label>
+                            {!lockedRenderer && (
+                              <>
+                                <label style={field}>
+                                  <span>Smoothness ({layer.heatmap.smoothness})</span>
+                                  <input
+                                    type="range"
+                                    min={128}
+                                    max={512}
+                                    step={32}
+                                    value={layer.heatmap.smoothness}
+                                    onChange={(e) =>
+                                      setLayers((prev) =>
+                                        prev.map((l) =>
+                                          l.id === layer.id
+                                            ? {
+                                                ...l,
+                                                heatmap: {
+                                                  ...l.heatmap,
+                                                  smoothness: Number(e.target.value),
+                                                },
+                                              }
+                                            : l
+                                        )
+                                      )
+                                    }
+                                  />
+                                </label>
+                                <label style={field}>
+                                  <span>Blend power ({layer.heatmap.power.toFixed(1)})</span>
+                                  <input
+                                    type="range"
+                                    min={1}
+                                    max={4}
+                                    step={0.1}
+                                    value={layer.heatmap.power}
+                                    onChange={(e) =>
+                                      setLayers((prev) =>
+                                        prev.map((l) =>
+                                          l.id === layer.id
+                                            ? {
+                                                ...l,
+                                                heatmap: {
+                                                  ...l.heatmap,
+                                                  power: Number(e.target.value),
+                                                },
+                                              }
+                                            : l
+                                        )
+                                      )
+                                    }
+                                  />
+                                </label>
+                              </>
+                            )}
+                            {lockedRenderer && (
+                              <div style={{ fontSize: 10, opacity: 0.65 }}>
+                                Heat surface is node-driven; tune interpolation in the heatmap node.
+                              </div>
+                            )}
                           </>
                         )}
                       </div>

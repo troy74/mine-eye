@@ -97,6 +97,7 @@ export type MeasuredPlanPoint = {
 
 export type HeatmapConfigHint = {
   measure?: string;
+  renderMeasure?: string;
   method?: string;
   scale?: string;
   clampLowPct?: number;
@@ -105,6 +106,11 @@ export type HeatmapConfigHint = {
   smoothness?: number;
   palette?: string;
   opacity?: number;
+};
+
+export type DisplayContractHint = {
+  renderer?: string;
+  editable?: string[];
 };
 
 /**
@@ -252,6 +258,7 @@ export function extractHeatmapConfigFromJson(text: string): HeatmapConfigHint | 
   const cfg = cfgRaw as Record<string, unknown>;
   const out: HeatmapConfigHint = {};
   if (typeof cfg.measure === "string") out.measure = cfg.measure;
+  if (typeof cfg.render_measure === "string") out.renderMeasure = cfg.render_measure;
   if (typeof cfg.method === "string") out.method = cfg.method;
   if (typeof cfg.scale === "string") out.scale = cfg.scale;
   if (typeof cfg.palette === "string") out.palette = cfg.palette;
@@ -260,5 +267,28 @@ export function extractHeatmapConfigFromJson(text: string): HeatmapConfigHint | 
   if (typeof cfg.idw_power === "number") out.idwPower = cfg.idw_power;
   if (typeof cfg.smoothness === "number") out.smoothness = cfg.smoothness;
   if (typeof cfg.opacity === "number") out.opacity = cfg.opacity;
+  return out;
+}
+
+export function extractDisplayContractFromJson(text: string): DisplayContractHint | null {
+  let root: unknown;
+  try {
+    root = JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+  if (!root || typeof root !== "object" || Array.isArray(root)) return null;
+  const obj = root as Record<string, unknown>;
+  const c = obj.display_contract;
+  if (!c || typeof c !== "object" || Array.isArray(c)) return null;
+  const cc = c as Record<string, unknown>;
+  const out: DisplayContractHint = {};
+  if (typeof cc.renderer === "string") out.renderer = cc.renderer;
+  if (Array.isArray(cc.editable)) {
+    out.editable = cc.editable
+      .filter((x): x is string => typeof x === "string")
+      .map((x) => x.trim())
+      .filter((x) => x.length > 0);
+  }
   return out;
 }
