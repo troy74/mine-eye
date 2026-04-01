@@ -15,6 +15,7 @@ import {
   listGraphPromotions,
   listGraphRevisions,
   runGraph,
+  updateWorkspaceProjectCrs,
   type ApiBranch,
   type ApiEdge,
   type ApiNode,
@@ -55,6 +56,8 @@ export default function App() {
   const [runBusy, setRunBusy] = useState(false);
   const [graphEdges, setGraphEdges] = useState<ApiEdge[]>([]);
   const [graphNodes, setGraphNodes] = useState<ApiNode[]>([]);
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [projectEpsg, setProjectEpsg] = useState<number>(4326);
   const [openViewerNodeIds, setOpenViewerNodeIds] = useState<string[]>([]);
   const [branches, setBranches] = useState<ApiBranch[]>([]);
   const [revisions, setRevisions] = useState<ApiRevision[]>([]);
@@ -134,6 +137,15 @@ export default function App() {
       const g = await fetchGraph(gid);
       setGraphEdges(g.edges);
       setGraphNodes(g.nodes);
+      setWorkspaceId(g.workspace_id ?? null);
+      const e =
+        g.project_crs &&
+        typeof g.project_crs === "object" &&
+        typeof g.project_crs.epsg === "number" &&
+        Number.isFinite(g.project_crs.epsg)
+          ? g.project_crs.epsg
+          : 4326;
+      setProjectEpsg(e);
     } catch (e) {
       console.warn("refreshGraphEdges:", e);
     }
@@ -173,6 +185,8 @@ export default function App() {
     setArtifacts([]);
     setGraphEdges([]);
     setGraphNodes([]);
+    setWorkspaceId(null);
+    setProjectEpsg(4326);
     setOpenViewerNodeIds([]);
     setRevisionDiff(null);
     setStatus("");
@@ -417,7 +431,9 @@ export default function App() {
       const node = graphNodes.find((n) => n.id === nodeId);
       if (!node) return;
       const isViewerNode =
-        node.config.kind === "plan_view_2d" || node.config.kind === "plan_view_3d";
+        node.config.kind === "plan_view_2d" ||
+        node.config.kind === "plan_view_3d" ||
+        node.config.kind === "cesium_display_node";
       if (!isViewerNode) return;
 
       const upstream = graphEdges
@@ -470,6 +486,16 @@ export default function App() {
     setOpenViewerNodeIds((prev) => prev.filter((id) => id !== nodeId));
     setMainTab((prev) => (prev === `node:${nodeId}` ? "workspace" : prev));
   }, []);
+
+  const onSetProjectCrs = useCallback(
+    async (epsg: number) => {
+      if (!workspaceId || !Number.isFinite(epsg) || epsg <= 0) return;
+      await updateWorkspaceProjectCrs(workspaceId, { epsg: Math.trunc(epsg), wkt: null });
+      setStatus(`Project CRS updated to EPSG:${Math.trunc(epsg)}.`);
+      refreshAll();
+    },
+    [refreshAll, workspaceId]
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -543,7 +569,9 @@ export default function App() {
               onNewProject={() => void newProject()}
               onSeedDemo={() => void seedDemo()}
               graphId={graphId}
+              projectEpsg={projectEpsg}
               artifacts={artifacts}
+              onSetProjectCrs={(epsg) => void onSetProjectCrs(epsg)}
               branches={branches}
               revisions={revisions}
               promotions={promotions}
@@ -722,7 +750,8 @@ export default function App() {
                       viewerNodeId={nodeId}
                       onClearViewer={() => closeNodeViewer(nodeId)}
                     />
-                  ) : node.config.kind === "plan_view_3d" ? (
+                  ) : node.config.kind === "plan_view_3d" ||
+                    node.config.kind === "cesium_display_node" ? (
                     <Map3DPanel
                       graphId={graphId}
                       activeBranchId={activeBranchId}

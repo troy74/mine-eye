@@ -249,6 +249,18 @@ export async function createWorkspace(body: {
   return { id: String(j.id) };
 }
 
+export async function updateWorkspaceProjectCrs(
+  workspaceId: string,
+  crs: { epsg: number; wkt?: string | null }
+): Promise<void> {
+  const r = await fetch(api(`/workspaces/${workspaceId}/project-crs`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_crs: crs }),
+  });
+  if (!r.ok) throw new Error((await r.text()) || `Update workspace CRS ${r.status}`);
+}
+
 export async function createGraph(
   workspaceId: string,
   body: { name: string; workspace_id: string; owner_user_id: string }

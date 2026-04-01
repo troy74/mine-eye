@@ -57,6 +57,7 @@ impl RegistryExecutor {
         inner.insert("block_model_basic".into(), Arc::new(BlockModelExecutor));
         inner.insert("plan_view_2d".into(), Arc::new(PlanView2DExecutor));
         inner.insert("plan_view_3d".into(), Arc::new(PlanView3DExecutor));
+        inner.insert("cesium_display_node".into(), Arc::new(PlanView3DExecutor));
         Self { inner }
     }
 }

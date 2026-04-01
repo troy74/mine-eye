@@ -79,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/registry/nodes", get(get_node_registry))
         .route("/epsg/search", get(search_epsg))
         .route("/workspaces", post(create_workspace))
+        .route(
+            "/workspaces/{ws_id}/project-crs",
+            patch(update_workspace_project_crs),
+        )
         .route("/workspaces/{ws_id}/graphs", post(create_graph))
         .route("/graphs/{graph_id}", get(get_graph))
         .route("/graphs/{graph_id}/events", get(graph_events))
@@ -253,6 +257,11 @@ struct IdResp {
     id: Uuid,
 }
 
+#[derive(Deserialize)]
+struct UpdateWorkspaceCrsReq {
+    project_crs: CrsRecord,
+}
+
 async fn create_workspace(
     State(s): State<AppState>,
     Json(body): Json<CreateWorkspaceReq>,
@@ -272,6 +281,20 @@ async fn create_workspace(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(IdResp { id }))
+}
+
+async fn update_workspace_project_crs(
+    State(s): State<AppState>,
+    Path(ws_id): Path<Uuid>,
+    Json(body): Json<UpdateWorkspaceCrsReq>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let crs = serde_json::to_value(body.project_crs)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    s.store
+        .update_workspace_project_crs(ws_id, crs)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

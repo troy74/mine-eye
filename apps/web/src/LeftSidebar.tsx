@@ -1,5 +1,6 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { AgentChat } from "./AgentChat";
+import { CrsPicker } from "./CrsPicker";
 import type {
   ApiBranch,
   ApiPromotion,
@@ -16,7 +17,9 @@ type Props = {
   onNewProject: () => void;
   onSeedDemo: () => void;
   graphId: string | null;
+  projectEpsg: number;
   artifacts: ArtifactEntry[];
+  onSetProjectCrs: (epsg: number) => void;
   branches: ApiBranch[];
   revisions: ApiRevision[];
   promotions: ApiPromotion[];
@@ -36,7 +39,9 @@ export function LeftSidebar({
   onNewProject,
   onSeedDemo,
   graphId,
+  projectEpsg,
   artifacts,
+  onSetProjectCrs,
   branches,
   revisions,
   promotions,
@@ -53,6 +58,10 @@ export function LeftSidebar({
   const [newBranchName, setNewBranchName] = useState("");
   const [fromRevisionId, setFromRevisionId] = useState("");
   const [toRevisionId, setToRevisionId] = useState("");
+  const [projectCrsValue, setProjectCrsValue] = useState<string>("project");
+  useEffect(() => {
+    setProjectCrsValue(String(projectEpsg));
+  }, [projectEpsg, activeLocalId]);
   const active = useMemo(
     () => projects.find((p) => p.localId === activeLocalId) ?? null,
     [projects, activeLocalId]
@@ -109,6 +118,24 @@ export function LeftSidebar({
         {active && (
           <div style={{ marginTop: 10, fontSize: 11, opacity: 0.55, wordBreak: "break-all" }}>
             Graph <code>{active.graphId.slice(0, 8)}…</code>
+          </div>
+        )}
+        {graphId && (
+          <div style={{ marginTop: 10 }}>
+            <label style={labTiny}>Project CRS</label>
+            <CrsPicker
+              value={projectCrsValue}
+              onChange={(v) => {
+                setProjectCrsValue(v);
+                const epsg = v === "project" ? projectEpsg : parseInt(v, 10);
+                if (Number.isFinite(epsg) && epsg > 0) onSetProjectCrs(epsg);
+              }}
+              projectEpsg={projectEpsg}
+              includeProject
+            />
+            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>
+              Current: EPSG:{projectEpsg}
+            </div>
           </div>
         )}
       </section>

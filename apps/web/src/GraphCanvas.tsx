@@ -98,7 +98,8 @@ function computeExecTone(
   const ex = node.execution;
   const cache = node.cache;
   const viewerVirtualOk =
-    (kind === "plan_view_2d" || kind === "plan_view_3d") && hasUpstreamArtifact;
+    (kind === "plan_view_2d" || kind === "plan_view_3d" || kind === "cesium_display_node") &&
+    hasUpstreamArtifact;
   const isFailed =
     !viewerVirtualOk && (ex === "failed" || (node.last_error ?? "").trim().length > 0);
   if (isFailed) return "error";

@@ -193,6 +193,25 @@ impl PgStore {
         Ok(id)
     }
 
+    pub async fn update_workspace_project_crs(
+        &self,
+        workspace_id: Uuid,
+        project_crs: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            UPDATE workspaces
+            SET project_crs = $2, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(project_crs)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn create_graph(
         &self,
         workspace_id: Uuid,
