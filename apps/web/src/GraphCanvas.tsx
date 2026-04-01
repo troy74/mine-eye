@@ -91,7 +91,8 @@ type PipelineData = {
 function computeExecTone(
   node: ApiNode,
   incomingPortCount: number,
-  kind: string
+  kind: string,
+  hasOutputArtifact: boolean
 ): ExecTone {
   const ex = node.execution;
   const cache = node.cache;
@@ -113,7 +114,7 @@ function computeExecTone(
   if (noWiredInputs || missingInputConfig) return "unset";
 
   if (node.policy.recompute === "manual") return "locked";
-  if (ex === "succeeded" && cache === "hit") return "current";
+  if (ex === "succeeded" && cache === "hit" && hasOutputArtifact) return "current";
   if (cache === "stale" || cache === "miss") return "stale";
   return "stale";
 }
@@ -494,7 +495,8 @@ function incomingFeedLabels(
 function toFlowElements(
   graphId: string,
   nodes: ApiNode[],
-  edges: ApiEdge[]
+  edges: ApiEdge[],
+  artifacts: ArtifactEntry[]
 ): { n: Node[]; e: Edge[] } {
   const positions = layoutNodes(nodes, edges);
   const saved = loadSavedPositions(graphId);
@@ -506,7 +508,13 @@ function toFlowElements(
     const title = kind.replace(/_/g, " ");
     const role = nodeRole(kind) ?? `Node · ${kind}`;
     const incomingPorts = incomingPortIds(node.id, kind, edges);
-    const nodeState = computeExecTone(node, incomingPorts.length, kind);
+    const hasOutputArtifact = artifacts.some((a) => a.node_id === node.id);
+    const nodeState = computeExecTone(
+      node,
+      incomingPorts.length,
+      kind,
+      hasOutputArtifact
+    );
     const isRunning = node.execution === "running" || node.execution === "pending";
     const isLocked = node.policy.recompute === "manual";
     const cat = node.category;
@@ -698,13 +706,13 @@ function FlowWorkspace({
           : 4326;
       setWorkspaceEpsg(pe);
       setApiNodes(data.nodes);
-      const { n, e } = toFlowElements(graphId, data.nodes, data.edges);
+      const { n, e } = toFlowElements(graphId, data.nodes, data.edges, artifacts);
       setNodes(n);
       setEdges(e);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [graphId, setEdges, setNodes]);
+  }, [artifacts, graphId, setEdges, setNodes]);
 
   useEffect(() => {
     if (ctxMenu.kind === "none") return;

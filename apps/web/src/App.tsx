@@ -376,10 +376,46 @@ export default function App() {
     [graphId]
   );
 
-  const openNodeViewer = useCallback((nodeId: string) => {
-    setOpenViewerNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
-    setMainTab(`node:${nodeId}`);
-  }, []);
+  const openNodeViewer = useCallback(
+    (nodeId: string) => {
+      setOpenViewerNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
+      setMainTab(`node:${nodeId}`);
+
+      if (!graphId) return;
+      const node = graphNodes.find((n) => n.id === nodeId);
+      if (!node || node.config.kind !== "plan_view_2d") return;
+
+      const upstream = graphEdges
+        .filter((e) => e.to_node === nodeId)
+        .map((e) => e.from_node);
+      if (upstream.length === 0) return;
+      const upstreamSet = new Set(upstream);
+      const hasUpstreamArtifacts = artifacts.some((a) => upstreamSet.has(a.node_id));
+      if (hasUpstreamArtifacts) return;
+
+      setStatus("No upstream artifacts for 2D view yet; queuing a run now…");
+      void (async () => {
+        try {
+          const res = await runGraph(graphId);
+          const nq = res.queued?.length ?? 0;
+          const ns = res.skipped_manual?.length ?? 0;
+          if (nq === 0) {
+            setStatus(
+              ns > 0
+                ? `No jobs queued (${ns} manual). Run worker if work was already queued.`
+                : "No jobs queued."
+            );
+          } else {
+            setStatus(`Queued ${nq} job(s) for viewer inputs. Run worker to materialize artifacts.`);
+          }
+          refreshAll();
+        } catch (e) {
+          setStatus(e instanceof Error ? e.message : String(e));
+        }
+      })();
+    },
+    [artifacts, graphEdges, graphId, graphNodes, refreshAll]
+  );
 
   const closeNodeViewer = useCallback((nodeId: string) => {
     setOpenViewerNodeIds((prev) => prev.filter((id) => id !== nodeId));

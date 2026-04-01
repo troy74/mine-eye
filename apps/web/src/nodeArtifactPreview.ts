@@ -17,6 +17,8 @@ export function preferredArtifactSuffix(kind: string): string | null {
       return "drillhole_meshes.json";
     case "assay_heatmap":
       return "heatmap.json";
+    case "plan_view_2d":
+      return "plan_view.json";
     case "dem_integrate":
       return "dem_stub.json";
     case "block_model_basic":
