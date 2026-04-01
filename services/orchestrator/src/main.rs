@@ -11,6 +11,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use async_stream::stream;
 mod ingest_synth;
+mod viewer_manifest;
 const NODE_REGISTRY_JSON: &str = include_str!("node-registry.json");
 
 use mine_eye_graph::propagate_stale;
@@ -26,6 +27,7 @@ use sqlx::postgres::PgPoolOptions;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use uuid::Uuid;
+use viewer_manifest::ViewerManifest;
 
 #[derive(Clone)]
 struct AppState {
@@ -1375,31 +1377,6 @@ struct ArtifactEntry {
     content_hash: String,
 }
 
-#[derive(Serialize)]
-struct ViewerManifestLayer {
-    source_node_id: Uuid,
-    source_node_kind: String,
-    edge_id: Uuid,
-    semantic_type: String,
-    from_port: String,
-    to_port: String,
-    artifact_key: String,
-    artifact_url: String,
-    content_hash: String,
-    media_type: Option<String>,
-    presentation: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct ViewerManifest {
-    graph_id: Uuid,
-    viewer_node_id: Uuid,
-    viewer_node_kind: String,
-    manifest_version: u32,
-    viewer_ui: serde_json::Value,
-    layers: Vec<ViewerManifestLayer>,
-}
-
 async fn list_artifacts(
     State(s): State<AppState>,
     Path(graph_id): Path<Uuid>,
@@ -1438,122 +1415,16 @@ async fn get_viewer_manifest(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let viewer = snap.nodes.get(&viewer_node_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            format!("viewer node not found: {}", viewer_node_id),
-        )
-    })?;
-    let viewer_ui = viewer
-        .config
-        .params
-        .get("ui")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    let mut layers: Vec<ViewerManifestLayer> = Vec::new();
-    for edge in snap.edges.iter().filter(|e| e.to_node == viewer_node_id) {
-        let source_kind = snap
-            .nodes
-            .get(&edge.from_node)
-            .map(|n| n.config.kind.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        let rows = s
-            .store
-            .list_artifacts_for_node(edge.from_node)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        for (key, hash, media_type) in rows {
-            let lower = key.to_ascii_lowercase();
-            if !(lower.ends_with(".json") || lower.ends_with(".geojson")) {
-                continue;
-            }
-            let presentation = layer_presentation_from_artifact(&s.artifact_root, &key).await;
-            layers.push(ViewerManifestLayer {
-                source_node_id: edge.from_node,
-                source_node_kind: source_kind.clone(),
-                edge_id: edge.id,
-                semantic_type: format!("{:?}", edge.semantic_type).to_ascii_lowercase(),
-                from_port: edge.from_port.clone(),
-                to_port: edge.to_port.clone(),
-                artifact_key: key.clone(),
-                artifact_url: format!("/files/{}", key),
-                content_hash: hash,
-                media_type,
-                presentation,
-            });
-        }
-    }
-    layers.sort_by(|a, b| {
-        a.to_port
-            .cmp(&b.to_port)
-            .then_with(|| a.source_node_kind.cmp(&b.source_node_kind))
-            .then_with(|| a.artifact_key.cmp(&b.artifact_key))
-    });
-
-    Ok(Json(ViewerManifest {
+    let manifest = viewer_manifest::build_viewer_manifest(
+        &s.store,
+        &s.artifact_root,
+        &snap,
         graph_id,
         viewer_node_id,
-        viewer_node_kind: viewer.config.kind.clone(),
-        manifest_version: 1,
-        viewer_ui,
-        layers,
-    }))
-}
-
-async fn layer_presentation_from_artifact(
-    artifact_root: &PathBuf,
-    key: &str,
-) -> serde_json::Value {
-    let mut out = serde_json::json!({
-        "renderer": "generic",
-        "editable": ["visible", "opacity", "style"],
-        "has_surface_grid": false,
-        "has_contours": key.to_ascii_lowercase().ends_with(".geojson"),
-        "measure_candidates": [],
-    });
-    if !key.to_ascii_lowercase().ends_with(".json") {
-        return out;
-    }
-    let path = artifact_root.join(key);
-    let Ok(bytes) = tokio::fs::read(path).await else {
-        return out;
-    };
-    let Ok(root) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return out;
-    };
-    let Some(obj) = root.as_object() else {
-        return out;
-    };
-    if let Some(dc) = obj.get("display_contract").and_then(|v| v.as_object()) {
-        if let Some(r) = dc.get("renderer").and_then(|v| v.as_str()) {
-            out["renderer"] = serde_json::json!(r);
-        }
-        if let Some(ed) = dc.get("editable").and_then(|v| v.as_array()) {
-            out["editable"] = serde_json::Value::Array(
-                ed.iter()
-                    .filter_map(|x| x.as_str().map(|s| serde_json::json!(s)))
-                    .collect(),
-            );
-        }
-    }
-    if let Some(mc) = obj.get("measure_candidates").and_then(|v| v.as_array()) {
-        out["measure_candidates"] = serde_json::Value::Array(
-            mc.iter()
-                .filter_map(|x| x.as_str().map(|s| serde_json::json!(s)))
-                .collect(),
-        );
-    }
-    if let Some(cfg) = obj.get("heatmap_config").and_then(|v| v.as_object()) {
-        out["heatmap_config"] = serde_json::Value::Object(cfg.clone());
-    }
-    if let Some(stats) = obj.get("stats").and_then(|v| v.as_object()) {
-        out["stats"] = serde_json::Value::Object(stats.clone());
-    }
-    if obj.get("surface_grid").is_some() {
-        out["has_surface_grid"] = serde_json::json!(true);
-    }
-    out
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(manifest))
 }
 
 #[derive(Deserialize)]

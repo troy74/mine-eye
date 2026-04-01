@@ -101,6 +101,7 @@ Frontend:
 
 Orchestrator:
 - graph state, scheduling, AI
+- viewer manifest / presentation broker (UI-agnostic render metadata)
 
 Workers:
 - heavy compute
@@ -171,3 +172,16 @@ Rust `SemanticPortType` (`point_set`, `table`, `interval_set`, `trajectory_set`,
 
 **Plan map viewer (`plan_view_2d`)**  
 A visualisation node with **inputs only**. The 2D map **must not** infer data from node kinds or hunt for “collars” globally. It displays only artifacts reachable via **edges into** the viewer’s input ports, for semantics agreed as plan-view-compatible (e.g. table, point_set, interval_set, trajectory_set). Rendering starts with **points** (x,y); line styles and port-colour composition on the map are deferred.
+
+---
+
+### 17. Viewer Manifest Contract (Middleware Source of Truth)
+
+- The orchestrator exposes per-viewer manifests at:
+  - `GET /graphs/{graph_id}/viewers/{viewer_node_id}/manifest`
+- Manifest layers carry:
+  - source node/edge provenance
+  - artifact identity (`artifact_key`, `content_hash`, URL)
+  - `presentation` metadata inferred from artifact contracts (`display_contract`, `heatmap_config`, `measure_candidates`, stats/surface/contour hints)
+- UI clients (web/iOS/desktop) should consume this manifest first and avoid duplicating rendering inference logic in each client.
+- Frontend-only parsing remains fallback behavior for legacy artifacts while contracts converge.

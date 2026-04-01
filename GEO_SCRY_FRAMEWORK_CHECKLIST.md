@@ -39,6 +39,9 @@ Assessment date: 2026-04-01.
 - Added automatic revision commits on graph-mutating API operations (`add_node`, `patch_node_params`, `add_edge`, `delete_node`, `delete_edge`).
 - Added merge apply path that can materialize a promoted merged revision back onto the active graph definition.
 - Added sidebar branch/revision/promotion controls in the web app to create branch, commit current graph state, and promote to `main` for manual testing.
+- Added viewer manifest endpoint (`GET /graphs/{graph_id}/viewers/{viewer_node_id}/manifest`) as middleware-owned rendering contract.
+- Added backend presentation broker module (orchestrator) to infer per-layer UI metadata from artifacts (`display_contract`, `heatmap_config`, `measure_candidates`, contour/surface hints).
+- Web 2D viewer now consumes manifest presentation metadata first (with legacy fallback parsing), reducing UI-specific rendering drift.
 
 ---
 
