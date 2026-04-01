@@ -11,9 +11,12 @@ import {
 import { isSceneViewInputSemantic } from "./portTaxonomy";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 
+declare const __CESIUM_TOKEN__: string;
+
 const CESIUM_TOKEN =
   (import.meta.env.CESIUM_TOKEN as string | undefined) ??
   (import.meta.env.VITE_CESIUM_TOKEN as string | undefined) ??
+  __CESIUM_TOKEN__ ??
   "";
 
 type Props = {
