@@ -9,8 +9,8 @@ export type InspectorTab =
 
 type Ctx = {
   openInspector: (nodeId: string, tab?: InspectorTab) => void;
-  /** Focus the 2D map tab on a `plan_view_2d` node (data comes only from its wired inputs). */
-  openPlanMapViewer: (nodeId: string) => void;
+  /** Open/focus a preview tab for this node. */
+  openNodeViewer: (nodeId: string) => void;
 };
 
 export const GraphInspectorContext = createContext<Ctx | null>(null);

@@ -62,6 +62,46 @@ async fn write_artifact(
     })
 }
 
+async fn read_json_artifact(
+    ctx: &ExecutionContext<'_>,
+    key: &str,
+) -> Result<serde_json::Value, NodeError> {
+    let path = ctx.artifact_root.join(key);
+    let raw = fs::read(&path).await?;
+    let v: serde_json::Value = serde_json::from_slice(&raw)?;
+    Ok(v)
+}
+
+async fn collect_drillhole_inputs(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<(Vec<CollarRecord>, Vec<SurveyStationRecord>, Vec<IntervalSampleRecord>), NodeError> {
+    let mut collars: Vec<CollarRecord> = Vec::new();
+    let mut surveys: Vec<SurveyStationRecord> = Vec::new();
+    let mut assays: Vec<IntervalSampleRecord> = Vec::new();
+
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        if let Some(c) = v.get("collars") {
+            if let Ok(mut part) = serde_json::from_value::<Vec<CollarRecord>>(c.clone()) {
+                collars.append(&mut part);
+            }
+        }
+        if let Some(s) = v.get("surveys") {
+            if let Ok(mut part) = serde_json::from_value::<Vec<SurveyStationRecord>>(s.clone()) {
+                surveys.append(&mut part);
+            }
+        }
+        if let Some(a) = v.get("assays") {
+            if let Ok(mut part) = serde_json::from_value::<Vec<IntervalSampleRecord>>(a.clone()) {
+                assays.append(&mut part);
+            }
+        }
+    }
+
+    Ok((collars, surveys, assays))
+}
+
 /// Parses collars/surveys/assays from job config params JSON and writes canonical JSON artifact.
 pub async fn run_drillhole_ingest(
     ctx: &ExecutionContext<'_>,
@@ -217,35 +257,147 @@ pub async fn run_assay_ingest(
     })
 }
 
+/// Single primitive: surface samples as point rows for plan-view and downstream interpolation.
+pub async fn run_surface_sample_ingest(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let payload = job.input_payload.as_ref().ok_or_else(|| {
+        NodeError::InvalidConfig("missing input_payload for surface_sample_ingest".into())
+    })?;
+    let mut points = payload
+        .pointer("/points")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    if let Some(target) = collar_output_target_crs(job)? {
+        let project_missing = collar_output_crs_mode(job) == "project" && job.project_crs.is_none();
+        if let Some(arr) = points.as_array_mut() {
+            for p in arr.iter_mut() {
+                let Some(obj) = p.as_object_mut() else {
+                    continue;
+                };
+                let (Some(x), Some(y)) = (
+                    obj.get("x").and_then(|v| v.as_f64()),
+                    obj.get("y").and_then(|v| v.as_f64()),
+                ) else {
+                    continue;
+                };
+
+                let src_crs = obj
+                    .get("crs")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value::<CrsRecord>(v).ok())
+                    .unwrap_or_else(|| target.clone());
+                let (nx, ny) = if src_crs == target {
+                    (x, y)
+                } else {
+                    transform_xy(&src_crs, &target, x, y)?
+                };
+                obj.insert("x".into(), serde_json::json!(nx));
+                obj.insert("y".into(), serde_json::json!(ny));
+                obj.insert("crs".into(), serde_json::to_value(&target)?);
+
+                let qa = obj
+                    .entry("qa_flags")
+                    .or_insert_with(|| serde_json::json!([]));
+                let mut qa_vals: Vec<String> = qa
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if project_missing {
+                    qa_vals.push("project_crs_missing_output_epsg_4326".into());
+                }
+                if src_crs != target {
+                    qa_vals.push("reprojected_xy".into());
+                }
+                *qa = serde_json::json!(qa_vals);
+            }
+        }
+    }
+    let out = serde_json::json!({ "points": points });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!(
+        "graphs/{}/nodes/{}/surface_samples.json",
+        job.graph_id, job.node_id
+    );
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+/// Starter heatmap node: selects/measures point records and emits heatmap-ready payload.
+pub async fn run_assay_heatmap(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let mut points: Vec<serde_json::Value> = Vec::new();
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        if let Some(arr) = v.get("assay_points").and_then(|x| x.as_array()) {
+            points.extend(arr.iter().cloned());
+        } else if let Some(arr) = v.get("points").and_then(|x| x.as_array()) {
+            points.extend(arr.iter().cloned());
+        }
+    }
+
+    let measure = job
+        .output_spec
+        .pointer("/node_ui/measure")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let scale = job
+        .output_spec
+        .pointer("/node_ui/scale")
+        .and_then(|v| v.as_str())
+        .unwrap_or("linear")
+        .to_string();
+    let clamp_low = job
+        .output_spec
+        .pointer("/node_ui/clamp_low_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let clamp_high = job
+        .output_spec
+        .pointer("/node_ui/clamp_high_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(100.0);
+
+    let out = serde_json::json!({
+        "type": "assay_heatmap_input",
+        "measure": measure,
+        "scale": scale,
+        "clamp_low_pct": clamp_low,
+        "clamp_high_pct": clamp_high,
+        "points": points
+    });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/heatmap.json", job.graph_id, job.node_id);
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
 /// Merge collar / survey / assay JSON shards into one package for desurvey.
 pub async fn run_drillhole_merge(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
-    let mut collars: Vec<CollarRecord> = Vec::new();
-    let mut surveys: Vec<SurveyStationRecord> = Vec::new();
-    let mut assays: Vec<IntervalSampleRecord> = Vec::new();
-
-    for ar in &job.input_artifact_refs {
-        let path = ctx.artifact_root.join(&ar.key);
-        let raw = fs::read(&path).await?;
-        let v: serde_json::Value = serde_json::from_slice(&raw)?;
-        if let Some(c) = v.get("collars") {
-            if let Ok(mut part) = serde_json::from_value::<Vec<CollarRecord>>(c.clone()) {
-                collars.append(&mut part);
-            }
-        }
-        if let Some(s) = v.get("surveys") {
-            if let Ok(mut part) = serde_json::from_value::<Vec<SurveyStationRecord>>(s.clone()) {
-                surveys.append(&mut part);
-            }
-        }
-        if let Some(a) = v.get("assays") {
-            if let Ok(mut part) = serde_json::from_value::<Vec<IntervalSampleRecord>>(a.clone()) {
-                assays.append(&mut part);
-            }
-        }
-    }
+    let (collars, surveys, assays) = collect_drillhole_inputs(ctx, job).await?;
 
     let merged = serde_json::json!({
         "collars": collars,
@@ -269,18 +421,17 @@ pub async fn run_desurvey_trajectory(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
-    let ingest = job
-        .input_artifact_refs
-        .iter()
-        .find(|a| a.key.ends_with("ingest.json"))
-        .or_else(|| job.input_artifact_refs.first())
-        .ok_or_else(|| NodeError::InvalidConfig("missing ingest artifact".into()))?;
-    let ingest_path = ctx.artifact_root.join(&ingest.key);
-    let raw = fs::read(&ingest_path).await?;
-    let v: serde_json::Value = serde_json::from_slice(&raw)?;
-    let collars: Vec<CollarRecord> = serde_json::from_value(v["collars"].clone()).unwrap_or_default();
-    let surveys: Vec<SurveyStationRecord> =
-        serde_json::from_value(v["surveys"].clone()).unwrap_or_default();
+    let (collars, surveys, _assays) = collect_drillhole_inputs(ctx, job).await?;
+    if collars.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "desurvey_trajectory requires collars input".into(),
+        ));
+    }
+    if surveys.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "desurvey_trajectory requires surveys input".into(),
+        ));
+    }
 
     let mut segments = Vec::new();
     for c in &collars {
@@ -347,6 +498,152 @@ pub async fn run_desurvey_trajectory(
         status: JobStatus::Succeeded,
         output_artifact_refs: vec![artifact.clone()],
         content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+fn position_at_depth(segments: &[TrajectorySegment], depth_m: f64) -> Option<(f64, f64, f64)> {
+    for s in segments {
+        if depth_m < s.depth_from_m || depth_m > s.depth_to_m {
+            continue;
+        }
+        let len = (s.depth_to_m - s.depth_from_m).abs();
+        let t = if len <= f64::EPSILON {
+            0.0
+        } else {
+            (depth_m - s.depth_from_m) / (s.depth_to_m - s.depth_from_m)
+        };
+        let x = s.x_from + (s.x_to - s.x_from) * t;
+        let y = s.y_from + (s.y_to - s.y_from) * t;
+        let z = s.z_from + (s.z_to - s.z_from) * t;
+        return Some((x, y, z));
+    }
+    None
+}
+
+/// Build drillhole geometry payloads from trajectory + assays:
+/// - `drillhole_meshes.json`: segment-wise cylinders with assay overlap metadata
+/// - `assay_points.json`: midpoint assay points for later interpolation/kriging
+pub async fn run_drillhole_model(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let mut trajectory: Vec<TrajectorySegment> = Vec::new();
+    let mut assays: Vec<IntervalSampleRecord> = Vec::new();
+
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        if let Ok(mut segs) = serde_json::from_value::<Vec<TrajectorySegment>>(v.clone()) {
+            trajectory.append(&mut segs);
+        }
+        if let Some(a) = v.get("assays") {
+            if let Ok(mut part) = serde_json::from_value::<Vec<IntervalSampleRecord>>(a.clone()) {
+                assays.append(&mut part);
+            }
+        }
+    }
+
+    if trajectory.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "drillhole_model requires trajectory input".into(),
+        ));
+    }
+
+    let mut hole_segments: std::collections::HashMap<String, Vec<TrajectorySegment>> =
+        std::collections::HashMap::new();
+    for s in trajectory {
+        hole_segments
+            .entry(s.hole_id.clone())
+            .or_default()
+            .push(s);
+    }
+    for segs in hole_segments.values_mut() {
+        segs.sort_by(|a, b| a.depth_from_m.partial_cmp(&b.depth_from_m).unwrap());
+    }
+
+    let radius_m = job
+        .output_spec
+        .pointer("/node_ui/hole_radius_m")
+        .and_then(|v| v.as_f64())
+        .filter(|r| *r > 0.0)
+        .unwrap_or(0.6);
+
+    let mut mesh_segments: Vec<serde_json::Value> = Vec::new();
+    for (hole_id, segs) in &hole_segments {
+        for (idx, s) in segs.iter().enumerate() {
+            let overlapping_assays: Vec<serde_json::Value> = assays
+                .iter()
+                .filter(|a| {
+                    a.hole_id == *hole_id && a.to_m > s.depth_from_m && a.from_m < s.depth_to_m
+                })
+                .map(|a| {
+                    serde_json::json!({
+                        "from_m": a.from_m,
+                        "to_m": a.to_m,
+                        "attributes": a.attributes,
+                        "qa_flags": a.qa_flags,
+                    })
+                })
+                .collect();
+            mesh_segments.push(serde_json::json!({
+                "hole_id": hole_id,
+                "segment_index": idx,
+                "from_depth_m": s.depth_from_m,
+                "to_depth_m": s.depth_to_m,
+                "from_xyz": [s.x_from, s.y_from, s.z_from],
+                "to_xyz": [s.x_to, s.y_to, s.z_to],
+                "radius_m": radius_m,
+                "assays": overlapping_assays,
+            }));
+        }
+    }
+
+    let mut assay_points: Vec<serde_json::Value> = Vec::new();
+    for a in &assays {
+        let Some(segs) = hole_segments.get(&a.hole_id) else {
+            continue;
+        };
+        let mid = (a.from_m + a.to_m) * 0.5;
+        if let Some((x, y, z)) = position_at_depth(segs, mid) {
+            assay_points.push(serde_json::json!({
+                "hole_id": a.hole_id,
+                "from_m": a.from_m,
+                "to_m": a.to_m,
+                "depth_m": mid,
+                "x": x,
+                "y": y,
+                "z": z,
+                "attributes": a.attributes,
+                "qa_flags": a.qa_flags,
+            }));
+        }
+    }
+
+    let mesh_payload = serde_json::json!({
+        "kind": "drillhole_cylinder_mesh_segments",
+        "segments": mesh_segments,
+    });
+    let mesh_bytes = serde_json::to_vec(&mesh_payload)?;
+    let mesh_key = format!(
+        "graphs/{}/nodes/{}/drillhole_meshes.json",
+        job.graph_id, job.node_id
+    );
+    let mesh_ref = write_artifact(ctx, &mesh_key, &mesh_bytes, Some("application/json")).await?;
+
+    let points_payload = serde_json::json!({ "assay_points": assay_points });
+    let points_bytes = serde_json::to_vec(&points_payload)?;
+    let points_key = format!(
+        "graphs/{}/nodes/{}/assay_points.json",
+        job.graph_id, job.node_id
+    );
+    let points_ref =
+        write_artifact(ctx, &points_key, &points_bytes, Some("application/json")).await?;
+
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![mesh_ref.clone(), points_ref.clone()],
+        content_hashes: vec![mesh_ref.content_hash, points_ref.content_hash],
         error_message: None,
     })
 }

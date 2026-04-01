@@ -1,5 +1,5 @@
 //! Build `input_payload` for ingest jobs from `node.config.params.ui` when the client
-//! did not send `input_payloads` (web UI saves CSV mapping + preview rows only).
+//! did not send `input_payloads` (web UI saves CSV mapping + csv_rows/csv_preview_rows).
 
 use mine_eye_types::{
     CollarRecord, CrsRecord, IntervalSampleRecord, NodeRecord, SurveyStationRecord,
@@ -13,8 +13,17 @@ pub fn synthesize_input_payload(
     match node.config.kind.as_str() {
         "collar_ingest" => collar_payload_from_ui(node, project_crs),
         "survey_ingest" => survey_payload_from_ui(node),
+        "surface_sample_ingest" => surface_sample_payload_from_ui(node, project_crs),
         "assay_ingest" => assay_payload_from_ui(node),
         _ => None,
+    }
+}
+
+fn rows_from_ui(ui: &serde_json::Value) -> Option<Vec<Vec<String>>> {
+    if let Some(v) = ui.get("csv_rows") {
+        serde_json::from_value(v.clone()).ok()
+    } else {
+        serde_json::from_value(ui.get("csv_preview_rows")?.clone()).ok()
     }
 }
 
@@ -24,8 +33,7 @@ fn collar_payload_from_ui(node: &NodeRecord, project_crs: Option<&CrsRecord>) ->
     if headers.is_empty() {
         return None;
     }
-    let rows: Vec<Vec<String>> =
-        serde_json::from_value(ui.get("csv_preview_rows")?.clone()).ok()?;
+    let rows: Vec<Vec<String>> = rows_from_ui(ui)?;
     let mapping = ui.get("mapping")?.as_object()?;
     let hole_col = mapping.get("hole_id")?.as_str()?;
     if hole_col.is_empty() {
@@ -118,8 +126,7 @@ fn survey_payload_from_ui(node: &NodeRecord) -> Option<Value> {
     if headers.is_empty() {
         return None;
     }
-    let rows: Vec<Vec<String>> =
-        serde_json::from_value(ui.get("csv_preview_rows")?.clone()).ok()?;
+    let rows: Vec<Vec<String>> = rows_from_ui(ui)?;
     let mapping = ui.get("mapping")?.as_object()?;
     let hole_col = mapping.get("hole_id")?.as_str()?;
     if hole_col.is_empty() {
@@ -198,8 +205,7 @@ fn assay_payload_from_ui(node: &NodeRecord) -> Option<Value> {
     if headers.is_empty() {
         return None;
     }
-    let rows: Vec<Vec<String>> =
-        serde_json::from_value(ui.get("csv_preview_rows")?.clone()).ok()?;
+    let rows: Vec<Vec<String>> = rows_from_ui(ui)?;
     let mapping = ui.get("mapping")?.as_object()?;
     let hole_col = mapping.get("hole_id")?.as_str()?;
     if hole_col.is_empty() {
@@ -218,6 +224,7 @@ fn assay_payload_from_ui(node: &NodeRecord) -> Option<Value> {
     let hi = col_idx(hole_col)?;
     let fi = col_idx(from_col)?;
     let ti = col_idx(to_col)?;
+    let required_cols = [hole_col, from_col, to_col];
 
     let mut assays = Vec::new();
     for row in rows {
@@ -234,11 +241,28 @@ fn assay_payload_from_ui(node: &NodeRecord) -> Option<Value> {
         let Some(to_m) = row[ti].trim().parse::<f64>().ok() else {
             continue;
         };
+        let mut attrs = serde_json::Map::new();
+        for (idx, h) in headers.iter().enumerate() {
+            if required_cols.contains(&h.as_str()) || idx >= row.len() {
+                continue;
+            }
+            let raw = row[idx].trim();
+            if raw.is_empty() {
+                continue;
+            }
+            if let Ok(v) = raw.parse::<f64>() {
+                attrs.insert(h.clone(), json!(v));
+            } else if let Ok(v) = raw.parse::<i64>() {
+                attrs.insert(h.clone(), json!(v));
+            } else {
+                attrs.insert(h.clone(), json!(raw));
+            }
+        }
         assays.push(IntervalSampleRecord {
             hole_id,
             from_m,
             to_m,
-            attributes: json!({}),
+            attributes: Value::Object(attrs),
             qa_flags: vec!["from_ui_preview_rows".into()],
         });
     }
@@ -247,5 +271,124 @@ fn assay_payload_from_ui(node: &NodeRecord) -> Option<Value> {
         None
     } else {
         Some(json!({ "assays": assays }))
+    }
+}
+
+fn surface_sample_payload_from_ui(
+    node: &NodeRecord,
+    project_crs: Option<&CrsRecord>,
+) -> Option<Value> {
+    let ui = node.config.params.get("ui")?;
+    let headers: Vec<String> = serde_json::from_value(ui.get("csv_headers")?.clone()).ok()?;
+    if headers.is_empty() {
+        return None;
+    }
+    let rows: Vec<Vec<String>> = rows_from_ui(ui)?;
+    let mapping = ui.get("mapping")?.as_object()?;
+    let x_col = mapping.get("x").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let y_col = mapping.get("y").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let id_col = mapping
+        .get("sample_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let z_col = mapping
+        .get("z")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    let use_project = ui
+        .get("use_project_crs")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let crs = if use_project {
+        project_crs
+            .cloned()
+            .unwrap_or_else(|| CrsRecord {
+                epsg: Some(4326),
+                wkt: None,
+            })
+    } else {
+        let epsg = ui
+            .get("source_crs_epsg")
+            .and_then(|v| v.as_u64())
+            .map(|u| u as i32)
+            .unwrap_or(4326);
+        CrsRecord {
+            epsg: Some(epsg),
+            wkt: None,
+        }
+    };
+
+    let col_idx = |name: &str| headers.iter().position(|h| h == name);
+    let xi = col_idx(x_col)?;
+    let yi = col_idx(y_col)?;
+    let ii = id_col.and_then(col_idx);
+    let zi = z_col.and_then(col_idx);
+
+    let mut points = Vec::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        if xi >= row.len() || yi >= row.len() {
+            continue;
+        }
+        let Some(x) = row[xi].trim().parse::<f64>().ok() else {
+            continue;
+        };
+        let Some(y) = row[yi].trim().parse::<f64>().ok() else {
+            continue;
+        };
+
+        let id = match ii {
+            Some(i) if i < row.len() => {
+                let v = row[i].trim();
+                if v.is_empty() {
+                    format!("S{}", row_idx + 1)
+                } else {
+                    v.to_string()
+                }
+            }
+            _ => format!("S{}", row_idx + 1),
+        };
+
+        let mut attrs = serde_json::Map::new();
+        for (idx, h) in headers.iter().enumerate() {
+            if idx >= row.len() {
+                continue;
+            }
+            if Some(idx) == ii || Some(idx) == zi || idx == xi || idx == yi {
+                continue;
+            }
+            let raw = row[idx].trim();
+            if raw.is_empty() {
+                continue;
+            }
+            if let Ok(v) = raw.parse::<f64>() {
+                attrs.insert(h.clone(), json!(v));
+            } else if let Ok(v) = raw.parse::<i64>() {
+                attrs.insert(h.clone(), json!(v));
+            } else {
+                attrs.insert(h.clone(), json!(raw));
+            }
+        }
+
+        let z = match zi {
+            Some(i) if i < row.len() => row[i].trim().parse::<f64>().ok(),
+            _ => None,
+        };
+
+        points.push(json!({
+            "id": id,
+            "x": x,
+            "y": y,
+            "z": z,
+            "crs": crs,
+            "attributes": attrs,
+            "qa_flags": ["from_ui_preview_rows"]
+        }));
+    }
+
+    if points.is_empty() {
+        None
+    } else {
+        Some(json!({ "points": points }))
     }
 }

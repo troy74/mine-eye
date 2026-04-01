@@ -2,6 +2,13 @@
 
 ## Exploration Modelling Platform — V1 Decision Spec
 
+Status date: 2026-04-01.
+
+Active execution checklist and detailed freeze candidate:
+- [GEO_SCRY_FRAMEWORK_CHECKLIST.md](/Users/troytravlos/mine-eye/GEO_SCRY_FRAMEWORK_CHECKLIST.md)
+
+This file remains the compact architecture summary. The checklist above is the source of truth for implementation sequencing, lock decisions, and delivery tracking.
+
 ### 1. Node Abstraction
 Stateful nodes with:
 - id (immutable)

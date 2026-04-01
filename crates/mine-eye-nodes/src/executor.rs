@@ -5,8 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use mine_eye_types::{JobEnvelope, JobResult};
 use crate::kinds::{
-    run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
-    run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_survey_ingest,
+    run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
+    run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
+    run_surface_sample_ingest, run_survey_ingest,
 };
 use crate::NodeError;
 
@@ -36,8 +37,14 @@ impl RegistryExecutor {
         );
         inner.insert("collar_ingest".into(), Arc::new(CollarIngestExecutor));
         inner.insert("survey_ingest".into(), Arc::new(SurveyIngestExecutor));
+        inner.insert(
+            "surface_sample_ingest".into(),
+            Arc::new(SurfaceSampleIngestExecutor),
+        );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
+        inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
         inner.insert("drillhole_merge".into(), Arc::new(DrillholeMergeExecutor));
+        inner.insert("drillhole_model".into(), Arc::new(DrillholeModelExecutor));
         inner.insert(
             "desurvey_trajectory".into(),
             Arc::new(DesurveyExecutor),
@@ -101,6 +108,32 @@ impl NodeExecutor for AssayIngestExecutor {
     }
 }
 
+struct SurfaceSampleIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for SurfaceSampleIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_surface_sample_ingest(ctx, job).await
+    }
+}
+
+struct AssayHeatmapExecutor;
+
+#[async_trait]
+impl NodeExecutor for AssayHeatmapExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_assay_heatmap(ctx, job).await
+    }
+}
+
 struct DrillholeMergeExecutor;
 
 #[async_trait]
@@ -124,6 +157,19 @@ impl NodeExecutor for DrillholeIngestExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_drillhole_ingest(ctx, job).await
+    }
+}
+
+struct DrillholeModelExecutor;
+
+#[async_trait]
+impl NodeExecutor for DrillholeModelExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_drillhole_model(ctx, job).await
     }
 }
 

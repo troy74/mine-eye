@@ -9,6 +9,7 @@
  */
 export const ACQUISITION_EPSG_OPTIONS: { value: string; label: string }[] = [
   { value: "project", label: "Same as project CRS" },
+  { value: "custom", label: "Custom EPSG…" },
   { value: "4326", label: "EPSG:4326 (WGS84 geographic)" },
   { value: "7855", label: "EPSG:7855 (GDA2020 / MGA zone 55)" },
   { value: "7856", label: "EPSG:7856 (GDA2020 / MGA zone 56)" },

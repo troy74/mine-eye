@@ -73,12 +73,14 @@ export function extractTrajectoryPolylines(text: string): MapPolyline[] {
 export function epsgFromCollarJson(text: string): number | null {
   try {
     const root = JSON.parse(text) as Record<string, unknown>;
-    const arr = root.collars;
-    if (!Array.isArray(arr) || !arr[0] || typeof arr[0] !== "object") return null;
-    const c = (arr[0] as Record<string, unknown>).crs;
-    if (!c || typeof c !== "object") return null;
-    const e = (c as Record<string, unknown>).epsg;
-    return typeof e === "number" ? e : null;
+    const tryArray = (arr: unknown): number | null => {
+      if (!Array.isArray(arr) || !arr[0] || typeof arr[0] !== "object") return null;
+      const c = (arr[0] as Record<string, unknown>).crs;
+      if (!c || typeof c !== "object") return null;
+      const e = (c as Record<string, unknown>).epsg;
+      return typeof e === "number" ? e : null;
+    };
+    return tryArray(root.collars) ?? tryArray(root.points) ?? null;
   } catch {
     return null;
   }
@@ -86,6 +88,12 @@ export function epsgFromCollarJson(text: string): number | null {
 
 /** Generic x,y points for plan-view (no collar-specific lookup — used for viewer inputs only). */
 export type PlanViewPoint = { x: number; y: number; label: string };
+export type MeasuredPlanPoint = {
+  x: number;
+  y: number;
+  label: string;
+  measures: Record<string, number>;
+};
 
 /**
  * Best-effort extraction of plan-view points from any upstream JSON artifact.
@@ -131,6 +139,21 @@ export function extractPlanViewPointsFromJson(
         });
       });
     }
+    const assayPts = (root as Record<string, unknown>).assay_points;
+    if (Array.isArray(assayPts)) {
+      assayPts.forEach((p, i) => {
+        if (!p || typeof p !== "object") return;
+        const r = p as Record<string, unknown>;
+        const x = num(r.x);
+        const y = num(r.y);
+        if (x === null || y === null) return;
+        out.push({
+          x,
+          y,
+          label: `${prefix} · assay · ${String(r.hole_id ?? r.id ?? i)}`,
+        });
+      });
+    }
   }
 
   if (Array.isArray(root) && root.length > 0) {
@@ -153,5 +176,50 @@ export function extractPlanViewPointsFromJson(
     }
   }
 
+  return out;
+}
+
+/** Pull assay/sample points with numeric measure attributes for heatmap use. */
+export function extractMeasuredPlanPointsFromJson(
+  text: string,
+  artifactLabel: string
+): MeasuredPlanPoint[] {
+  let root: unknown;
+  try {
+    root = JSON.parse(text) as unknown;
+  } catch {
+    return [];
+  }
+  if (!root || typeof root !== "object" || Array.isArray(root)) return [];
+  const obj = root as Record<string, unknown>;
+  const arr = obj.assay_points ?? obj.points;
+  if (!Array.isArray(arr)) return [];
+
+  const out: MeasuredPlanPoint[] = [];
+  arr.forEach((row, i) => {
+    if (!row || typeof row !== "object") return;
+    const r = row as Record<string, unknown>;
+    const x = num(r.x);
+    const y = num(r.y);
+    if (x === null || y === null) return;
+
+    const rawAttrs =
+      r.attributes && typeof r.attributes === "object" && !Array.isArray(r.attributes)
+        ? (r.attributes as Record<string, unknown>)
+        : {};
+    const measures: Record<string, number> = {};
+    for (const [k, v] of Object.entries(rawAttrs)) {
+      const n = num(v);
+      if (n !== null) measures[k] = n;
+    }
+    if (Object.keys(measures).length === 0) return;
+
+    out.push({
+      x,
+      y,
+      label: `${artifactLabel} · ${String(r.hole_id ?? r.id ?? i)}`,
+      measures,
+    });
+  });
   return out;
 }

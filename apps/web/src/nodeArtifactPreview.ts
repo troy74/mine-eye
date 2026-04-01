@@ -7,14 +7,16 @@ export function preferredArtifactSuffix(kind: string): string | null {
       return "collars.json";
     case "survey_ingest":
       return "surveys.json";
+    case "surface_sample_ingest":
+      return "surface_samples.json";
     case "assay_ingest":
       return "assays.json";
-    case "drillhole_ingest":
-      return "ingest.json";
-    case "drillhole_merge":
-      return "ingest.json";
     case "desurvey_trajectory":
       return "trajectory.json";
+    case "drillhole_model":
+      return "drillhole_meshes.json";
+    case "assay_heatmap":
+      return "heatmap.json";
     case "dem_integrate":
       return "dem_stub.json";
     case "block_model_basic":

@@ -11,6 +11,7 @@ import {
 } from "./pipelineSchema";
 import type { InspectorTab } from "./graphInspectorContext";
 import { ACQUISITION_EPSG_OPTIONS } from "./crsOptions";
+import { searchEpsg, type EpsgSearchHit } from "./epsgSearch";
 
 const OUTPUT_CRS_OPTIONS: { value: string; label: string }[] = [
   { value: "project", label: "Project CRS (default)" },
@@ -32,6 +33,7 @@ function getUiParams(node: ApiNode): Record<string, unknown> {
 
 type Props = {
   graphId: string;
+  activeBranchId?: string | null;
   node: ApiNode;
   projectEpsg: number;
   tab: InspectorTab;
@@ -44,6 +46,7 @@ type Props = {
 
 export function NodeInspector({
   graphId,
+  activeBranchId,
   node,
   projectEpsg,
   tab,
@@ -61,10 +64,21 @@ export function NodeInspector({
   const [crsMode, setCrsMode] = useState<string>(() => {
     const u = initialUi;
     if (u.use_project_crs === false && typeof u.source_crs_epsg === "number") {
-      return String(u.source_crs_epsg);
+      const known = ACQUISITION_EPSG_OPTIONS.some(
+        (o) => o.value === String(u.source_crs_epsg)
+      );
+      return known ? String(u.source_crs_epsg) : "custom";
     }
     return "project";
   });
+  const [sourceCustomEpsg, setSourceCustomEpsg] = useState<string>(() => {
+    const v = initialUi.source_crs_epsg;
+    return typeof v === "number" && Number.isFinite(v) ? String(v) : "4326";
+  });
+  const [crsSearchQuery, setCrsSearchQuery] = useState<string>("");
+  const [crsSearchBusy, setCrsSearchBusy] = useState(false);
+  const [crsSearchErr, setCrsSearchErr] = useState<string | null>(null);
+  const [crsSearchHits, setCrsSearchHits] = useState<EpsgSearchHit[]>([]);
 
   const [mapping, setMapping] = useState<Record<string, string>>(() => {
     const m = initialUi.mapping;
@@ -94,6 +108,7 @@ export function NodeInspector({
     () => (typeof initialUi.csv_filename === "string" ? initialUi.csv_filename : "")
   );
   const [headers, setHeaders] = useState<string[]>([]);
+  const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -105,9 +120,13 @@ export function NodeInspector({
       setMapping({ ...(m as Record<string, string>) });
     }
     if (u.use_project_crs === false && typeof u.source_crs_epsg === "number") {
-      setCrsMode(String(u.source_crs_epsg));
+      const v = String(u.source_crs_epsg);
+      const known = ACQUISITION_EPSG_OPTIONS.some((o) => o.value === v);
+      setCrsMode(known ? v : "custom");
+      setSourceCustomEpsg(v);
     } else {
       setCrsMode("project");
+      setSourceCustomEpsg("4326");
     }
     setZRelative(Boolean(u.z_is_relative));
     const ocm = u.output_crs_mode;
@@ -125,11 +144,50 @@ export function NodeInspector({
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
     }
+    const fullRows = u.csv_rows;
+    if (Array.isArray(fullRows)) {
+      setCsvRows(fullRows as string[][]);
+    } else {
+      setCsvRows([]);
+    }
     const pr = u.csv_preview_rows;
     if (Array.isArray(pr)) {
       setPreviewRows(pr as string[][]);
+    } else {
+      setPreviewRows([]);
     }
   }, [node]);
+
+  useEffect(() => {
+    const q = crsSearchQuery.trim();
+    if (q.length < 2) {
+      setCrsSearchHits([]);
+      setCrsSearchErr(null);
+      return;
+    }
+    let cancelled = false;
+    const tid = window.setTimeout(() => {
+      void (async () => {
+        setCrsSearchBusy(true);
+        setCrsSearchErr(null);
+        try {
+          const hits = await searchEpsg(q);
+          if (!cancelled) setCrsSearchHits(hits);
+        } catch (e) {
+          if (!cancelled) {
+            setCrsSearchErr(e instanceof Error ? e.message : String(e));
+            setCrsSearchHits([]);
+          }
+        } finally {
+          if (!cancelled) setCrsSearchBusy(false);
+        }
+      })();
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(tid);
+    };
+  }, [crsSearchQuery]);
 
   const onPickFile = useCallback(
     (file: File | null) => {
@@ -141,6 +199,7 @@ export function NodeInspector({
         const text = String(reader.result ?? "");
         const { headers: h, rows } = parseCsv(text);
         setHeaders(h);
+        setCsvRows(rows);
         setPreviewRows(rows.slice(0, 8));
       };
       reader.readAsText(file, "UTF-8");
@@ -152,7 +211,15 @@ export function NodeInspector({
     setErr(null);
     setSaveMsg(null);
     const useProject = crsMode === "project";
-    const epsg = useProject ? projectEpsg : parseInt(crsMode, 10);
+    const epsg = useProject
+      ? projectEpsg
+      : crsMode === "custom"
+        ? parseInt(sourceCustomEpsg, 10)
+        : parseInt(crsMode, 10);
+    if (!Number.isFinite(epsg) || epsg <= 0) {
+      setErr("Please provide a valid EPSG code.");
+      return;
+    }
     const ui: Record<string, unknown> = {
       mapping: { ...mapping },
       use_project_crs: useProject,
@@ -160,7 +227,8 @@ export function NodeInspector({
       z_is_relative: kind === "collar_ingest" ? zRelative : undefined,
       csv_filename: csvName || undefined,
       csv_headers: headers.length ? headers : undefined,
-      csv_preview_rows: previewRows.slice(0, 5),
+      csv_rows: csvRows,
+      csv_preview_rows: csvRows.slice(0, 8),
     };
     if (kind === "collar_ingest") {
       ui.output_crs_mode = outputCrsMode;
@@ -170,7 +238,7 @@ export function NodeInspector({
           : undefined;
     }
     try {
-      const updated = await patchNodeParams(graphId, node.id, { ui });
+      const updated = await patchNodeParams(graphId, node.id, { ui }, { branchId: activeBranchId });
       onNodeUpdated(updated);
       setSaveMsg("Saved to node config (re-run pipeline to rebuild artifacts).");
     } catch (e) {
@@ -178,12 +246,15 @@ export function NodeInspector({
     }
   }, [
     crsMode,
+    sourceCustomEpsg,
     projectEpsg,
     mapping,
     csvName,
     headers,
+    csvRows,
     previewRows,
     graphId,
+    activeBranchId,
     node.id,
     kind,
     zRelative,
@@ -417,18 +488,19 @@ export function NodeInspector({
                     {selectCol("segment_id", "Segment id (optional)")}
                   </div>
                 )}
-                {(kind === "assay_ingest" || kind === "drillhole_ingest") && (
+                {kind === "surface_sample_ingest" && (
+                  <div style={mapGrid}>
+                    {selectCol("sample_id", "Sample id (optional)")}
+                    {selectCol("x", "X / Easting")}
+                    {selectCol("y", "Y / Northing")}
+                    {selectCol("z", "Z / elevation (optional)")}
+                  </div>
+                )}
+                {kind === "assay_ingest" && (
                   <div style={mapGrid}>
                     {selectCol("hole_id", "Hole id")}
                     {selectCol("from_m", "From depth (m)")}
                     {selectCol("to_m", "To depth (m)")}
-                    {kind === "drillhole_ingest" && (
-                      <>
-                        {selectCol("x", "X (collar)")}
-                        {selectCol("y", "Y")}
-                        {selectCol("z", "Z")}
-                      </>
-                    )}
                   </div>
                 )}
                 {previewRows.length > 0 && (
@@ -479,11 +551,75 @@ export function NodeInspector({
                 ))}
               </select>
             </label>
+            {crsMode === "custom" && (
+              <label style={lab}>
+                <span style={labSpan}>Custom source EPSG</span>
+                <input
+                  type="number"
+                  value={sourceCustomEpsg}
+                  onChange={(e) => setSourceCustomEpsg(e.target.value)}
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+            )}
+            <div style={{ marginTop: 8 }}>
+              <label style={lab}>
+                <span style={labSpan}>Search EPSG code or description</span>
+                <input
+                  type="text"
+                  value={crsSearchQuery}
+                  onChange={(e) => setCrsSearchQuery(e.target.value)}
+                  placeholder="e.g. GDA2020 zone 55, WGS84, 28356"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              {crsSearchBusy && (
+                <div style={{ fontSize: 11, opacity: 0.65 }}>Searching EPSG registry…</div>
+              )}
+              {crsSearchErr && (
+                <div style={{ fontSize: 11, color: "#f85149" }}>{crsSearchErr}</div>
+              )}
+              {!crsSearchBusy && crsSearchHits.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 6,
+                    maxHeight: 150,
+                    overflow: "auto",
+                    border: "1px solid #30363d",
+                    borderRadius: 6,
+                    background: "#0f1419",
+                  }}
+                >
+                  {crsSearchHits.map((h) => (
+                    <button
+                      key={h.code}
+                      type="button"
+                      onClick={() => {
+                        setCrsMode("custom");
+                        setSourceCustomEpsg(h.code);
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        textAlign: "left",
+                        border: "none",
+                        background: "transparent",
+                        color: "#e6edf3",
+                        padding: "7px 8px",
+                        fontSize: 11,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <strong>EPSG:{h.code}</strong> - {h.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <p style={{ fontSize: 11, opacity: 0.6, marginTop: 12 }}>
               Coordinates in the CSV are interpreted in this CRS. The worker reprojects to the
-              collar output CRS when they differ. EPSG list is curated in{" "}
-              <code style={{ fontSize: 10 }}>crsOptions.ts</code> (add codes there and in{" "}
-              <code style={{ fontSize: 10 }}>spatialReproject.ts</code> for map preview).
+              collar output CRS when they differ. Use the search box to find EPSG entries by code
+              or full description.
             </p>
             {kind === "collar_ingest" && (
               <>

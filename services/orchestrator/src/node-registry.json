@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "kind": "collar_ingest",
+      "category": "input",
+      "label": "Collar ingest",
+      "role": "Acquisition · collars (hole collars, CRS)",
+      "menu": { "enabled": true, "order": 10 },
+      "ports": {
+        "inputs": [],
+        "outputs": [{ "id": "collars", "label": "Collars", "semantic": "point_set" }]
+      }
+    },
+    {
+      "kind": "survey_ingest",
+      "category": "input",
+      "label": "Survey ingest",
+      "role": "Acquisition · survey stations (az/dip/depth)",
+      "menu": { "enabled": true, "order": 20 },
+      "ports": {
+        "inputs": [],
+        "outputs": [{ "id": "surveys", "label": "Surveys", "semantic": "trajectory_set" }]
+      }
+    },
+    {
+      "kind": "surface_sample_ingest",
+      "category": "input",
+      "label": "Surface sample ingest",
+      "role": "Acquisition · surface samples (XY/Z + optional measures)",
+      "menu": { "enabled": true, "order": 25 },
+      "ports": {
+        "inputs": [],
+        "outputs": [{ "id": "surface_samples", "label": "Surface samples", "semantic": "point_set" }]
+      }
+    },
+    {
+      "kind": "assay_ingest",
+      "category": "input",
+      "label": "Assay ingest",
+      "role": "Acquisition · interval assays / geochem",
+      "menu": { "enabled": true, "order": 30 },
+      "ports": {
+        "inputs": [],
+        "outputs": [{ "id": "assays", "label": "Assays", "semantic": "interval_set" }]
+      }
+    },
+    {
+      "kind": "desurvey_trajectory",
+      "category": "transform",
+      "label": "Desurvey trajectory",
+      "role": "Transform · collars + surveys → 3D trajectory segments",
+      "menu": { "enabled": true, "order": 40 },
+      "ports": {
+        "inputs": [
+          { "id": "collars_in", "label": "Collars", "semantic": "point_set" },
+          { "id": "surveys_in", "label": "Surveys", "semantic": "trajectory_set" }
+        ],
+        "outputs": [{ "id": "trajectory", "label": "Trajectory", "semantic": "trajectory_set" }]
+      }
+    },
+    {
+      "kind": "drillhole_model",
+      "category": "model",
+      "label": "Drillhole model",
+      "role": "Model · trajectory + assays → cylinder mesh + assay points",
+      "menu": { "enabled": true, "order": 50 },
+      "ports": {
+        "inputs": [
+          { "id": "trajectory_in", "label": "Trajectory", "semantic": "trajectory_set" },
+          { "id": "assays_in", "label": "Assays", "semantic": "interval_set" }
+        ],
+        "outputs": [
+          { "id": "drillhole_meshes", "label": "Drillhole meshes", "semantic": "mesh" },
+          { "id": "assay_points", "label": "Assay points", "semantic": "table" }
+        ]
+      }
+    },
+    {
+      "kind": "assay_heatmap",
+      "category": "transform",
+      "label": "Assay heatmap",
+      "role": "Transform · point measures → heatmap-ready surface",
+      "menu": { "enabled": true, "order": 80 },
+      "ports": {
+        "inputs": [{ "id": "in", "label": "Input points", "semantic": "table" }],
+        "outputs": [{ "id": "heatmap", "label": "Heatmap", "semantic": "surface" }]
+      }
+    },
+    {
+      "kind": "plan_view_2d",
+      "category": "visualisation",
+      "label": "2D plan map",
+      "role": "Visualisation · 2D plan map (inputs only; Esri basemap)",
+      "menu": { "enabled": true, "order": 90 },
+      "policy": { "recompute": "manual", "propagation": "hold", "quality": "preview" },
+      "ports": {
+        "inputs": [
+          { "id": "in", "label": "In 1", "semantic": "table" },
+          { "id": "in_2", "label": "In 2", "semantic": "table" },
+          { "id": "in_3", "label": "In 3", "semantic": "table" },
+          { "id": "in_4", "label": "In 4", "semantic": "table" },
+          { "id": "in_5", "label": "In 5", "semantic": "table" },
+          { "id": "in_6", "label": "In 6", "semantic": "table" },
+          { "id": "in_7", "label": "In 7", "semantic": "table" },
+          { "id": "in_8", "label": "In 8", "semantic": "table" }
+        ],
+        "outputs": []
+      }
+    }
+  ]
+}

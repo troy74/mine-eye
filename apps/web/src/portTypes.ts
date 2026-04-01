@@ -102,6 +102,27 @@ export function pickHandleColorForPort<
   return e ? edgeColorForApiEdge(e) : "#484f58";
 }
 
+export function pickHandleColorForPortWithSemantic<
+  E extends {
+    from_node: string;
+    to_node: string;
+    semantic_type: string;
+    from_port: string;
+    to_port: string;
+  },
+>(
+  edges: E[],
+  nodeId: string,
+  direction: "in" | "out",
+  portId: string,
+  fallbackSemantic?: string | null
+): string {
+  const linked = pickHandleColorForPort(edges, nodeId, direction, portId);
+  if (linked !== "#484f58") return linked;
+  if (fallbackSemantic) return baseColorForSemantic(fallbackSemantic);
+  return linked;
+}
+
 /** @deprecated use PORT_TAXONOMY_SUMMARY in portTaxonomy.ts */
 export const PORT_COMPATIBILITY_NOTES = `
 See port taxonomy (V1SPEC §16): base dataframes vs 2d/3d frames, artifacts, and domain refinements

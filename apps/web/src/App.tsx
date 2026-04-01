@@ -3,17 +3,30 @@ import { GraphCanvas } from "./GraphCanvas";
 import { GraphErrorBoundary } from "./GraphErrorBoundary";
 import {
   api,
+  checkoutGraphBranch,
+  commitCurrentToBranch,
   createGraph,
+  createGraphBranch,
   createWorkspace,
+  diffGraphRevisions,
+  executeGraphPromotion,
   fetchGraph,
+  listGraphBranches,
+  listGraphPromotions,
+  listGraphRevisions,
   runGraph,
+  type ApiBranch,
   type ApiEdge,
+  type ApiNode,
+  type ApiPromotion,
+  type ApiRevision,
+  type ApiRevisionDiff,
   type ArtifactEntry,
 } from "./graphApi";
 import { LeftSidebar } from "./LeftSidebar";
 import { Map2DPanel } from "./Map2DPanel";
-import { Scene } from "./Scene";
-import { ViewportErrorBoundary } from "./ViewportErrorBoundary";
+import { NodePreviewPanel } from "./NodePreviewPanel";
+import { loadNodeRegistryFromApi } from "./nodeRegistry";
 import {
   getActiveProjectId,
   loadProjects,
@@ -28,20 +41,45 @@ type SeedResponse = {
   nodes: Record<string, string>;
 };
 
-type MainTab = "graph" | "preview" | "map2d";
+type MainTab = "workspace" | `node:${string}`;
 
 export default function App() {
   const [projects, setProjects] = useState<StoredProject[]>(loadProjects);
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(null);
   const [graphId, setGraphId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactEntry[]>([]);
-  const [trajectoryUrl, setTrajectoryUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("");
-  const [mainTab, setMainTab] = useState<MainTab>("graph");
+  const [mainTab, setMainTab] = useState<MainTab>("workspace");
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [runBusy, setRunBusy] = useState(false);
-  const [mapViewerNodeId, setMapViewerNodeId] = useState<string | null>(null);
   const [graphEdges, setGraphEdges] = useState<ApiEdge[]>([]);
+  const [graphNodes, setGraphNodes] = useState<ApiNode[]>([]);
+  const [openViewerNodeIds, setOpenViewerNodeIds] = useState<string[]>([]);
+  const [branches, setBranches] = useState<ApiBranch[]>([]);
+  const [revisions, setRevisions] = useState<ApiRevision[]>([]);
+  const [promotions, setPromotions] = useState<ApiPromotion[]>([]);
+  const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
+  const [revisionDiff, setRevisionDiff] = useState<ApiRevisionDiff | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const tag = (el?.tagName ?? "").toLowerCase();
+      const typing =
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        Boolean(el?.isContentEditable);
+      if (typing) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setSidebarCollapsed((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     const all = loadProjects();
@@ -56,6 +94,25 @@ export default function App() {
     else setActiveProjectId(null);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadRegistry = async () => {
+      try {
+        await loadNodeRegistryFromApi();
+        if (!cancelled) {
+          setGraphRefreshToken((t) => t + 1);
+        }
+      } catch (e) {
+        // Keep bundled registry fallback if backend registry is unavailable.
+        console.warn("loadNodeRegistryFromApi:", e);
+      }
+    };
+    void loadRegistry();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const refreshArtifacts = useCallback(async (gid: string) => {
     try {
       const r = await fetch(api(`/graphs/${gid}/artifacts`));
@@ -65,8 +122,6 @@ export default function App() {
       const list = data as ArtifactEntry[];
       list.sort((a, b) => a.key.localeCompare(b.key));
       setArtifacts(list);
-      const traj = list.find((a) => a.key.endsWith("trajectory.json"));
-      setTrajectoryUrl(traj ? api(traj.url) : null);
     } catch (e) {
       console.warn("refreshArtifacts:", e);
     }
@@ -76,8 +131,28 @@ export default function App() {
     try {
       const g = await fetchGraph(gid);
       setGraphEdges(g.edges);
+      setGraphNodes(g.nodes);
     } catch (e) {
       console.warn("refreshGraphEdges:", e);
+    }
+  }, []);
+
+  const refreshBranching = useCallback(async (gid: string) => {
+    try {
+      const [b, r, p] = await Promise.all([
+        listGraphBranches(gid),
+        listGraphRevisions(gid),
+        listGraphPromotions(gid),
+      ]);
+      setBranches(b);
+      setRevisions(r);
+      setPromotions(p);
+      setActiveBranchId((prev) => {
+        if (prev && b.some((x) => x.id === prev)) return prev;
+        return b.find((x) => x.name === "main")?.id ?? b[0]?.id ?? null;
+      });
+    } catch (e) {
+      console.warn("refreshBranching:", e);
     }
   }, []);
 
@@ -85,14 +160,22 @@ export default function App() {
     if (!graphId) return;
     void refreshArtifacts(graphId);
     void refreshGraphEdges(graphId);
+    void refreshBranching(graphId);
     setGraphRefreshToken((t) => t + 1);
-  }, [graphId, refreshArtifacts, refreshGraphEdges]);
+  }, [graphId, refreshArtifacts, refreshGraphEdges, refreshBranching]);
 
   const selectProject = useCallback((p: StoredProject) => {
     setActiveProjectId(p.localId);
     setActiveProjectIdState(p.localId);
     setGraphId(p.graphId);
-    setMapViewerNodeId(null);
+    setArtifacts([]);
+    setGraphEdges([]);
+    setGraphNodes([]);
+    setOpenViewerNodeIds([]);
+    setRevisionDiff(null);
+    setStatus("");
+    setActiveBranchId(null);
+    setMainTab("workspace");
   }, []);
 
   const queuePipelineRun = useCallback(async () => {
@@ -143,14 +226,15 @@ export default function App() {
       setActiveProjectId(sp.localId);
       setActiveProjectIdState(sp.localId);
       setGraphId(data.graph_id);
-      setMainTab("graph");
-      setMapViewerNodeId(null);
+      setMainTab("workspace");
+      setOpenViewerNodeIds([]);
       setStatus(
         "Demo graph ready. Queue pipeline run, start worker, then refresh. Project saved in this browser."
       );
       setGraphRefreshToken((t) => t + 1);
       void refreshArtifacts(data.graph_id);
       void refreshGraphEdges(data.graph_id);
+      void refreshBranching(data.graph_id);
     } catch (e) {
       setStatus(`Seed failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -183,12 +267,14 @@ export default function App() {
       setActiveProjectId(sp.localId);
       setActiveProjectIdState(sp.localId);
       setGraphId(g.id);
-      setMapViewerNodeId(null);
+      setMainTab("workspace");
+      setOpenViewerNodeIds([]);
       setStatus(
         "Empty graph created. Add nodes via API or seed a demo in another project. This browser remembers projects locally."
       );
       setGraphRefreshToken((t) => t + 1);
       setArtifacts([]);
+      void refreshBranching(g.id);
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     }
@@ -198,13 +284,95 @@ export default function App() {
     if (!graphId) return;
     void refreshArtifacts(graphId);
     void refreshGraphEdges(graphId);
+    void refreshBranching(graphId);
     const t = setInterval(() => refreshArtifacts(graphId), 12000);
     return () => clearInterval(t);
-  }, [graphId, refreshArtifacts, refreshGraphEdges]);
+  }, [graphId, refreshArtifacts, refreshGraphEdges, refreshBranching]);
 
-  const openPlanMapViewer = useCallback((nodeId: string) => {
-    setMapViewerNodeId(nodeId);
-    setMainTab("map2d");
+  useEffect(() => {
+    if (!graphId || !activeBranchId) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        await checkoutGraphBranch(graphId, activeBranchId, { created_by: "local" });
+        if (!cancelled) refreshAll();
+      } catch (e) {
+        if (!cancelled) {
+          setStatus(e instanceof Error ? e.message : String(e));
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBranchId, graphId, refreshAll]);
+
+  const onCreateBranch = useCallback(
+    async (name: string) => {
+      if (!graphId) return;
+      const base = branches.find((b) => b.id === activeBranchId) ?? branches[0];
+      await createGraphBranch(graphId, {
+        name,
+        created_by: "local",
+        base_revision_id: base?.head_revision_id ?? null,
+        status: "draft",
+      });
+      await refreshBranching(graphId);
+    },
+    [activeBranchId, branches, graphId, refreshBranching]
+  );
+
+  const onCommitCurrentToBranch = useCallback(
+    async (branchId: string, event: string) => {
+      if (!graphId) return;
+      await commitCurrentToBranch(graphId, branchId, {
+        created_by: "local",
+        event,
+        details: { from_ui: true },
+      });
+      await refreshBranching(graphId);
+    },
+    [graphId, refreshBranching]
+  );
+
+  const onPromoteBranch = useCallback(
+    async (sourceBranchId: string, targetBranchId: string) => {
+      if (!graphId) return;
+      const res = await executeGraphPromotion(graphId, {
+        source_branch_id: sourceBranchId,
+        target_branch_id: targetBranchId,
+        created_by: "local",
+        apply_to_graph: true,
+      });
+      if (res.status === "conflict") {
+        setStatus(`Promotion conflict (${res.mode}). Check Branches panel for details.`);
+      } else {
+        setStatus(`Promotion succeeded (${res.mode}).`);
+      }
+      await refreshBranching(graphId);
+      refreshAll();
+    },
+    [graphId, refreshAll, refreshBranching]
+  );
+
+  const onDiffRevisions = useCallback(
+    async (fromRevisionId: string, toRevisionId: string) => {
+      if (!graphId) return;
+      const d = await diffGraphRevisions(graphId, fromRevisionId, toRevisionId);
+      setRevisionDiff(d);
+    },
+    [graphId]
+  );
+
+  const openNodeViewer = useCallback((nodeId: string) => {
+    setOpenViewerNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
+    setMainTab(`node:${nodeId}`);
+  }, []);
+
+  const closeNodeViewer = useCallback((nodeId: string) => {
+    setOpenViewerNodeIds((prev) => prev.filter((id) => id !== nodeId));
+    setMainTab((prev) => (prev === `node:${nodeId}` ? "workspace" : prev));
   }, []);
 
   return (
@@ -240,19 +408,109 @@ export default function App() {
         style={{
           flex: 1,
           display: "grid",
-          gridTemplateColumns: "minmax(260px, 28vw) 1fr",
+          gridTemplateColumns: sidebarCollapsed ? "46px 1fr" : "minmax(260px, 28vw) 1fr",
           minHeight: 0,
         }}
       >
-        <LeftSidebar
-          projects={projects}
-          activeLocalId={activeProjectId}
-          onSelectProject={selectProject}
-          onNewProject={() => void newProject()}
-          onSeedDemo={() => void seedDemo()}
-          graphId={graphId}
-          artifacts={artifacts}
-        />
+        {!sidebarCollapsed ? (
+          <div style={{ position: "relative", minHeight: 0 }}>
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(true)}
+              title="Minimize project panel (Ctrl/Cmd+B)"
+              aria-label="Minimize project panel"
+              style={{
+                position: "absolute",
+                top: 8,
+                right: 8,
+                zIndex: 20,
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                border: "1px solid #30363d",
+                background: "#161b22",
+                color: "#e6edf3",
+                cursor: "pointer",
+                padding: 0,
+                display: "grid",
+                placeItems: "center",
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+                <path d="M9.5 2.5 5 7l4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <LeftSidebar
+              projects={projects}
+              activeLocalId={activeProjectId}
+              onSelectProject={selectProject}
+              onNewProject={() => void newProject()}
+              onSeedDemo={() => void seedDemo()}
+              graphId={graphId}
+              artifacts={artifacts}
+              branches={branches}
+              revisions={revisions}
+              promotions={promotions}
+              activeBranchId={activeBranchId}
+              onActiveBranchId={setActiveBranchId}
+              onCreateBranch={(name) => void onCreateBranch(name)}
+              onCommitCurrentToBranch={(branchId, event) =>
+                void onCommitCurrentToBranch(branchId, event)
+              }
+              onPromoteBranch={(source, target) => void onPromoteBranch(source, target)}
+              revisionDiff={revisionDiff}
+              onDiffRevisions={(from, to) => void onDiffRevisions(from, to)}
+            />
+          </div>
+        ) : (
+          <div
+            style={{
+              borderRight: "1px solid #30363d",
+              background: "#0f1419",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "flex-start",
+              paddingTop: 8,
+              gap: 8,
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(false)}
+              title="Expand project panel (Ctrl/Cmd+B)"
+              aria-label="Expand project panel"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                border: "1px solid #30363d",
+                background: "#161b22",
+                color: "#e6edf3",
+                cursor: "pointer",
+                padding: 0,
+                display: "grid",
+                placeItems: "center",
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
+                <path d="M4.5 2.5 9 7l-4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <div
+              style={{
+                writingMode: "vertical-rl",
+                transform: "rotate(180deg)",
+                fontSize: 10,
+                letterSpacing: "0.08em",
+                opacity: 0.65,
+                userSelect: "none",
+              }}
+            >
+              PROJECT
+            </div>
+          </div>
+        )}
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
           <div
             role="tablist"
@@ -261,17 +519,17 @@ export default function App() {
               gap: 0,
               borderBottom: "1px solid #30363d",
               background: "#161b22",
+              overflowX: "auto",
             }}
           >
             <div
               style={{
                 display: "flex",
-                flex: 1,
                 alignItems: "stretch",
                 minWidth: 0,
-                background: mainTab === "graph" ? "#0f1419" : "transparent",
+                background: mainTab === "workspace" ? "#0f1419" : "transparent",
                 borderBottom:
-                  mainTab === "graph" ? "2px solid #58a6ff" : "2px solid transparent",
+                  mainTab === "workspace" ? "2px solid #58a6ff" : "2px solid transparent",
               }}
             >
               <button
@@ -298,50 +556,87 @@ export default function App() {
                 </svg>
               </button>
               <TabButton
-                active={mainTab === "graph"}
-                onClick={() => setMainTab("graph")}
+                active={mainTab === "workspace"}
+                onClick={() => setMainTab("workspace")}
                 label="Workspace"
-                flex={1}
                 suppressBorder
               />
             </div>
-            <TabButton
-              active={mainTab === "preview"}
-              onClick={() => setMainTab("preview")}
-              label="3D preview"
-            />
-            <TabButton
-              active={mainTab === "map2d"}
-              onClick={() => setMainTab("map2d")}
-              label="2D map"
-            />
+            {openViewerNodeIds
+              .filter((id) => graphNodes.some((n) => n.id === id))
+              .map((id) => {
+                const node = graphNodes.find((n) => n.id === id) ?? null;
+                const label = node ? node.config.kind.replace(/_/g, " ") : `Node ${id.slice(0, 6)}`;
+                const tabId = `node:${id}` as MainTab;
+                return (
+                  <TabButton
+                    key={id}
+                    active={mainTab === tabId}
+                    onClick={() => setMainTab(tabId)}
+                    onClose={() => closeNodeViewer(id)}
+                    label={label}
+                  />
+                );
+              })}
           </div>
           <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-            {mainTab === "graph" ? (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: mainTab === "workspace" ? "block" : "none",
+              }}
+            >
               <GraphErrorBoundary key={graphId ?? "none"}>
                 <GraphCanvas
                   graphId={graphId}
+                  activeBranchId={activeBranchId}
                   refreshToken={graphRefreshToken}
                   projectEpsg={4326}
                   artifacts={artifacts}
                   onPipelineQueued={refreshAll}
-                  onOpenPlanMapViewer={openPlanMapViewer}
+                  onOpenNodeViewer={openNodeViewer}
                   onGraphChanged={refreshAll}
                 />
               </GraphErrorBoundary>
-            ) : mainTab === "preview" ? (
-              <ViewportErrorBoundary>
-                <Scene trajectoryUrl={trajectoryUrl} />
-              </ViewportErrorBoundary>
-            ) : (
-              <Map2DPanel
-                graphId={graphId}
-                edges={graphEdges}
-                artifacts={artifacts}
-                viewerNodeId={mapViewerNodeId}
-                onClearViewer={() => setMapViewerNodeId(null)}
-              />
-            )}
+            </div>
+            {openViewerNodeIds.map((nodeId) => {
+              const node = graphNodes.find((n) => n.id === nodeId) ?? null;
+              const active = mainTab === (`node:${nodeId}` as MainTab);
+              return (
+                <div
+                  key={`viewer:${nodeId}`}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: active ? "block" : "none",
+                  }}
+                >
+                  {!node ? (
+                    <div style={{ padding: 16, fontSize: 13, opacity: 0.8 }}>
+                      Node preview unavailable.
+                    </div>
+                  ) : node.config.kind === "plan_view_2d" ? (
+                    <Map2DPanel
+                      graphId={graphId}
+                      activeBranchId={activeBranchId}
+                      active={active}
+                      edges={graphEdges}
+                      artifacts={artifacts}
+                      viewerNodeId={nodeId}
+                      onClearViewer={() => closeNodeViewer(nodeId)}
+                    />
+                  ) : (
+                    <NodePreviewPanel
+                      graphId={graphId}
+                      nodeId={nodeId}
+                      nodeKind={node.config.kind}
+                      artifacts={artifacts}
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -353,39 +648,64 @@ function TabButton({
   active,
   onClick,
   label,
-  flex,
+  onClose,
   suppressBorder,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
-  flex?: number;
+  onClose?: () => void;
   /** When nested in a tab group shell (e.g. Play + Workspace). */
   suppressBorder?: boolean;
 }) {
   return (
-    <button
-      type="button"
+    <div
       role="tab"
       aria-selected={active}
-      onClick={onClick}
       style={{
-        flex: flex ?? undefined,
-        padding: "10px 18px",
-        border: "none",
+        display: "flex",
+        alignItems: "center",
         borderBottom: suppressBorder
           ? "2px solid transparent"
           : active
             ? "2px solid #58a6ff"
             : "2px solid transparent",
         background: suppressBorder ? "transparent" : active ? "#0f1419" : "transparent",
-        color: active ? "#e6edf3" : "#8b949e",
-        cursor: "pointer",
-        fontSize: 14,
-        fontWeight: active ? 600 : 400,
       }}
     >
-      {label}
-    </button>
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
+          padding: "10px 14px",
+          border: "none",
+          background: "transparent",
+          color: active ? "#e6edf3" : "#8b949e",
+          cursor: "pointer",
+          fontSize: 14,
+          fontWeight: active ? 600 : 400,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </button>
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          title="Close tab"
+          style={{
+            border: "none",
+            background: "transparent",
+            color: "#8b949e",
+            padding: "0 8px 0 0",
+            cursor: "pointer",
+            fontSize: 14,
+          }}
+        >
+          x
+        </button>
+      )}
+    </div>
   );
 }

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use mine_eye_graph::{EdgeRef, GraphSnapshot};
 use mine_eye_types::{
-    CacheState, CrsRecord, ExecutionState, GraphMeta, LineageMeta, NodeCategory, NodeConfig,
+    BranchPromotionRecord, BranchPromotionStatus, BranchStatus, CacheState, CrsRecord,
+    ExecutionState, GraphBranch, GraphMeta, GraphRevision, LineageMeta, NodeCategory, NodeConfig,
     NodeExecutionPolicy, NodeRecord, OwnerRef, PortBinding, SemanticPortType,
 };
 use sqlx::PgPool;
@@ -113,6 +114,44 @@ fn sem_str(t: SemanticPortType) -> &'static str {
     }
 }
 
+fn branch_status(s: &str) -> BranchStatus {
+    match s {
+        "qa" => BranchStatus::Qa,
+        "approved" => BranchStatus::Approved,
+        "promoted" => BranchStatus::Promoted,
+        "archived" => BranchStatus::Archived,
+        _ => BranchStatus::Draft,
+    }
+}
+
+fn branch_status_str(s: BranchStatus) -> &'static str {
+    match s {
+        BranchStatus::Draft => "draft",
+        BranchStatus::Qa => "qa",
+        BranchStatus::Approved => "approved",
+        BranchStatus::Promoted => "promoted",
+        BranchStatus::Archived => "archived",
+    }
+}
+
+fn promotion_status(s: &str) -> BranchPromotionStatus {
+    match s {
+        "succeeded" => BranchPromotionStatus::Succeeded,
+        "conflict" => BranchPromotionStatus::Conflict,
+        "failed" => BranchPromotionStatus::Failed,
+        _ => BranchPromotionStatus::Pending,
+    }
+}
+
+fn promotion_status_str(s: BranchPromotionStatus) -> &'static str {
+    match s {
+        BranchPromotionStatus::Pending => "pending",
+        BranchPromotionStatus::Succeeded => "succeeded",
+        BranchPromotionStatus::Conflict => "conflict",
+        BranchPromotionStatus::Failed => "failed",
+    }
+}
+
 pub struct PgStore {
     pool: PgPool,
 }
@@ -162,16 +201,274 @@ impl PgStore {
     ) -> Result<Uuid, StoreError> {
         let id = meta.graph_id;
         let meta_v = serde_json::to_value(meta)?;
+        sqlx::query(r#"INSERT INTO graphs (id, workspace_id, name, meta) VALUES ($1, $2, $3, $4)"#)
+            .bind(id)
+            .bind(workspace_id)
+            .bind(name)
+            .bind(meta_v)
+            .execute(&self.pool)
+            .await?;
+        Ok(id)
+    }
+
+    pub async fn create_branch(
+        &self,
+        graph_id: Uuid,
+        name: &str,
+        base_revision_id: Option<Uuid>,
+        created_by: &str,
+        status: BranchStatus,
+    ) -> Result<Uuid, StoreError> {
+        let id = Uuid::new_v4();
         sqlx::query(
-            r#"INSERT INTO graphs (id, workspace_id, name, meta) VALUES ($1, $2, $3, $4)"#,
+            r#"
+            INSERT INTO graph_branches (id, graph_id, name, base_revision_id, head_revision_id, status, created_by)
+            VALUES ($1, $2, $3, $4, $4, $5, $6)
+            "#,
         )
         .bind(id)
-        .bind(workspace_id)
+        .bind(graph_id)
         .bind(name)
-        .bind(meta_v)
+        .bind(base_revision_id)
+        .bind(branch_status_str(status))
+        .bind(created_by)
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    pub async fn list_branches(&self, graph_id: Uuid) -> Result<Vec<GraphBranch>, StoreError> {
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<Uuid>,
+            String,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        )> = sqlx::query_as(
+            r#"
+            SELECT id, graph_id, name, base_revision_id, head_revision_id, status, created_by, created_at, updated_at
+            FROM graph_branches
+            WHERE graph_id = $1
+            ORDER BY created_at ASC, name ASC
+            "#,
+        )
+        .bind(graph_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    graph_id,
+                    name,
+                    base_revision_id,
+                    head_revision_id,
+                    status,
+                    created_by,
+                    created_at,
+                    updated_at,
+                )| GraphBranch {
+                    id,
+                    graph_id,
+                    name,
+                    base_revision_id,
+                    head_revision_id,
+                    status: branch_status(&status),
+                    created_by,
+                    created_at,
+                    updated_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn create_revision(
+        &self,
+        graph_id: Uuid,
+        branch_id: Uuid,
+        parent_revision_id: Option<Uuid>,
+        created_by: &str,
+        meta: serde_json::Value,
+    ) -> Result<Uuid, StoreError> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO graph_revisions (id, graph_id, branch_id, parent_revision_id, created_by, meta)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(id)
+        .bind(graph_id)
+        .bind(branch_id)
+        .bind(parent_revision_id)
+        .bind(created_by)
+        .bind(meta)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            UPDATE graph_branches
+            SET head_revision_id = $2, updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(branch_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn list_revisions(
+        &self,
+        graph_id: Uuid,
+        branch_id: Option<Uuid>,
+    ) -> Result<Vec<GraphRevision>, StoreError> {
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            Option<Uuid>,
+            Option<Uuid>,
+            String,
+            serde_json::Value,
+            chrono::DateTime<chrono::Utc>,
+        )> = if let Some(branch_id) = branch_id {
+            sqlx::query_as(
+                r#"
+                SELECT id, graph_id, branch_id, parent_revision_id, created_by, meta, created_at
+                FROM graph_revisions
+                WHERE graph_id = $1 AND branch_id = $2
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )
+            .bind(graph_id)
+            .bind(branch_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT id, graph_id, branch_id, parent_revision_id, created_by, meta, created_at
+                FROM graph_revisions
+                WHERE graph_id = $1
+                ORDER BY created_at ASC, id ASC
+                "#,
+            )
+            .bind(graph_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, graph_id, branch_id, parent_revision_id, created_by, meta, created_at)| {
+                    GraphRevision {
+                        id,
+                        graph_id,
+                        branch_id,
+                        parent_revision_id,
+                        created_by,
+                        meta,
+                        created_at,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub async fn record_branch_promotion(
+        &self,
+        source_branch_id: Uuid,
+        target_branch_id: Uuid,
+        source_head_revision_id: Option<Uuid>,
+        promoted_revision_id: Option<Uuid>,
+        status: BranchPromotionStatus,
+        conflict_report: Option<serde_json::Value>,
+        created_by: &str,
+    ) -> Result<Uuid, StoreError> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO branch_promotions
+            (id, source_branch_id, target_branch_id, source_head_revision_id, promoted_revision_id, status, conflict_report, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+        )
+        .bind(id)
+        .bind(source_branch_id)
+        .bind(target_branch_id)
+        .bind(source_head_revision_id)
+        .bind(promoted_revision_id)
+        .bind(promotion_status_str(status))
+        .bind(conflict_report)
+        .bind(created_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn list_branch_promotions(
+        &self,
+        graph_id: Uuid,
+    ) -> Result<Vec<BranchPromotionRecord>, StoreError> {
+        let rows: Vec<(
+            Uuid,
+            Uuid,
+            Uuid,
+            Option<Uuid>,
+            Option<Uuid>,
+            String,
+            Option<serde_json::Value>,
+            String,
+            chrono::DateTime<chrono::Utc>,
+        )> = sqlx::query_as(
+            r#"
+            SELECT bp.id, bp.source_branch_id, bp.target_branch_id, bp.source_head_revision_id, bp.promoted_revision_id,
+                   bp.status, bp.conflict_report, bp.created_by, bp.created_at
+            FROM branch_promotions bp
+            JOIN graph_branches sb ON sb.id = bp.source_branch_id
+            WHERE sb.graph_id = $1
+            ORDER BY bp.created_at DESC
+            "#,
+        )
+        .bind(graph_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    source_branch_id,
+                    target_branch_id,
+                    source_head_revision_id,
+                    promoted_revision_id,
+                    status,
+                    conflict_report,
+                    created_by,
+                    created_at,
+                )| BranchPromotionRecord {
+                    id,
+                    source_branch_id,
+                    target_branch_id,
+                    source_head_revision_id,
+                    promoted_revision_id,
+                    status: promotion_status(&status),
+                    conflict_report,
+                    created_by,
+                    created_at,
+                },
+            )
+            .collect())
     }
 
     pub async fn upsert_node(&self, node: &NodeRecord) -> Result<(), StoreError> {
@@ -241,13 +538,11 @@ impl PgStore {
     }
 
     pub async fn delete_edge(&self, graph_id: Uuid, edge_id: Uuid) -> Result<(), StoreError> {
-        let r = sqlx::query(
-            r#"DELETE FROM edges WHERE id = $1 AND graph_id = $2"#,
-        )
-        .bind(edge_id)
-        .bind(graph_id)
-        .execute(&self.pool)
-        .await?;
+        let r = sqlx::query(r#"DELETE FROM edges WHERE id = $1 AND graph_id = $2"#)
+            .bind(edge_id)
+            .bind(graph_id)
+            .execute(&self.pool)
+            .await?;
         if r.rows_affected() == 0 {
             return Err(StoreError::NotFound(edge_id.to_string()));
         }
@@ -263,6 +558,73 @@ impl PgStore {
         if r.rows_affected() == 0 {
             return Err(StoreError::NotFound(node_id.to_string()));
         }
+        Ok(())
+    }
+
+    /// Replace the graph's structural definition (nodes + edges) with the provided snapshot.
+    /// This keeps graph metadata and artifact history, but rewrites current topology/config.
+    pub async fn replace_graph_definition(
+        &self,
+        graph_id: Uuid,
+        nodes: &[NodeRecord],
+        edges: &[EdgeRef],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(r#"DELETE FROM edges WHERE graph_id = $1"#)
+            .bind(graph_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(r#"DELETE FROM nodes WHERE graph_id = $1"#)
+            .bind(graph_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for node in nodes {
+            let policy = serde_json::to_value(&node.policy)?;
+            let ports = serde_json::to_value(&node.ports)?;
+            let lineage = serde_json::to_value(&node.lineage)?;
+            let config = serde_json::to_value(&node.config)?;
+            sqlx::query(
+                r#"
+                INSERT INTO nodes (id, graph_id, category, config, execution_state, cache_state, policy, ports, lineage, content_hash, last_error)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                "#,
+            )
+            .bind(node.id)
+            .bind(graph_id)
+            .bind(cat_str(node.category))
+            .bind(config)
+            .bind(exec_str(node.execution))
+            .bind(cache_str(node.cache))
+            .bind(policy)
+            .bind(ports)
+            .bind(lineage)
+            .bind(&node.content_hash)
+            .bind(&node.last_error)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for edge in edges {
+            sqlx::query(
+                r#"
+                INSERT INTO edges (id, graph_id, from_node, from_port, to_node, to_port, semantic_type)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(edge.id)
+            .bind(graph_id)
+            .bind(edge.from_node)
+            .bind(&edge.from_port)
+            .bind(edge.to_node)
+            .bind(&edge.to_port)
+            .bind(sem_str(edge.semantic_type))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 

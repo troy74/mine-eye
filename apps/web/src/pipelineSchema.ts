@@ -20,8 +20,8 @@ export const PIPELINE_GEOMETRY_NOTES = `Collar → point (x,y,z) + optional az/d
 export const ACQUISITION_CSV_KINDS = [
   "collar_ingest",
   "survey_ingest",
+  "surface_sample_ingest",
   "assay_ingest",
-  "drillhole_ingest",
 ] as const;
 
 export type AcquisitionCsvKind = (typeof ACQUISITION_CSV_KINDS)[number];

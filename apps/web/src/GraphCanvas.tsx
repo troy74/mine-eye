@@ -26,7 +26,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { AddNodePreset } from "./graphAddNodes";
-import { ADD_NODE_PRESETS } from "./graphAddNodes";
+import { getAddNodePresets } from "./graphAddNodes";
 import {
   addGraphNode,
   createGraphEdge,
@@ -44,22 +44,11 @@ import {
 import { NodeInspector } from "./NodeInspector";
 import {
   edgeColorForApiEdge,
-  pickHandleColorForPort,
+  pickHandleColorForPortWithSemantic,
 } from "./portTypes";
 import { incomingPortIds, outgoingPortIds } from "./nodePortLayout";
 import { isAcquisitionCsvKind } from "./pipelineSchema";
-
-const KIND_ROLES: Record<string, string> = {
-  collar_ingest: "Acquisition · collars (hole collars, CRS)",
-  survey_ingest: "Acquisition · survey stations (az/dip/depth)",
-  assay_ingest: "Acquisition · interval assays / geochem",
-  drillhole_merge: "Transform · merge primitives → drillhole package",
-  drillhole_ingest: "Acquisition · bundled collars + surveys + assays",
-  desurvey_trajectory: "Transform · desurvey → 3D trace",
-  dem_integrate: "Transform · DEM / surface reference",
-  block_model_basic: "Model · block model grid (stub)",
-  plan_view_2d: "Visualisation · 2D plan map (inputs only; Esri basemap)",
-};
+import { nodeRole, portSemantic } from "./nodeRegistry";
 
 const CAT_ACCENT: Record<string, string> = {
   input: "#238636",
@@ -97,7 +86,6 @@ type PipelineData = {
   outgoingPorts: string[];
   portColorsIn: Record<string, string>;
   portColorsOut: Record<string, string>;
-  planMapNode: boolean;
 };
 
 function computeExecTone(
@@ -259,7 +247,7 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
           {data.lastErrorShort}
         </div>
       )}
-      {((data.showCsv && ctx && id) || (data.planMapNode && ctx && id) || (data.execTone === "failed" && ctx && id)) && (
+      {((data.showCsv && ctx && id) || (ctx && id) || (data.execTone === "failed" && ctx && id)) && (
         <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
           {data.showCsv && ctx && id && (
             <>
@@ -285,17 +273,17 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
               </button>
             </>
           )}
-          {data.planMapNode && ctx && id && (
+          {ctx && id && (
             <button
               type="button"
               style={mapBtn}
-              title="Open 2D map: shows only data from nodes wired to this viewer’s inputs"
+              title="Open node preview"
               onClick={(e) => {
                 e.stopPropagation();
-                ctx.openPlanMapViewer(id);
+                ctx.openNodeViewer(id);
               }}
             >
-              Open 2D map
+              Preview
             </button>
           )}
           {data.execTone === "failed" && ctx && id && (
@@ -397,10 +385,6 @@ const menuBtn: CSSProperties = {
   fontSize: 12,
 };
 
-function isPlanViewNodeKind(kind: string): boolean {
-  return kind === "plan_view_2d";
-}
-
 const nodeTypes = { pipeline: PipelineNode };
 
 function layoutNodes(nodes: ApiNode[], edges: ApiEdge[]): Map<string, { x: number; y: number }> {
@@ -485,8 +469,8 @@ function toFlowElements(
     const p = saved[node.id] ?? auto;
     const kind = node.config.kind;
     const title = kind.replace(/_/g, " ");
-    const role = KIND_ROLES[kind] ?? `Node · ${kind}`;
-    const incomingPorts = incomingPortIds(node.id, edges);
+    const role = nodeRole(kind) ?? `Node · ${kind}`;
+    const incomingPorts = incomingPortIds(node.id, kind, edges);
     const execTone = computeExecTone(node, incomingPorts.length, kind);
     const busy = execTone === "running";
     const cat = node.category;
@@ -494,17 +478,29 @@ function toFlowElements(
     const hashShort = node.content_hash
       ? `sha256:${node.content_hash.slice(0, 10)}…`
       : null;
-    const outgoingPorts = outgoingPortIds(node.id, edges);
+    const outgoingPorts = outgoingPortIds(node.id, kind, edges);
     const portColorsIn = Object.fromEntries(
       incomingPorts.map((p) => [
         p,
-        pickHandleColorForPort(edges, node.id, "in", p),
+        pickHandleColorForPortWithSemantic(
+          edges,
+          node.id,
+          "in",
+          p,
+          portSemantic(kind, "in", p)
+        ),
       ])
     );
     const portColorsOut = Object.fromEntries(
       outgoingPorts.map((p) => [
         p,
-        pickHandleColorForPort(edges, node.id, "out", p),
+        pickHandleColorForPortWithSemantic(
+          edges,
+          node.id,
+          "out",
+          p,
+          portSemantic(kind, "out", p)
+        ),
       ])
     );
     return {
@@ -529,7 +525,6 @@ function toFlowElements(
         outgoingPorts,
         portColorsIn,
         portColorsOut,
-        planMapNode: isPlanViewNodeKind(kind),
       },
     };
   });
@@ -553,11 +548,12 @@ function toFlowElements(
 
 type Props = {
   graphId: string | null;
+  activeBranchId?: string | null;
   refreshToken?: number;
   projectEpsg?: number;
   artifacts?: ArtifactEntry[];
   onPipelineQueued?: () => void;
-  onOpenPlanMapViewer?: (nodeId: string) => void;
+  onOpenNodeViewer?: (nodeId: string) => void;
   onGraphChanged?: () => void;
 };
 
@@ -569,19 +565,21 @@ type CtxMenu =
 
 function FlowWorkspace({
   graphId,
+  activeBranchId,
   refreshToken,
   projectEpsg,
   artifacts,
   onPipelineQueued,
-  onOpenPlanMapViewer,
+  onOpenNodeViewer,
   onGraphChanged,
 }: {
   graphId: string;
+  activeBranchId?: string | null;
   refreshToken: number;
   projectEpsg: number;
   artifacts: ArtifactEntry[];
   onPipelineQueued?: () => void;
-  onOpenPlanMapViewer?: (nodeId: string) => void;
+  onOpenNodeViewer?: (nodeId: string) => void;
   onGraphChanged?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PipelineData>>([]);
@@ -622,16 +620,16 @@ function FlowWorkspace({
     if (tab) setInspectorTab(tab);
   }, []);
 
-  const openPlanMapViewer = useCallback(
+  const openNodeViewer = useCallback(
     (nodeId: string) => {
-      onOpenPlanMapViewer?.(nodeId);
+      onOpenNodeViewer?.(nodeId);
     },
-    [onOpenPlanMapViewer]
+    [onOpenNodeViewer]
   );
 
   const ctxValue = useMemo(
-    () => ({ openInspector, openPlanMapViewer }),
-    [openInspector, openPlanMapViewer]
+    () => ({ openInspector, openNodeViewer }),
+    [openInspector, openNodeViewer]
   );
 
   const load = useCallback(async () => {
@@ -672,7 +670,7 @@ function FlowWorkspace({
     async (ids: string[]) => {
       try {
         for (const nid of ids) {
-          await deleteGraphNode(graphId, nid);
+          await deleteGraphNode(graphId, nid, { branchId: activeBranchId });
           removeNodePosition(graphId, nid);
         }
         setSelectedId((s) => (s && ids.includes(s) ? null : s));
@@ -683,7 +681,7 @@ function FlowWorkspace({
         await load();
       }
     },
-    [graphId, load, onGraphChanged]
+    [activeBranchId, graphId, load, onGraphChanged]
   );
 
   const persistDeleteEdgeIds = useCallback(
@@ -691,7 +689,7 @@ function FlowWorkspace({
       try {
         for (const edgeId of edgeIds) {
           if (edgeId.startsWith("legacy-")) continue;
-          await deleteGraphEdge(graphId, edgeId);
+          await deleteGraphEdge(graphId, edgeId, { branchId: activeBranchId });
         }
         await load();
         onGraphChanged?.();
@@ -700,7 +698,7 @@ function FlowWorkspace({
         await load();
       }
     },
-    [graphId, load, onGraphChanged]
+    [activeBranchId, graphId, load, onGraphChanged]
   );
 
   const onConnect = useCallback(
@@ -708,13 +706,17 @@ function FlowWorkspace({
       if (!c.source || !c.target || c.source === c.target) return;
       const from_port = c.sourceHandle ?? "out";
       const to_port = c.targetHandle ?? "in";
+      const sourceNode = apiNodes.find((n) => n.id === c.source);
+      const sourceKind = sourceNode?.config.kind ?? "";
+      const semantic_type = portSemantic(sourceKind, "out", from_port) ?? "table";
       try {
         await createGraphEdge(graphId, {
           from_node: c.source,
           to_node: c.target,
           from_port,
           to_port,
-          semantic_type: "table",
+          semantic_type,
+          branch_id: activeBranchId ?? null,
         });
         await load();
         onGraphChanged?.();
@@ -722,7 +724,7 @@ function FlowWorkspace({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [graphId, load, onGraphChanged]
+    [activeBranchId, apiNodes, graphId, load, onGraphChanged]
   );
 
   const addNodeFromPreset = useCallback(
@@ -734,6 +736,7 @@ function FlowWorkspace({
           kind: preset.kind,
           params: {},
           policy: preset.policy,
+          branch_id: activeBranchId ?? null,
         });
         saveNodePosition(graphId, id, flowPos);
         await load();
@@ -742,7 +745,7 @@ function FlowWorkspace({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [graphId, load, onGraphChanged]
+    [activeBranchId, graphId, load, onGraphChanged]
   );
 
   useEffect(() => {
@@ -766,6 +769,7 @@ function FlowWorkspace({
     () => apiNodes.find((n) => n.id === selectedId) ?? null,
     [apiNodes, selectedId]
   );
+  const addNodePresets = getAddNodePresets();
 
   const artifactsForSelected = useMemo(
     () =>
@@ -897,7 +901,7 @@ function FlowWorkspace({
                     Add node
                   </div>
                   <div style={{ maxHeight: 280, overflowY: "auto" }}>
-                    {ADD_NODE_PRESETS.map((p) => (
+                    {addNodePresets.map((p) => (
                       <button
                         key={p.kind}
                         type="button"
@@ -946,6 +950,7 @@ function FlowWorkspace({
         {selectedNode && (
           <NodeInspector
             graphId={graphId}
+            activeBranchId={activeBranchId}
             node={selectedNode}
             projectEpsg={workspaceEpsg}
             tab={inspectorTab}
@@ -963,11 +968,12 @@ function FlowWorkspace({
 
 export function GraphCanvas({
   graphId,
+  activeBranchId,
   refreshToken = 0,
   projectEpsg = 4326,
   artifacts = [],
   onPipelineQueued,
-  onOpenPlanMapViewer,
+  onOpenNodeViewer,
   onGraphChanged,
 }: Props) {
   if (!graphId) {
@@ -999,11 +1005,12 @@ export function GraphCanvas({
     <ReactFlowProvider>
       <FlowWorkspace
         graphId={graphId}
+        activeBranchId={activeBranchId}
         refreshToken={refreshToken}
         projectEpsg={projectEpsg}
         artifacts={artifacts}
         onPipelineQueued={onPipelineQueued}
-        onOpenPlanMapViewer={onOpenPlanMapViewer}
+        onOpenNodeViewer={onOpenNodeViewer}
         onGraphChanged={onGraphChanged}
       />
     </ReactFlowProvider>

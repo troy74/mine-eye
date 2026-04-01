@@ -98,7 +98,8 @@ export function isPlanViewInputSemantic(semantic: string): boolean {
     k === "point_set" ||
     k === "table" ||
     k === "interval_set" ||
-    k === "trajectory_set"
+    k === "trajectory_set" ||
+    k === "surface"
   );
 }
 
