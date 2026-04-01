@@ -88,6 +88,34 @@
       }
     },
     {
+      "kind": "surface_iso_extract",
+      "category": "transform",
+      "label": "Surface iso extract",
+      "role": "Transform · surface grid → contour/iso artifacts",
+      "menu": { "enabled": true, "order": 82 },
+      "ports": {
+        "inputs": [{ "id": "surface_in", "label": "Surface", "semantic": "surface" }],
+        "outputs": [
+          { "id": "contours", "label": "Contours", "semantic": "table" },
+          { "id": "meta", "label": "Iso meta", "semantic": "table" }
+        ]
+      }
+    },
+    {
+      "kind": "terrain_adjust",
+      "category": "transform",
+      "label": "Terrain adjust",
+      "role": "Transform · DEM fit/nudge with control points",
+      "menu": { "enabled": true, "order": 84 },
+      "ports": {
+        "inputs": [
+          { "id": "terrain_in", "label": "Terrain", "semantic": "surface" },
+          { "id": "control_points", "label": "Control points", "semantic": "point_set" }
+        ],
+        "outputs": [{ "id": "terrain_out", "label": "Adjusted terrain", "semantic": "surface" }]
+      }
+    },
+    {
       "kind": "plan_view_2d",
       "category": "visualisation",
       "label": "2D plan map",

@@ -495,6 +495,89 @@ fn marching_segments(
     out
 }
 
+#[derive(Clone, Copy)]
+struct XYZ {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
+    let mut out = Vec::new();
+    let mut push_row = |row: &serde_json::Value| {
+        let Some(obj) = row.as_object() else {
+            return;
+        };
+        let x = obj.get("x").and_then(|v| v.as_f64());
+        let y = obj.get("y").and_then(|v| v.as_f64());
+        let z = obj.get("z").and_then(|v| v.as_f64());
+        if let (Some(x), Some(y), Some(z)) = (x, y, z) {
+            if x.is_finite() && y.is_finite() && z.is_finite() {
+                out.push(XYZ { x, y, z });
+            }
+        }
+    };
+
+    if let Some(arr) = v.get("points").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(row);
+        }
+    }
+    if let Some(arr) = v.get("collars").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(row);
+        }
+    }
+    if let Some(arr) = v.get("assay_points").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(row);
+        }
+    }
+    if v.is_array() {
+        if let Some(rows) = v.as_array() {
+            for row in rows {
+                push_row(row);
+            }
+        }
+    }
+    out
+}
+
+fn bilinear_from_grid(
+    nx: usize,
+    ny: usize,
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
+    values: &[Option<f64>],
+    x: f64,
+    y: f64,
+) -> Option<f64> {
+    if nx < 2 || ny < 2 {
+        return None;
+    }
+    if x < xmin || x > xmax || y < ymin || y > ymax {
+        return None;
+    }
+    let tx = ((x - xmin) / (xmax - xmin).max(1e-9)).clamp(0.0, 1.0) * ((nx - 1) as f64);
+    let ty = ((y - ymin) / (ymax - ymin).max(1e-9)).clamp(0.0, 1.0) * ((ny - 1) as f64);
+    let ix0 = tx.floor() as usize;
+    let iy0 = ty.floor() as usize;
+    let ix1 = (ix0 + 1).min(nx - 1);
+    let iy1 = (iy0 + 1).min(ny - 1);
+    let fx = tx - ix0 as f64;
+    let fy = ty - iy0 as f64;
+    let idx = |ix: usize, iy: usize| -> usize { iy * nx + ix };
+    let v00 = values.get(idx(ix0, iy0)).copied().flatten()?;
+    let v10 = values.get(idx(ix1, iy0)).copied().flatten()?;
+    let v01 = values.get(idx(ix0, iy1)).copied().flatten()?;
+    let v11 = values.get(idx(ix1, iy1)).copied().flatten()?;
+    let a = v00 * (1.0 - fx) + v10 * fx;
+    let b = v01 * (1.0 - fx) + v11 * fx;
+    Some(a * (1.0 - fy) + b * fy)
+}
+
 /// Phase-2 heatmap node: configurable interpolation + contour and diagnostics artifacts.
 pub async fn run_assay_heatmap(
     ctx: &ExecutionContext<'_>,
@@ -998,6 +1081,345 @@ pub async fn run_assay_heatmap(
         status: JobStatus::Succeeded,
         output_artifact_refs: outputs,
         content_hashes: hashes,
+        error_message: None,
+    })
+}
+
+/// Derive iso-contours from any upstream artifact containing `surface_grid`.
+pub async fn run_surface_iso_extract(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let mut grid_src: Option<serde_json::Value> = None;
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        if v.get("surface_grid").is_some() {
+            grid_src = Some(v);
+            break;
+        }
+    }
+    let Some(root) = grid_src else {
+        return Err(NodeError::InvalidConfig(
+            "surface_iso_extract requires upstream artifact with surface_grid".into(),
+        ));
+    };
+    let Some(grid) = root.get("surface_grid").and_then(|g| g.as_object()) else {
+        return Err(NodeError::InvalidConfig("surface_grid missing".into()));
+    };
+    let nx = grid.get("nx").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let ny = grid.get("ny").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let xmin = grid.get("xmin").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let xmax = grid.get("xmax").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let ymin = grid.get("ymin").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let ymax = grid.get("ymax").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let values_raw = grid
+        .get("values")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if nx < 2 || ny < 2 || values_raw.len() != nx * ny {
+        return Err(NodeError::InvalidConfig(
+            "surface_grid dimensions invalid for iso extraction".into(),
+        ));
+    }
+    let values: Vec<Option<f64>> = values_raw.iter().map(|v| v.as_f64()).collect();
+    let finite_vals: Vec<f64> = values.iter().copied().flatten().collect();
+    if finite_vals.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "surface_grid has no finite values".into(),
+        ));
+    }
+    let vmin = finite_vals
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let vmax = finite_vals
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let mode = job
+        .output_spec
+        .pointer("/node_ui/mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("fixed_interval");
+    let interval = job
+        .output_spec
+        .pointer("/node_ui/interval")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(((vmax - vmin) / 10.0).max(1e-6))
+        .max(1e-6);
+    let levels = job
+        .output_spec
+        .pointer("/node_ui/levels")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+        .max(2) as usize;
+    let z_base = job
+        .output_spec
+        .pointer("/node_ui/z_base")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let z_scale = job
+        .output_spec
+        .pointer("/node_ui/z_scale")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0);
+
+    let mut breaks: Vec<f64> = Vec::new();
+    if mode == "quantile" {
+        let mut sorted = finite_vals.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for i in 1..levels {
+            let t = (i as f64) / (levels as f64);
+            let idx = ((sorted.len().saturating_sub(1) as f64) * t).round() as usize;
+            breaks.push(sorted[idx.min(sorted.len().saturating_sub(1))]);
+        }
+    } else {
+        let mut x = vmin + interval;
+        while x < vmax {
+            breaks.push(x);
+            x += interval;
+        }
+    }
+
+    let mut features = Vec::new();
+    for br in &breaks {
+        let segs = marching_segments(&values, nx, ny, xmin, xmax, ymin, ymax, *br);
+        let z = z_base + z_scale * *br;
+        for seg in segs {
+            features.push(serde_json::json!({
+                "type":"Feature",
+                "geometry":{"type":"LineString","coordinates":[[seg[0][0],seg[0][1],z],[seg[1][0],seg[1][1],z]]},
+                "properties":{"level":br,"z":z}
+            }));
+        }
+    }
+
+    let contour_geo = serde_json::json!({
+        "type":"FeatureCollection",
+        "features": features
+    });
+    let contour_bytes = serde_json::to_vec(&contour_geo)?;
+    let contour_key = format!(
+        "graphs/{}/nodes/{}/iso_contours.geojson",
+        job.graph_id, job.node_id
+    );
+    let contour_ref =
+        write_artifact(ctx, &contour_key, &contour_bytes, Some("application/geo+json")).await?;
+
+    let meta = serde_json::json!({
+        "type":"iso_extract_meta",
+        "mode":mode,
+        "interval":interval,
+        "levels":levels,
+        "breaks":breaks,
+        "z_base":z_base,
+        "z_scale":z_scale,
+        "source_surface_stats":{"min":vmin,"max":vmax}
+    });
+    let meta_bytes = serde_json::to_vec(&meta)?;
+    let meta_key = format!("graphs/{}/nodes/{}/iso_meta.json", job.graph_id, job.node_id);
+    let meta_ref = write_artifact(ctx, &meta_key, &meta_bytes, Some("application/json")).await?;
+
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![contour_ref.clone(), meta_ref.clone()],
+        content_hashes: vec![contour_ref.content_hash, meta_ref.content_hash],
+        error_message: None,
+    })
+}
+
+/// Fit / nudge DEM-like `surface_grid` against control points with known XYZ.
+pub async fn run_terrain_adjust(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let fit_mode = job
+        .output_spec
+        .pointer("/node_ui/fit_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("vertical_bias");
+    let manual_dx = job
+        .output_spec
+        .pointer("/node_ui/manual_shift_x")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let manual_dy = job
+        .output_spec
+        .pointer("/node_ui/manual_shift_y")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let mut grid_root: Option<serde_json::Value> = None;
+    let mut control_points: Vec<XYZ> = Vec::new();
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        let has_grid = v.get("surface_grid").is_some();
+        if grid_root.is_none() && has_grid {
+            grid_root = Some(v.clone());
+        }
+        if !has_grid {
+            control_points.extend(collect_xyz_points(&v));
+        }
+    }
+    let Some(root) = grid_root else {
+        return Err(NodeError::InvalidConfig(
+            "terrain_adjust requires upstream artifact with surface_grid".into(),
+        ));
+    };
+    let Some(grid) = root.get("surface_grid").and_then(|g| g.as_object()) else {
+        return Err(NodeError::InvalidConfig("surface_grid missing".into()));
+    };
+    let nx = grid.get("nx").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let ny = grid.get("ny").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let xmin = grid.get("xmin").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let xmax = grid.get("xmax").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let ymin = grid.get("ymin").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let ymax = grid.get("ymax").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let values_raw = grid
+        .get("values")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if nx < 2 || ny < 2 || values_raw.len() != nx * ny {
+        return Err(NodeError::InvalidConfig(
+            "surface_grid dimensions invalid for terrain_adjust".into(),
+        ));
+    }
+    let values: Vec<Option<f64>> = values_raw.iter().map(|v| v.as_f64()).collect();
+
+    let mut matched: Vec<(XYZ, f64)> = Vec::new();
+    for cp in &control_points {
+        if let Some(pred) = bilinear_from_grid(nx, ny, xmin, xmax, ymin, ymax, &values, cp.x, cp.y) {
+            matched.push((*cp, pred));
+        }
+    }
+    if matched.len() < 3 {
+        return Err(NodeError::InvalidConfig(
+            "terrain_adjust needs at least 3 control points overlapping the DEM extent".into(),
+        ));
+    }
+
+    let mut sum_r = 0.0;
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    let mut sum_xx = 0.0;
+    let mut sum_yy = 0.0;
+    let mut sum_xy = 0.0;
+    let mut sum_xr = 0.0;
+    let mut sum_yr = 0.0;
+    let n = matched.len() as f64;
+    let cx = matched.iter().map(|m| m.0.x).sum::<f64>() / n;
+    let cy = matched.iter().map(|m| m.0.y).sum::<f64>() / n;
+    let mut rmse_before_acc = 0.0;
+    for (cp, pred) in &matched {
+        let rx = cp.x - cx;
+        let ry = cp.y - cy;
+        let r = cp.z - *pred;
+        rmse_before_acc += r * r;
+        sum_r += r;
+        sum_x += rx;
+        sum_y += ry;
+        sum_xx += rx * rx;
+        sum_yy += ry * ry;
+        sum_xy += rx * ry;
+        sum_xr += rx * r;
+        sum_yr += ry * r;
+    }
+    let rmse_before = (rmse_before_acc / n).sqrt();
+
+    let mut dz = sum_r / n;
+    let mut ax = 0.0;
+    let mut ay = 0.0;
+    if fit_mode == "affine_xy_z" {
+        let det = sum_xx * sum_yy - sum_xy * sum_xy;
+        if det.abs() > 1e-9 {
+            ax = (sum_xr * sum_yy - sum_yr * sum_xy) / det;
+            ay = (sum_yr * sum_xx - sum_xr * sum_xy) / det;
+        }
+        dz = (sum_r - ax * sum_x - ay * sum_y) / n;
+    }
+
+    let dx = manual_dx;
+    let dy = manual_dy;
+    let mut adjusted_values: Vec<Option<f64>> = Vec::with_capacity(values.len());
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let idx = iy * nx + ix;
+            let Some(v0) = values[idx] else {
+                adjusted_values.push(None);
+                continue;
+            };
+            let x = xmin + (ix as f64 + 0.5) / (nx as f64) * (xmax - xmin).max(1e-9);
+            let y = ymin + (iy as f64 + 0.5) / (ny as f64) * (ymax - ymin).max(1e-9);
+            let corr = dz + ax * (x - cx) + ay * (y - cy);
+            adjusted_values.push(Some(v0 + corr));
+        }
+    }
+
+    let mut rmse_after_acc = 0.0;
+    for (cp, pred) in &matched {
+        let corr = dz + ax * (cp.x - cx) + ay * (cp.y - cy);
+        let after = cp.z - (*pred + corr);
+        rmse_after_acc += after * after;
+    }
+    let rmse_after = (rmse_after_acc / n).sqrt();
+
+    let out = serde_json::json!({
+        "type":"terrain_adjusted",
+        "fit_mode":fit_mode,
+        "display_contract": {
+            "renderer":"terrain",
+            "editable":["visible","opacity"]
+        },
+        "adjustment":{
+            "dx":dx,
+            "dy":dy,
+            "dz":dz,
+            "tilt_x":ax,
+            "tilt_y":ay,
+            "origin":[cx,cy]
+        },
+        "qc":{
+            "control_points_used": matched.len(),
+            "rmse_before": rmse_before,
+            "rmse_after": rmse_after
+        },
+        "surface_grid":{
+            "nx":nx,
+            "ny":ny,
+            "xmin":xmin + dx,
+            "xmax":xmax + dx,
+            "ymin":ymin + dy,
+            "ymax":ymax + dy,
+            "values":adjusted_values
+        },
+        "control_points": matched.iter().map(|(cp,pred)|{
+            let corr = dz + ax * (cp.x - cx) + ay * (cp.y - cy);
+            serde_json::json!({
+                "x":cp.x + dx,
+                "y":cp.y + dy,
+                "z_obs":cp.z,
+                "z_dem_before":pred,
+                "z_dem_after": pred + corr,
+                "residual_before": cp.z - pred,
+                "residual_after": cp.z - (pred + corr)
+            })
+        }).collect::<Vec<_>>()
+    });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!(
+        "graphs/{}/nodes/{}/terrain_adjusted.json",
+        job.graph_id, job.node_id
+    );
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
         error_message: None,
     })
 }

@@ -44,6 +44,9 @@ Assessment date: 2026-04-01.
 - Web 2D viewer now consumes manifest presentation metadata first (with legacy fallback parsing), reducing UI-specific rendering drift.
 - Added `plan_view_3d` node type and runtime support (`mine-eye-nodes` executor + worker artifact output).
 - Added web `Map3DPanel` (Cesium) using viewer manifest + wired input artifacts to render terrain baseline, drill traces, grade segments, and assay points with persisted layer/measure/palette controls.
+- Added `terrain_adjust` node for control-point DEM nudging (vertical bias + affine XY/Z fit), with QC residual metrics and adjusted terrain output.
+- Added `surface_iso_extract` node for contour extraction from `surface_grid`, including 3D Z projection controls.
+- Extended 3D viewer controls with display-only radius scaling and contour/terrain overlay toggles.
 
 ---
 

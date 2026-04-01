@@ -191,3 +191,14 @@ A visualisation node with **inputs only**. The 2D map **must not** infer data fr
 - `plan_view_2d`: plan map with Esri basemap and layered overlays from wired inputs.
 - `plan_view_3d`: 3D scene with terrain + imagery baseline and layered traces/segments/samples from wired inputs.
 - Both are manual recompute visualisation nodes and support persisted viewer UI state in node params (`ui`).
+
+### 19. Terrain + Iso Helpers (V1)
+
+- `terrain_adjust` transform:
+  - input: `surface_grid` terrain + control-point XYZ datasets
+  - fit modes: `vertical_bias`, `affine_xy_z`
+  - output: adjusted terrain surface + QC metrics (`rmse_before`, `rmse_after`) and fit metadata.
+- `surface_iso_extract` transform:
+  - input: `surface_grid`
+  - output: contour/iso artifacts (GeoJSON) with optional 3D Z projection (`z_base`, `z_scale`) for scene overlays.
+- 3D viewer keeps geometry canonical and applies visual-only radius scaling in persisted viewer UI config.

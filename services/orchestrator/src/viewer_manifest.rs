@@ -116,10 +116,13 @@ async fn layer_presentation_from_artifact(
     } else if sk == "drillhole_model" && lower.contains("drillhole_meshes") {
         out["renderer"] = serde_json::json!("grade_segments");
         out["editable"] = serde_json::json!(["visible", "opacity", "width", "measure", "palette"]);
+    } else if sk == "surface_iso_extract" || lower.contains("iso_contours") {
+        out["renderer"] = serde_json::json!("contour_lines");
+        out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
     } else if lower.contains("assay_points") || sk == "assay_ingest" {
         out["renderer"] = serde_json::json!("sample_points");
         out["editable"] = serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
-    } else if sk == "dem_integrate" || lower.contains("dem") {
+    } else if sk == "terrain_adjust" || sk == "dem_integrate" || lower.contains("dem") || lower.contains("terrain_adjusted") {
         out["renderer"] = serde_json::json!("terrain");
         out["editable"] = serde_json::json!(["visible", "opacity"]);
     }

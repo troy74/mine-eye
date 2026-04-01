@@ -60,6 +60,8 @@ export function NodeInspector({
   const kind = node.config.kind;
   const csvCapable = isAcquisitionCsvKind(kind);
   const isHeatmapNode = kind === "assay_heatmap";
+  const isTerrainAdjustNode = kind === "terrain_adjust";
+  const isIsoExtractNode = kind === "surface_iso_extract";
 
   const initialUi = useMemo(() => getUiParams(node), [node]);
 
@@ -211,6 +213,32 @@ export function NodeInspector({
         : "4326"
   );
   const [heatMeasureOptions, setHeatMeasureOptions] = useState<string[]>([]);
+  const [terrainFitMode, setTerrainFitMode] = useState<string>(
+    () => (typeof initialUi.fit_mode === "string" ? initialUi.fit_mode : "vertical_bias")
+  );
+  const [terrainShiftX, setTerrainShiftX] = useState<string>(
+    () =>
+      typeof initialUi.manual_shift_x === "number" ? String(initialUi.manual_shift_x) : "0"
+  );
+  const [terrainShiftY, setTerrainShiftY] = useState<string>(
+    () =>
+      typeof initialUi.manual_shift_y === "number" ? String(initialUi.manual_shift_y) : "0"
+  );
+  const [isoMode, setIsoMode] = useState<string>(
+    () => (typeof initialUi.mode === "string" ? initialUi.mode : "fixed_interval")
+  );
+  const [isoInterval, setIsoInterval] = useState<string>(
+    () => (typeof initialUi.interval === "number" ? String(initialUi.interval) : "1")
+  );
+  const [isoLevels, setIsoLevels] = useState<string>(
+    () => (typeof initialUi.levels === "number" ? String(initialUi.levels) : "10")
+  );
+  const [isoZBase, setIsoZBase] = useState<string>(
+    () => (typeof initialUi.z_base === "number" ? String(initialUi.z_base) : "0")
+  );
+  const [isoZScale, setIsoZScale] = useState<string>(
+    () => (typeof initialUi.z_scale === "number" ? String(initialUi.z_scale) : "1")
+  );
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -302,6 +330,20 @@ export function NodeInspector({
     setHeatOutputCustomEpsg(
       typeof u.output_crs_epsg === "number" ? String(u.output_crs_epsg) : "4326"
     );
+    setTerrainFitMode(
+      typeof u.fit_mode === "string" ? u.fit_mode : "vertical_bias"
+    );
+    setTerrainShiftX(
+      typeof u.manual_shift_x === "number" ? String(u.manual_shift_x) : "0"
+    );
+    setTerrainShiftY(
+      typeof u.manual_shift_y === "number" ? String(u.manual_shift_y) : "0"
+    );
+    setIsoMode(typeof u.mode === "string" ? u.mode : "fixed_interval");
+    setIsoInterval(typeof u.interval === "number" ? String(u.interval) : "1");
+    setIsoLevels(typeof u.levels === "number" ? String(u.levels) : "10");
+    setIsoZBase(typeof u.z_base === "number" ? String(u.z_base) : "0");
+    setIsoZScale(typeof u.z_scale === "number" ? String(u.z_scale) : "1");
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -467,6 +509,16 @@ export function NodeInspector({
         heatOutputCrsMode === "custom"
           ? Math.max(1, Math.trunc(n(heatOutputCustomEpsg, 4326)))
           : undefined;
+    } else if (isTerrainAdjustNode) {
+      ui.fit_mode = terrainFitMode;
+      ui.manual_shift_x = n(terrainShiftX, 0);
+      ui.manual_shift_y = n(terrainShiftY, 0);
+    } else if (isIsoExtractNode) {
+      ui.mode = isoMode;
+      ui.interval = Math.max(0.000001, n(isoInterval, 1));
+      ui.levels = Math.max(2, Math.trunc(n(isoLevels, 10)));
+      ui.z_base = n(isoZBase, 0);
+      ui.z_scale = n(isoZScale, 1);
     }
     if (kind === "collar_ingest") {
       ui.output_crs_mode = outputCrsMode;
@@ -514,6 +566,16 @@ export function NodeInspector({
     heatGradientMode,
     heatOutputCrsMode,
     heatOutputCustomEpsg,
+    isTerrainAdjustNode,
+    terrainFitMode,
+    terrainShiftX,
+    terrainShiftY,
+    isIsoExtractNode,
+    isoMode,
+    isoInterval,
+    isoLevels,
+    isoZBase,
+    isoZScale,
     graphId,
     activeBranchId,
     node.id,
@@ -614,15 +676,18 @@ export function NodeInspector({
       ["summary", "Summary"],
       ["diagnostics", "Run"],
     ];
-    if (isHeatmapNode) {
-      base.push(["config", "Heatmap"]);
+    if (isHeatmapNode || isTerrainAdjustNode || isIsoExtractNode) {
+      base.push([
+        "config",
+        isHeatmapNode ? "Heatmap" : isTerrainAdjustNode ? "Terrain fit" : "Iso extract",
+      ]);
     }
     if (csvCapable) {
       base.push(["mapping", "Mapping"], ["crs", "CRS"]);
     }
     base.push(["output", "Output"]);
     return base;
-  }, [csvCapable, isHeatmapNode]);
+  }, [csvCapable, isHeatmapNode, isTerrainAdjustNode, isIsoExtractNode]);
 
   useEffect(() => {
     if (tabs.some(([k]) => k === tab)) return;
@@ -698,6 +763,18 @@ export function NodeInspector({
               <p style={{ opacity: 0.75 }}>
                 Use <strong>Heatmap</strong> to tune interpolation method, cutoffs, transforms,
                 contour strategy, and gradient options.
+              </p>
+            )}
+            {isTerrainAdjustNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>Terrain fit</strong> to bias/tilt DEM surfaces toward control points
+                (collars or other ground-truth XYZ), with optional XY shift.
+              </p>
+            )}
+            {isIsoExtractNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>Iso extract</strong> to generate contour lines from a surface grid,
+                including 3D Z projection controls for scene overlays.
               </p>
             )}
             <p style={{ opacity: 0.7, marginTop: 14, fontSize: 11 }}>
@@ -1172,6 +1249,105 @@ export function NodeInspector({
                   />
                 </label>
               )}
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isTerrainAdjustNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Fit/nudge a DEM surface to control points with known XYZ.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Fit mode</span>
+                <select
+                  value={terrainFitMode}
+                  onChange={(e) => setTerrainFitMode(e.target.value)}
+                  style={sel}
+                >
+                  <option value="vertical_bias">Vertical bias only</option>
+                  <option value="affine_xy_z">Affine XY + Z tilt</option>
+                </select>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Manual shift X</span>
+                  <input
+                    type="number"
+                    value={terrainShiftX}
+                    onChange={(e) => setTerrainShiftX(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Manual shift Y</span>
+                  <input
+                    type="number"
+                    value={terrainShiftY}
+                    onChange={(e) => setTerrainShiftY(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isIsoExtractNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Extract contour lines / iso bands from a connected surface grid.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Break mode</span>
+                <select value={isoMode} onChange={(e) => setIsoMode(e.target.value)} style={sel}>
+                  <option value="fixed_interval">Fixed interval</option>
+                  <option value="quantile">Quantile</option>
+                </select>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Interval</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={isoInterval}
+                    onChange={(e) => setIsoInterval(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Levels (quantile)</span>
+                  <input
+                    type="number"
+                    value={isoLevels}
+                    onChange={(e) => setIsoLevels(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>3D Z base</span>
+                  <input
+                    type="number"
+                    value={isoZBase}
+                    onChange={(e) => setIsoZBase(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>3D Z scale</span>
+                  <input
+                    type="number"
+                    value={isoZScale}
+                    onChange={(e) => setIsoZScale(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
             </div>
           </div>
         )}

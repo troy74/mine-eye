@@ -8,6 +8,7 @@ use crate::kinds::{
     run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
     run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_plan_view_2d, run_plan_view_3d,
+    run_surface_iso_extract, run_terrain_adjust,
     run_surface_sample_ingest, run_survey_ingest,
 };
 use crate::NodeError;
@@ -44,6 +45,8 @@ impl RegistryExecutor {
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
         inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
+        inner.insert("surface_iso_extract".into(), Arc::new(SurfaceIsoExtractExecutor));
+        inner.insert("terrain_adjust".into(), Arc::new(TerrainAdjustExecutor));
         inner.insert("drillhole_merge".into(), Arc::new(DrillholeMergeExecutor));
         inner.insert("drillhole_model".into(), Arc::new(DrillholeModelExecutor));
         inner.insert(
@@ -134,6 +137,32 @@ impl NodeExecutor for AssayHeatmapExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_assay_heatmap(ctx, job).await
+    }
+}
+
+struct SurfaceIsoExtractExecutor;
+
+#[async_trait]
+impl NodeExecutor for SurfaceIsoExtractExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_surface_iso_extract(ctx, job).await
+    }
+}
+
+struct TerrainAdjustExecutor;
+
+#[async_trait]
+impl NodeExecutor for TerrainAdjustExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_terrain_adjust(ctx, job).await
     }
 }
 

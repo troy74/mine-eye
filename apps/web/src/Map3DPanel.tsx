@@ -34,10 +34,18 @@ type Segment3D = {
   measures?: Record<string, number>;
 };
 
+type TerrainPoint = {
+  x: number;
+  y: number;
+  z: number;
+};
+
 type SceneData = {
   traces: Segment3D[];
   drillSegments: Segment3D[];
+  contourSegments: Segment3D[];
   assayPoints: Point3D[];
+  terrainPoints: TerrainPoint[];
   measureCandidates: string[];
   totalArtifacts: number;
 };
@@ -45,13 +53,17 @@ type SceneData = {
 type SceneUiState = {
   showTraces: boolean;
   showSegments: boolean;
+  showContours: boolean;
   showSamples: boolean;
+  showTerrain: boolean;
   selectedMeasure: string;
   palette: "inferno" | "viridis" | "turbo" | "red_blue";
   clampLowPct: number;
   clampHighPct: number;
+  radiusScale: number;
   traceWidth: number;
   segmentWidth: number;
+  contourWidth: number;
   sampleSize: number;
   panelCollapsed: boolean;
 };
@@ -59,13 +71,17 @@ type SceneUiState = {
 const DEFAULT_UI: SceneUiState = {
   showTraces: true,
   showSegments: true,
+  showContours: true,
   showSamples: true,
+  showTerrain: false,
   selectedMeasure: "",
   palette: "inferno",
   clampLowPct: 2,
   clampHighPct: 98,
+  radiusScale: 1,
   traceWidth: 2,
   segmentWidth: 4,
+  contourWidth: 1,
   sampleSize: 7,
   panelCollapsed: false,
 };
@@ -124,12 +140,21 @@ function parseSceneJson(
   try {
     root = JSON.parse(text) as unknown;
   } catch {
-    return { traces: [], drillSegments: [], assayPoints: [], measureCandidates: [] };
+    return {
+      traces: [],
+      drillSegments: [],
+      contourSegments: [],
+      assayPoints: [],
+      terrainPoints: [],
+      measureCandidates: [],
+    };
   }
 
   const traces: Segment3D[] = [];
   const drillSegments: Segment3D[] = [];
+  const contourSegments: Segment3D[] = [];
   const assayPoints: Point3D[] = [];
+  const terrainPoints: TerrainPoint[] = [];
   const measures = new Set<string>();
 
   const lowerKey = manifestLayer?.artifact_key.toLowerCase() ?? "";
@@ -254,16 +279,85 @@ function parseSceneJson(
         if (typeof m === "string" && m.trim().length) measures.add(m.trim());
       }
     }
+
+    const sg = obj.surface_grid;
+    if (sg && typeof sg === "object" && !Array.isArray(sg)) {
+      const sgo = sg as Record<string, unknown>;
+      const nx = n(sgo.nx);
+      const ny = n(sgo.ny);
+      const xmin = n(sgo.xmin);
+      const xmax = n(sgo.xmax);
+      const ymin = n(sgo.ymin);
+      const ymax = n(sgo.ymax);
+      const vals = Array.isArray(sgo.values) ? sgo.values : [];
+      if (
+        nx !== null &&
+        ny !== null &&
+        xmin !== null &&
+        xmax !== null &&
+        ymin !== null &&
+        ymax !== null &&
+        vals.length === Math.trunc(nx) * Math.trunc(ny)
+      ) {
+        const nxi = Math.max(2, Math.trunc(nx));
+        const nyi = Math.max(2, Math.trunc(ny));
+        const stepX = (xmax - xmin) / (nxi - 1);
+        const stepY = (ymax - ymin) / (nyi - 1);
+        const stride = Math.max(1, Math.floor(Math.max(nxi, nyi) / 32));
+        for (let iy = 0; iy < nyi; iy += stride) {
+          for (let ix = 0; ix < nxi; ix += stride) {
+            const idx = iy * nxi + ix;
+            const zv = n(vals[idx]);
+            if (zv === null) continue;
+            terrainPoints.push({
+              x: xmin + ix * stepX,
+              y: ymin + iy * stepY,
+              z: zv,
+            });
+          }
+        }
+      }
+    }
   }
 
   if (lowerKey.includes("trajectory")) {
     for (const seg of drillSegments.splice(0)) traces.push(seg);
   }
+  if (lowerKey.endsWith(".geojson")) {
+    const obj = root as Record<string, unknown>;
+    const features = Array.isArray(obj.features) ? obj.features : [];
+    for (const f of features) {
+      if (!f || typeof f !== "object" || Array.isArray(f)) continue;
+      const ff = f as Record<string, unknown>;
+      const g = ff.geometry;
+      if (!g || typeof g !== "object" || Array.isArray(g)) continue;
+      const gg = g as Record<string, unknown>;
+      if (gg.type !== "LineString") continue;
+      const coords = Array.isArray(gg.coordinates) ? gg.coordinates : [];
+      if (coords.length < 2) continue;
+      const p0 = coords[0];
+      const p1 = coords[coords.length - 1];
+      if (!Array.isArray(p0) || !Array.isArray(p1) || p0.length < 2 || p1.length < 2) continue;
+      const z0 = p0.length >= 3 ? n(p0[2]) ?? 0 : 0;
+      const z1 = p1.length >= 3 ? n(p1[2]) ?? z0 : z0;
+      const x0 = n(p0[0]);
+      const y0 = n(p0[1]);
+      const x1 = n(p1[0]);
+      const y1 = n(p1[1]);
+      if (x0 === null || y0 === null || x1 === null || y1 === null) continue;
+      contourSegments.push({
+        from: [x0, y0, z0],
+        to: [x1, y1, z1],
+      });
+    }
+  }
 
   return {
     traces,
     drillSegments,
+    contourSegments,
     assayPoints,
+    terrainPoints,
     measureCandidates: [...measures].sort(),
   };
 }
@@ -377,7 +471,9 @@ export function Map3DPanel({
   const [sceneData, setSceneData] = useState<SceneData>({
     traces: [],
     drillSegments: [],
+    contourSegments: [],
     assayPoints: [],
+    terrainPoints: [],
     measureCandidates: [],
     totalArtifacts: 0,
   });
@@ -468,7 +564,9 @@ export function Map3DPanel({
         setUi({
           showTraces: uiRaw.show_traces !== false,
           showSegments: uiRaw.show_segments !== false,
+          showContours: uiRaw.show_contours !== false,
           showSamples: uiRaw.show_samples !== false,
+          showTerrain: uiRaw.show_terrain === true,
           selectedMeasure:
             typeof uiRaw.selected_measure === "string" ? uiRaw.selected_measure : "",
           palette:
@@ -484,12 +582,18 @@ export function Map3DPanel({
             typeof uiRaw.clamp_high_pct === "number"
               ? uiRaw.clamp_high_pct
               : DEFAULT_UI.clampHighPct,
+          radiusScale:
+            typeof uiRaw.radius_scale === "number" ? uiRaw.radius_scale : DEFAULT_UI.radiusScale,
           traceWidth:
             typeof uiRaw.trace_width === "number" ? uiRaw.trace_width : DEFAULT_UI.traceWidth,
           segmentWidth:
             typeof uiRaw.segment_width === "number"
               ? uiRaw.segment_width
               : DEFAULT_UI.segmentWidth,
+          contourWidth:
+            typeof uiRaw.contour_width === "number"
+              ? uiRaw.contour_width
+              : DEFAULT_UI.contourWidth,
           sampleSize:
             typeof uiRaw.sample_size === "number" ? uiRaw.sample_size : DEFAULT_UI.sampleSize,
           panelCollapsed: uiRaw.panel_collapsed === true,
@@ -514,13 +618,17 @@ export function Map3DPanel({
       const uiPatch: Record<string, unknown> = {
         show_traces: ui.showTraces,
         show_segments: ui.showSegments,
+        show_contours: ui.showContours,
         show_samples: ui.showSamples,
+        show_terrain: ui.showTerrain,
         selected_measure: ui.selectedMeasure,
         palette: ui.palette,
         clamp_low_pct: ui.clampLowPct,
         clamp_high_pct: ui.clampHighPct,
+        radius_scale: ui.radiusScale,
         trace_width: ui.traceWidth,
         segment_width: ui.segmentWidth,
+        contour_width: ui.contourWidth,
         sample_size: ui.sampleSize,
         panel_collapsed: ui.panelCollapsed,
       };
@@ -602,7 +710,9 @@ export function Map3DPanel({
       setSceneData({
         traces: [],
         drillSegments: [],
+        contourSegments: [],
         assayPoints: [],
+        terrainPoints: [],
         measureCandidates: [],
         totalArtifacts: 0,
       });
@@ -619,7 +729,9 @@ export function Map3DPanel({
         setSceneData({
           traces: [],
           drillSegments: [],
+          contourSegments: [],
           assayPoints: [],
+          terrainPoints: [],
           measureCandidates: [],
           totalArtifacts: 0,
         });
@@ -638,7 +750,9 @@ export function Map3DPanel({
 
       const allTraces: Segment3D[] = [];
       const allSegs: Segment3D[] = [];
+      const allContours: Segment3D[] = [];
       const allPoints: Point3D[] = [];
+      const allTerrain: TerrainPoint[] = [];
       const allMeasures = new Set<string>();
       let loaded = 0;
 
@@ -654,7 +768,9 @@ export function Map3DPanel({
           loaded += 1;
           allTraces.push(...parsed.traces);
           allSegs.push(...parsed.drillSegments);
+          allContours.push(...parsed.contourSegments);
           allPoints.push(...parsed.assayPoints);
+          allTerrain.push(...parsed.terrainPoints);
           for (const m of parsed.measureCandidates) allMeasures.add(m);
         } catch {
           /* ignore bad artifact */
@@ -664,12 +780,14 @@ export function Map3DPanel({
       setSceneData({
         traces: allTraces,
         drillSegments: allSegs,
+        contourSegments: allContours,
         assayPoints: allPoints,
+        terrainPoints: allTerrain,
         measureCandidates: [...allMeasures].sort(),
         totalArtifacts: loaded,
       });
       setStatus(
-        `${allTraces.length + allSegs.length} segment(s), ${allPoints.length} point(s) from ${loaded} artifact(s).`
+        `${allTraces.length + allSegs.length + allContours.length} line segment(s), ${allPoints.length} point(s), ${allTerrain.length} terrain samples from ${loaded} artifact(s).`
       );
     })();
     return () => {
@@ -726,6 +844,7 @@ export function Map3DPanel({
 
       const coordsForFit: Array<[number, number, number]> = [];
       let idx = 0;
+      const widthScale = Math.max(0.1, ui.radiusScale);
 
       if (ui.showTraces) {
         for (const s of sceneData.traces) {
@@ -746,7 +865,7 @@ export function Map3DPanel({
                 ll1[1],
                 s.to[2],
               ]),
-              width: Math.max(1, ui.traceWidth),
+              width: Math.max(1, ui.traceWidth * widthScale),
               material: Cesium.Color.fromBytes(88, 166, 255, 230),
               clampToGround: false,
             },
@@ -778,8 +897,36 @@ export function Map3DPanel({
                 ll1[1],
                 s.to[2],
               ]),
-              width: Math.max(1, ui.segmentWidth),
+              width: Math.max(1, ui.segmentWidth * widthScale),
               material: toColor(mVal, 0.95),
+              clampToGround: false,
+            },
+          });
+          renderedEntityIdsRef.current.push(id);
+        }
+      }
+
+      if (ui.showContours) {
+        for (const s of sceneData.contourSegments) {
+          const ll0 = await toLonLat(projectEpsg, s.from[0], s.from[1]);
+          const ll1 = await toLonLat(projectEpsg, s.to[0], s.to[1]);
+          if (cancelled || !ll0 || !ll1) continue;
+          coordsForFit.push([ll0[0], ll0[1], s.from[2]]);
+          coordsForFit.push([ll1[0], ll1[1], s.to[2]]);
+          const id = `ctr-${idx++}`;
+          viewer.entities.add({
+            id,
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+                ll0[0],
+                ll0[1],
+                s.from[2],
+                ll1[0],
+                ll1[1],
+                s.to[2],
+              ]),
+              width: Math.max(1, ui.contourWidth * widthScale),
+              material: Cesium.Color.fromBytes(255, 196, 64, 210),
               clampToGround: false,
             },
           });
@@ -801,10 +948,29 @@ export function Map3DPanel({
             id,
             position: Cesium.Cartesian3.fromDegrees(ll[0], ll[1], p.z),
             point: {
-              pixelSize: Math.max(2, ui.sampleSize),
+              pixelSize: Math.max(2, ui.sampleSize * widthScale),
               color: toColor(mVal, 0.9),
               outlineColor: Cesium.Color.BLACK.withAlpha(0.65),
               outlineWidth: 1,
+              disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            },
+          });
+          renderedEntityIdsRef.current.push(id);
+        }
+      }
+
+      if (ui.showTerrain) {
+        for (const p of sceneData.terrainPoints) {
+          const ll = await toLonLat(projectEpsg, p.x, p.y);
+          if (cancelled || !ll) continue;
+          coordsForFit.push([ll[0], ll[1], p.z]);
+          const id = `ter-${idx++}`;
+          viewer.entities.add({
+            id,
+            position: Cesium.Cartesian3.fromDegrees(ll[0], ll[1], p.z),
+            point: {
+              pixelSize: 2,
+              color: Cesium.Color.fromBytes(222, 226, 230, 110),
               disableDepthTestDistance: Number.POSITIVE_INFINITY,
             },
           });
@@ -816,7 +982,9 @@ export function Map3DPanel({
         a: sceneData.totalArtifacts,
         t: sceneData.traces.length,
         s: sceneData.drillSegments.length,
+        c: sceneData.contourSegments.length,
         p: sceneData.assayPoints.length,
+        g: sceneData.terrainPoints.length,
         m: measure,
       });
       const shouldFit = !cameraMoved && renderedHashRef.current !== renderHash && coordsForFit.length > 0;
@@ -929,7 +1097,9 @@ export function Map3DPanel({
                 <div style={{ fontWeight: 700 }}>Layers</div>
                 <label><input type="checkbox" checked={ui.showTraces} onChange={(e) => setUi((p) => ({ ...p, showTraces: e.target.checked }))} /> Trajectories</label>
                 <label><input type="checkbox" checked={ui.showSegments} onChange={(e) => setUi((p) => ({ ...p, showSegments: e.target.checked }))} /> Grade segments</label>
+                <label><input type="checkbox" checked={ui.showContours} onChange={(e) => setUi((p) => ({ ...p, showContours: e.target.checked }))} /> Contours / iso lines</label>
                 <label><input type="checkbox" checked={ui.showSamples} onChange={(e) => setUi((p) => ({ ...p, showSamples: e.target.checked }))} /> Assay points</label>
+                <label><input type="checkbox" checked={ui.showTerrain} onChange={(e) => setUi((p) => ({ ...p, showTerrain: e.target.checked }))} /> Terrain points (from surface grids)</label>
 
                 <div style={{ marginTop: 8, fontWeight: 700 }}>Measure</div>
                 <select
@@ -989,6 +1159,17 @@ export function Map3DPanel({
                 </label>
 
                 <label>
+                  Radius scale
+                  <input
+                    type="range"
+                    min={0.25}
+                    max={4}
+                    step={0.05}
+                    value={ui.radiusScale}
+                    onChange={(e) => setUi((p) => ({ ...p, radiusScale: Number(e.target.value) || 1 }))}
+                  />
+                </label>
+                <label>
                   Trace width
                   <input
                     type="range"
@@ -1008,6 +1189,17 @@ export function Map3DPanel({
                     step={1}
                     value={ui.segmentWidth}
                     onChange={(e) => setUi((p) => ({ ...p, segmentWidth: Number(e.target.value) || 4 }))}
+                  />
+                </label>
+                <label>
+                  Contour width
+                  <input
+                    type="range"
+                    min={1}
+                    max={8}
+                    step={1}
+                    value={ui.contourWidth}
+                    onChange={(e) => setUi((p) => ({ ...p, contourWidth: Number(e.target.value) || 1 }))}
                   />
                 </label>
                 <label>
