@@ -3,6 +3,7 @@ import "leaflet/dist/leaflet.css";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   api,
+  fetchViewerManifest,
   fetchGraph,
   patchNodeParams,
   type ApiEdge,
@@ -359,6 +360,7 @@ export function Map2DPanel({
   const mapRef = useRef<L.Map | null>(null);
   const [status, setStatus] = useState("");
   const [sourceData, setSourceData] = useState<SourceData[]>([]);
+  const [manifestArtifacts, setManifestArtifacts] = useState<ArtifactEntry[]>([]);
   const [layers, setLayers] = useState<SourceLayerConfig[]>([]);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -419,6 +421,32 @@ export function Map2DPanel({
     () => (viewerNodeId ? upstreamSourcesForViewer(edges, viewerNodeId) : []),
     [edges, viewerNodeId]
   );
+
+  useEffect(() => {
+    if (!graphId || !viewerNodeId) {
+      setManifestArtifacts([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const mf = await fetchViewerManifest(graphId, viewerNodeId);
+        if (cancelled) return;
+        const arts: ArtifactEntry[] = mf.layers.map((l) => ({
+          node_id: l.source_node_id,
+          key: l.artifact_key,
+          url: l.artifact_url,
+          content_hash: l.content_hash,
+        }));
+        setManifestArtifacts(arts);
+      } catch {
+        if (!cancelled) setManifestArtifacts([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [artifacts, graphId, viewerNodeId]);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -600,7 +628,8 @@ export function Map2DPanel({
     }
 
     const upstreamIds = new Set(inputLinks.map((x) => x.fromNode));
-    const arts = jsonArtifactsForNodes(graphId, artifacts, upstreamIds);
+    const fallbackArts = jsonArtifactsForNodes(graphId, artifacts, upstreamIds);
+    const arts = manifestArtifacts.length > 0 ? manifestArtifacts : fallbackArts;
     const artSig = arts
       .map((a) => `${a.key}:${a.content_hash}`)
       .sort((a, b) => a.localeCompare(b))
@@ -717,7 +746,7 @@ export function Map2DPanel({
         loadInFlightRef.current = false;
       }
     });
-  }, [graphId, viewerNodeId, artifacts, inputLinks, sourceData.length]);
+  }, [graphId, viewerNodeId, artifacts, manifestArtifacts, inputLinks, sourceData.length]);
 
   useEffect(() => {
     if (sourceData.length === 0) return;

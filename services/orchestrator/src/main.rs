@@ -112,6 +112,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphs/{graph_id}/edges/{edge_id}", delete(delete_edge))
         .route("/graphs/{graph_id}/run", post(run_graph))
         .route("/graphs/{graph_id}/artifacts", get(list_artifacts))
+        .route(
+            "/graphs/{graph_id}/viewers/{viewer_node_id}/manifest",
+            get(get_viewer_manifest),
+        )
         .route("/graphs/{graph_id}/ai/suggest", post(ai_suggest))
         .route(
             "/graphs/{graph_id}/ai/suggestions",
@@ -1369,6 +1373,30 @@ struct ArtifactEntry {
     content_hash: String,
 }
 
+#[derive(Serialize)]
+struct ViewerManifestLayer {
+    source_node_id: Uuid,
+    source_node_kind: String,
+    edge_id: Uuid,
+    semantic_type: String,
+    from_port: String,
+    to_port: String,
+    artifact_key: String,
+    artifact_url: String,
+    content_hash: String,
+    media_type: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ViewerManifest {
+    graph_id: Uuid,
+    viewer_node_id: Uuid,
+    viewer_node_kind: String,
+    manifest_version: u32,
+    viewer_ui: serde_json::Value,
+    layers: Vec<ViewerManifestLayer>,
+}
+
 async fn list_artifacts(
     State(s): State<AppState>,
     Path(graph_id): Path<Uuid>,
@@ -1395,6 +1423,77 @@ async fn list_artifacts(
         }
     }
     Ok(Json(out))
+}
+
+async fn get_viewer_manifest(
+    State(s): State<AppState>,
+    Path((graph_id, viewer_node_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ViewerManifest>, (StatusCode, String)> {
+    let snap = s
+        .store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let viewer = snap.nodes.get(&viewer_node_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("viewer node not found: {}", viewer_node_id),
+        )
+    })?;
+    let viewer_ui = viewer
+        .config
+        .params
+        .get("ui")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let mut layers: Vec<ViewerManifestLayer> = Vec::new();
+    for edge in snap.edges.iter().filter(|e| e.to_node == viewer_node_id) {
+        let source_kind = snap
+            .nodes
+            .get(&edge.from_node)
+            .map(|n| n.config.kind.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        let rows = s
+            .store
+            .list_artifacts_for_node(edge.from_node)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        for (key, hash, media_type) in rows {
+            let lower = key.to_ascii_lowercase();
+            if !(lower.ends_with(".json") || lower.ends_with(".geojson")) {
+                continue;
+            }
+            layers.push(ViewerManifestLayer {
+                source_node_id: edge.from_node,
+                source_node_kind: source_kind.clone(),
+                edge_id: edge.id,
+                semantic_type: format!("{:?}", edge.semantic_type).to_ascii_lowercase(),
+                from_port: edge.from_port.clone(),
+                to_port: edge.to_port.clone(),
+                artifact_key: key.clone(),
+                artifact_url: format!("/files/{}", key),
+                content_hash: hash,
+                media_type,
+            });
+        }
+    }
+    layers.sort_by(|a, b| {
+        a.to_port
+            .cmp(&b.to_port)
+            .then_with(|| a.source_node_kind.cmp(&b.source_node_kind))
+            .then_with(|| a.artifact_key.cmp(&b.artifact_key))
+    });
+
+    Ok(Json(ViewerManifest {
+        graph_id,
+        viewer_node_id,
+        viewer_node_kind: viewer.config.kind.clone(),
+        manifest_version: 1,
+        viewer_ui,
+        layers,
+    }))
 }
 
 #[derive(Deserialize)]

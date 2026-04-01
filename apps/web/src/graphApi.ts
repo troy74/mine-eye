@@ -98,6 +98,28 @@ export type GraphResponse = {
   edges: ApiEdge[];
 };
 
+export type ViewerManifestLayer = {
+  source_node_id: string;
+  source_node_kind: string;
+  edge_id: string;
+  semantic_type: string;
+  from_port: string;
+  to_port: string;
+  artifact_key: string;
+  artifact_url: string;
+  content_hash: string;
+  media_type?: string | null;
+};
+
+export type ViewerManifestResponse = {
+  graph_id: string;
+  viewer_node_id: string;
+  viewer_node_kind: string;
+  manifest_version: number;
+  viewer_ui: Record<string, unknown>;
+  layers: ViewerManifestLayer[];
+};
+
 export const api = (path: string) => `/api${path}`;
 
 /** One row from `GET /graphs/:id/artifacts` (same paths the worker writes under). */
@@ -503,4 +525,13 @@ export async function deleteGraphEdge(
     method: "DELETE",
   });
   if (!r.ok) throw new Error((await r.text()) || `Delete edge ${r.status}`);
+}
+
+export async function fetchViewerManifest(
+  graphId: string,
+  viewerNodeId: string
+): Promise<ViewerManifestResponse> {
+  const r = await fetch(api(`/graphs/${graphId}/viewers/${viewerNodeId}/manifest`));
+  if (!r.ok) throw new Error((await r.text()) || `Viewer manifest ${r.status}`);
+  return (await r.json()) as ViewerManifestResponse;
 }
