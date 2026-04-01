@@ -11,6 +11,11 @@ import {
 import { isSceneViewInputSemantic } from "./portTaxonomy";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 
+const CESIUM_TOKEN =
+  (import.meta.env.CESIUM_TOKEN as string | undefined) ??
+  (import.meta.env.VITE_CESIUM_TOKEN as string | undefined) ??
+  "";
+
 type Props = {
   graphId: string | null;
   activeBranchId?: string | null;
@@ -656,6 +661,9 @@ export function Map3DPanel({
         (window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL =
           "https://cdn.jsdelivr.net/npm/cesium@latest/Build/Cesium";
         const Cesium = await import("cesium");
+        if (CESIUM_TOKEN.trim().length > 0) {
+          Cesium.Ion.defaultAccessToken = CESIUM_TOKEN.trim();
+        }
         if (cancelled || !containerRef.current) return;
         cesiumRef.current = Cesium;
 
@@ -686,7 +694,11 @@ export function Map3DPanel({
         viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
         viewer.camera.moveStart.addEventListener(() => setCameraMoved(true));
         viewerRef.current = viewer;
-        setStatus("3D viewer ready.");
+        setStatus(
+          CESIUM_TOKEN.trim().length > 0
+            ? "3D viewer ready."
+            : "3D viewer ready (no Cesium token detected; ion-backed features may be limited)."
+        );
       } catch (e) {
         setStatus(`3D init failed: ${e instanceof Error ? e.message : String(e)}`);
       }
