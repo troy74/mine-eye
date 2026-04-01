@@ -12,8 +12,10 @@ import { isPlanViewInputSemantic } from "./portTaxonomy";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 import {
   epsgFromCollarJson,
+  extractHeatmapConfigFromJson,
   extractMeasuredPlanPointsFromJson,
   extractPlanViewPointsFromJson,
+  type HeatmapConfigHint,
 } from "./spatialExtract";
 
 type Props = {
@@ -38,6 +40,7 @@ type SourceData = {
   label: string;
   points: RenderPoint[];
   measureNames: string[];
+  heatmapHint?: HeatmapConfigHint | null;
 };
 
 function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
@@ -98,6 +101,26 @@ function jsonArtifactsForNodes(
 }
 
 function defaultLayerForSource(s: SourceData): SourceLayerConfig {
+  const hint = s.heatmapHint ?? {};
+  const hintMeasure =
+    hint.measure && s.measureNames.includes(hint.measure) ? hint.measure : s.measureNames[0] ?? "";
+  const hintMethod = String(hint.method ?? "idw").toLowerCase();
+  const defaultSmoothness =
+    typeof hint.smoothness === "number" && Number.isFinite(hint.smoothness)
+      ? Math.max(128, Math.min(512, Math.trunc(hint.smoothness)))
+      : hintMethod === "kriging"
+        ? 384
+        : 256;
+  const defaultPower =
+    typeof hint.idwPower === "number" && Number.isFinite(hint.idwPower)
+      ? Math.max(1, Math.min(4, hint.idwPower))
+      : hintMethod === "nearest"
+        ? 1
+        : 2;
+  const defaultOpacity =
+    typeof hint.opacity === "number" && Number.isFinite(hint.opacity)
+      ? Math.max(0.1, Math.min(1, hint.opacity))
+      : 0.52;
   return {
     id: `src:${s.id}`,
     sourceId: s.id,
@@ -117,11 +140,11 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
       sizeMaxPx: 12,
     },
     heatmap: {
-      enabled: false,
-      measure: s.measureNames[0] ?? "",
-      opacity: 0.52,
-      smoothness: 256,
-      power: 2,
+      enabled: hintMeasure.length > 0,
+      measure: hintMeasure,
+      opacity: defaultOpacity,
+      smoothness: defaultSmoothness,
+      power: defaultPower,
     },
   };
 }
@@ -427,6 +450,7 @@ export function Map2DPanel({
           text,
           art.key.split("/").pop() ?? art.key
         );
+        const heatmapHint = extractHeatmapConfigFromJson(text);
         if (basic.length === 0 && measured.length === 0) continue;
 
         const mByXY = new Map<string, Record<string, number>>();
@@ -459,6 +483,7 @@ export function Map2DPanel({
           label: art.key.split("/").pop() ?? art.key,
           points,
           measureNames,
+          heatmapHint,
         });
         total += points.length;
       }

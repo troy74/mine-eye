@@ -58,6 +58,7 @@ export function NodeInspector({
 }: Props) {
   const kind = node.config.kind;
   const csvCapable = isAcquisitionCsvKind(kind);
+  const isHeatmapNode = kind === "assay_heatmap";
 
   const initialUi = useMemo(() => getUiParams(node), [node]);
 
@@ -107,6 +108,87 @@ export function NodeInspector({
   const [csvName, setCsvName] = useState<string>(
     () => (typeof initialUi.csv_filename === "string" ? initialUi.csv_filename : "")
   );
+  const [heatMeasure, setHeatMeasure] = useState<string>(
+    () => (typeof initialUi.measure === "string" ? initialUi.measure : "")
+  );
+  const [heatMethod, setHeatMethod] = useState<string>(
+    () => (typeof initialUi.method === "string" ? initialUi.method : "idw")
+  );
+  const [heatScale, setHeatScale] = useState<string>(
+    () => (typeof initialUi.scale === "string" ? initialUi.scale : "linear")
+  );
+  const [heatPalette, setHeatPalette] = useState<string>(
+    () => (typeof initialUi.palette === "string" ? initialUi.palette : "rainbow")
+  );
+  const [heatClampLow, setHeatClampLow] = useState<string>(
+    () =>
+      typeof initialUi.clamp_low_pct === "number"
+        ? String(initialUi.clamp_low_pct)
+        : "0"
+  );
+  const [heatClampHigh, setHeatClampHigh] = useState<string>(
+    () =>
+      typeof initialUi.clamp_high_pct === "number"
+        ? String(initialUi.clamp_high_pct)
+        : "100"
+  );
+  const [heatIdwPower, setHeatIdwPower] = useState<string>(
+    () => (typeof initialUi.idw_power === "number" ? String(initialUi.idw_power) : "2")
+  );
+  const [heatSmoothness, setHeatSmoothness] = useState<string>(
+    () =>
+      typeof initialUi.smoothness === "number" ? String(initialUi.smoothness) : "256"
+  );
+  const [heatRadius, setHeatRadius] = useState<string>(
+    () =>
+      typeof initialUi.search_radius_m === "number"
+        ? String(initialUi.search_radius_m)
+        : "0"
+  );
+  const [heatMinPoints, setHeatMinPoints] = useState<string>(
+    () => (typeof initialUi.min_points === "number" ? String(initialUi.min_points) : "3")
+  );
+  const [heatMaxPoints, setHeatMaxPoints] = useState<string>(
+    () => (typeof initialUi.max_points === "number" ? String(initialUi.max_points) : "32")
+  );
+  const [heatContoursEnabled, setHeatContoursEnabled] = useState<boolean>(
+    () => Boolean(initialUi.contours_enabled)
+  );
+  const [heatContourMode, setHeatContourMode] = useState<string>(
+    () =>
+      typeof initialUi.contour_mode === "string"
+        ? initialUi.contour_mode
+        : "fixed_interval"
+  );
+  const [heatContourInterval, setHeatContourInterval] = useState<string>(
+    () =>
+      typeof initialUi.contour_interval === "number"
+        ? String(initialUi.contour_interval)
+        : "1"
+  );
+  const [heatContourLevels, setHeatContourLevels] = useState<string>(
+    () =>
+      typeof initialUi.contour_levels === "number" ? String(initialUi.contour_levels) : "10"
+  );
+  const [heatGradientEnabled, setHeatGradientEnabled] = useState<boolean>(
+    () => Boolean(initialUi.gradient_enabled)
+  );
+  const [heatGradientMode, setHeatGradientMode] = useState<string>(
+    () =>
+      typeof initialUi.gradient_mode === "string" ? initialUi.gradient_mode : "magnitude"
+  );
+  const [heatOutputCrsMode, setHeatOutputCrsMode] = useState<string>(
+    () =>
+      typeof initialUi.output_crs_mode === "string"
+        ? initialUi.output_crs_mode
+        : "project"
+  );
+  const [heatOutputCustomEpsg, setHeatOutputCustomEpsg] = useState<string>(
+    () =>
+      typeof initialUi.output_crs_epsg === "number"
+        ? String(initialUi.output_crs_epsg)
+        : "4326"
+  );
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -146,6 +228,45 @@ export function NodeInspector({
       typeof oce === "number" && Number.isFinite(oce) ? String(oce) : "28355"
     );
     setCsvName(typeof u.csv_filename === "string" ? u.csv_filename : "");
+    setHeatMeasure(typeof u.measure === "string" ? u.measure : "");
+    setHeatMethod(typeof u.method === "string" ? u.method : "idw");
+    setHeatScale(typeof u.scale === "string" ? u.scale : "linear");
+    setHeatPalette(typeof u.palette === "string" ? u.palette : "rainbow");
+    setHeatClampLow(
+      typeof u.clamp_low_pct === "number" ? String(u.clamp_low_pct) : "0"
+    );
+    setHeatClampHigh(
+      typeof u.clamp_high_pct === "number" ? String(u.clamp_high_pct) : "100"
+    );
+    setHeatIdwPower(typeof u.idw_power === "number" ? String(u.idw_power) : "2");
+    setHeatSmoothness(
+      typeof u.smoothness === "number" ? String(u.smoothness) : "256"
+    );
+    setHeatRadius(
+      typeof u.search_radius_m === "number" ? String(u.search_radius_m) : "0"
+    );
+    setHeatMinPoints(typeof u.min_points === "number" ? String(u.min_points) : "3");
+    setHeatMaxPoints(typeof u.max_points === "number" ? String(u.max_points) : "32");
+    setHeatContoursEnabled(Boolean(u.contours_enabled));
+    setHeatContourMode(
+      typeof u.contour_mode === "string" ? u.contour_mode : "fixed_interval"
+    );
+    setHeatContourInterval(
+      typeof u.contour_interval === "number" ? String(u.contour_interval) : "1"
+    );
+    setHeatContourLevels(
+      typeof u.contour_levels === "number" ? String(u.contour_levels) : "10"
+    );
+    setHeatGradientEnabled(Boolean(u.gradient_enabled));
+    setHeatGradientMode(
+      typeof u.gradient_mode === "string" ? u.gradient_mode : "magnitude"
+    );
+    setHeatOutputCrsMode(
+      typeof u.output_crs_mode === "string" ? u.output_crs_mode : "project"
+    );
+    setHeatOutputCustomEpsg(
+      typeof u.output_crs_epsg === "number" ? String(u.output_crs_epsg) : "4326"
+    );
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -243,6 +364,34 @@ export function NodeInspector({
       csv_rows: csvRows,
       csv_preview_rows: csvRows.slice(0, 8),
     };
+    if (isHeatmapNode) {
+      const n = (v: string, fallback: number) => {
+        const x = Number(v);
+        return Number.isFinite(x) ? x : fallback;
+      };
+      ui.measure = heatMeasure.trim();
+      ui.method = heatMethod;
+      ui.scale = heatScale;
+      ui.palette = heatPalette;
+      ui.clamp_low_pct = Math.max(0, Math.min(100, n(heatClampLow, 0)));
+      ui.clamp_high_pct = Math.max(0, Math.min(100, n(heatClampHigh, 100)));
+      ui.idw_power = Math.max(1, Math.min(4, n(heatIdwPower, 2)));
+      ui.smoothness = Math.max(128, Math.min(512, Math.trunc(n(heatSmoothness, 256))));
+      ui.search_radius_m = Math.max(0, n(heatRadius, 0));
+      ui.min_points = Math.max(1, Math.trunc(n(heatMinPoints, 3)));
+      ui.max_points = Math.max(Math.trunc(n(heatMinPoints, 3)), Math.trunc(n(heatMaxPoints, 32)));
+      ui.contours_enabled = heatContoursEnabled;
+      ui.contour_mode = heatContourMode;
+      ui.contour_interval = Math.max(0.0001, n(heatContourInterval, 1));
+      ui.contour_levels = Math.max(2, Math.trunc(n(heatContourLevels, 10)));
+      ui.gradient_enabled = heatGradientEnabled;
+      ui.gradient_mode = heatGradientMode;
+      ui.output_crs_mode = heatOutputCrsMode;
+      ui.output_crs_epsg =
+        heatOutputCrsMode === "custom"
+          ? Math.max(1, Math.trunc(n(heatOutputCustomEpsg, 4326)))
+          : undefined;
+    }
     if (kind === "collar_ingest") {
       ui.output_crs_mode = outputCrsMode;
       ui.output_crs_epsg =
@@ -266,6 +415,26 @@ export function NodeInspector({
     headers,
     csvRows,
     previewRows,
+    isHeatmapNode,
+    heatMeasure,
+    heatMethod,
+    heatScale,
+    heatPalette,
+    heatClampLow,
+    heatClampHigh,
+    heatIdwPower,
+    heatSmoothness,
+    heatRadius,
+    heatMinPoints,
+    heatMaxPoints,
+    heatContoursEnabled,
+    heatContourMode,
+    heatContourInterval,
+    heatContourLevels,
+    heatGradientEnabled,
+    heatGradientMode,
+    heatOutputCrsMode,
+    heatOutputCustomEpsg,
     graphId,
     activeBranchId,
     node.id,
@@ -361,6 +530,26 @@ export function NodeInspector({
     </label>
   );
 
+  const tabs = useMemo(() => {
+    const base: Array<readonly [InspectorTab, string]> = [
+      ["summary", "Summary"],
+      ["diagnostics", "Run"],
+    ];
+    if (isHeatmapNode) {
+      base.push(["config", "Heatmap"]);
+    }
+    if (csvCapable) {
+      base.push(["mapping", "Mapping"], ["crs", "CRS"]);
+    }
+    base.push(["output", "Output"]);
+    return base;
+  }, [csvCapable, isHeatmapNode]);
+
+  useEffect(() => {
+    if (tabs.some(([k]) => k === tab)) return;
+    onTab("summary");
+  }, [onTab, tab, tabs]);
+
   return (
     <aside
       style={{
@@ -390,15 +579,7 @@ export function NodeInspector({
         </button>
       </div>
       <div role="tablist" style={{ display: "flex", borderBottom: "1px solid #30363d" }}>
-        {(
-          [
-            ["summary", "Summary"],
-            ["diagnostics", "Run"],
-            ["mapping", "Mapping"],
-            ["crs", "CRS"],
-            ["output", "Output"],
-          ] as const
-        ).map(([k, lab]) => (
+        {tabs.map(([k, lab]) => (
           <button
             key={k}
             type="button"
@@ -432,6 +613,12 @@ export function NodeInspector({
               <p style={{ opacity: 0.75 }}>
                 Use <strong>Mapping</strong> to attach a CSV and map columns. CRS overrides live
                 under <strong>CRS</strong>.
+              </p>
+            )}
+            {isHeatmapNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>Heatmap</strong> to tune interpolation method, cutoffs, transforms,
+                contour strategy, and gradient options.
               </p>
             )}
             <p style={{ opacity: 0.7, marginTop: 14, fontSize: 11 }}>
@@ -657,6 +844,210 @@ export function NodeInspector({
           </div>
         )}
 
+        {tab === "config" && isHeatmapNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Configure interpolation, cutoffs, contours, gradient products, and output CRS for{" "}
+              <strong>assay heatmap</strong>.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Primary measure field</span>
+                <input
+                  type="text"
+                  value={heatMeasure}
+                  onChange={(e) => setHeatMeasure(e.target.value)}
+                  placeholder="e.g. au_ppm"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Interpolation method</span>
+                <select value={heatMethod} onChange={(e) => setHeatMethod(e.target.value)} style={sel}>
+                  <option value="idw">IDW</option>
+                  <option value="rbf">RBF</option>
+                  <option value="nearest">Nearest</option>
+                  <option value="kriging">Ordinary kriging (starter)</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Value transform</span>
+                <select value={heatScale} onChange={(e) => setHeatScale(e.target.value)} style={sel}>
+                  <option value="linear">Linear</option>
+                  <option value="log10">Log10</option>
+                  <option value="ln">Natural log</option>
+                  <option value="sqrt">Square root</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Palette</span>
+                <select value={heatPalette} onChange={(e) => setHeatPalette(e.target.value)} style={sel}>
+                  <option value="rainbow">Rainbow</option>
+                  <option value="viridis">Viridis</option>
+                  <option value="inferno">Inferno</option>
+                  <option value="terrain">Terrain</option>
+                </select>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Clamp low (%)</span>
+                  <input
+                    type="number"
+                    value={heatClampLow}
+                    onChange={(e) => setHeatClampLow(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Clamp high (%)</span>
+                  <input
+                    type="number"
+                    value={heatClampHigh}
+                    onChange={(e) => setHeatClampHigh(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>IDW power</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={heatIdwPower}
+                    onChange={(e) => setHeatIdwPower(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Smoothness</span>
+                  <input
+                    type="number"
+                    value={heatSmoothness}
+                    onChange={(e) => setHeatSmoothness(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Search radius (m; 0=all)</span>
+                  <input
+                    type="number"
+                    value={heatRadius}
+                    onChange={(e) => setHeatRadius(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Min points</span>
+                  <input
+                    type="number"
+                    value={heatMinPoints}
+                    onChange={(e) => setHeatMinPoints(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Max points</span>
+                  <input
+                    type="number"
+                    value={heatMaxPoints}
+                    onChange={(e) => setHeatMaxPoints(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={heatContoursEnabled}
+                  onChange={(e) => setHeatContoursEnabled(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>Generate contours</span>
+              </label>
+              {heatContoursEnabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                  <label style={lab}>
+                    <span style={labSpan}>Contour mode</span>
+                    <select
+                      value={heatContourMode}
+                      onChange={(e) => setHeatContourMode(e.target.value)}
+                      style={sel}
+                    >
+                      <option value="fixed_interval">Fixed interval</option>
+                      <option value="quantile">Quantile</option>
+                    </select>
+                  </label>
+                  <label style={lab}>
+                    <span style={labSpan}>Interval</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={heatContourInterval}
+                      onChange={(e) => setHeatContourInterval(e.target.value)}
+                      style={{ ...sel, fontFamily: "inherit" }}
+                    />
+                  </label>
+                  <label style={lab}>
+                    <span style={labSpan}>Levels</span>
+                    <input
+                      type="number"
+                      value={heatContourLevels}
+                      onChange={(e) => setHeatContourLevels(e.target.value)}
+                      style={{ ...sel, fontFamily: "inherit" }}
+                    />
+                  </label>
+                </div>
+              )}
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={heatGradientEnabled}
+                  onChange={(e) => setHeatGradientEnabled(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>Emit gradient analysis</span>
+              </label>
+              {heatGradientEnabled && (
+                <label style={lab}>
+                  <span style={labSpan}>Gradient mode</span>
+                  <select
+                    value={heatGradientMode}
+                    onChange={(e) => setHeatGradientMode(e.target.value)}
+                    style={sel}
+                  >
+                    <option value="magnitude">Magnitude</option>
+                    <option value="directional">Directional</option>
+                  </select>
+                </label>
+              )}
+              <label style={lab}>
+                <span style={labSpan}>Output CRS</span>
+                <select
+                  value={heatOutputCrsMode}
+                  onChange={(e) => setHeatOutputCrsMode(e.target.value)}
+                  style={sel}
+                >
+                  <option value="project">Project CRS</option>
+                  <option value="source">Source CRS</option>
+                  <option value="custom">Custom EPSG</option>
+                </select>
+              </label>
+              {heatOutputCrsMode === "custom" && (
+                <label style={lab}>
+                  <span style={labSpan}>Output EPSG</span>
+                  <input
+                    type="number"
+                    value={heatOutputCustomEpsg}
+                    onChange={(e) => setHeatOutputCustomEpsg(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              )}
+            </div>
+          </div>
+        )}
+
         {tab === "crs" && (
           <div>
             <p style={{ opacity: 0.8, marginBottom: 10 }}>
@@ -804,7 +1195,7 @@ export function NodeInspector({
           />
         )}
 
-        {tab !== "output" && tab !== "diagnostics" && (
+        {(tab === "mapping" || tab === "crs" || tab === "config") && (
           <>
             {err && <p style={{ color: "#f85149", marginTop: 10 }}>{err}</p>}
             {saveMsg && <p style={{ color: "#3fb950", marginTop: 10 }}>{saveMsg}</p>}

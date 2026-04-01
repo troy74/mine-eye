@@ -95,6 +95,18 @@ export type MeasuredPlanPoint = {
   measures: Record<string, number>;
 };
 
+export type HeatmapConfigHint = {
+  measure?: string;
+  method?: string;
+  scale?: string;
+  clampLowPct?: number;
+  clampHighPct?: number;
+  idwPower?: number;
+  smoothness?: number;
+  palette?: string;
+  opacity?: number;
+};
+
 /**
  * Best-effort extraction of plan-view points from any upstream JSON artifact.
  * Does not assume collars; tries collars, trajectory segments, `points` arrays, and root arrays of {x,y}.
@@ -221,5 +233,32 @@ export function extractMeasuredPlanPointsFromJson(
       measures,
     });
   });
+  return out;
+}
+
+export function extractHeatmapConfigFromJson(text: string): HeatmapConfigHint | null {
+  let root: unknown;
+  try {
+    root = JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+  if (!root || typeof root !== "object" || Array.isArray(root)) return null;
+  const obj = root as Record<string, unknown>;
+  const cfgRaw = obj.heatmap_config;
+  if (!cfgRaw || typeof cfgRaw !== "object" || Array.isArray(cfgRaw)) {
+    return null;
+  }
+  const cfg = cfgRaw as Record<string, unknown>;
+  const out: HeatmapConfigHint = {};
+  if (typeof cfg.measure === "string") out.measure = cfg.measure;
+  if (typeof cfg.method === "string") out.method = cfg.method;
+  if (typeof cfg.scale === "string") out.scale = cfg.scale;
+  if (typeof cfg.palette === "string") out.palette = cfg.palette;
+  if (typeof cfg.clamp_low_pct === "number") out.clampLowPct = cfg.clamp_low_pct;
+  if (typeof cfg.clamp_high_pct === "number") out.clampHighPct = cfg.clamp_high_pct;
+  if (typeof cfg.idw_power === "number") out.idwPower = cfg.idw_power;
+  if (typeof cfg.smoothness === "number") out.smoothness = cfg.smoothness;
+  if (typeof cfg.opacity === "number") out.opacity = cfg.opacity;
   return out;
 }

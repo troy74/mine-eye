@@ -355,11 +355,23 @@ pub async fn run_assay_heatmap(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    let method = job
+        .output_spec
+        .pointer("/node_ui/method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("idw")
+        .to_string();
     let scale = job
         .output_spec
         .pointer("/node_ui/scale")
         .and_then(|v| v.as_str())
         .unwrap_or("linear")
+        .to_string();
+    let palette = job
+        .output_spec
+        .pointer("/node_ui/palette")
+        .and_then(|v| v.as_str())
+        .unwrap_or("rainbow")
         .to_string();
     let clamp_low = job
         .output_spec
@@ -371,14 +383,223 @@ pub async fn run_assay_heatmap(
         .pointer("/node_ui/clamp_high_pct")
         .and_then(|v| v.as_f64())
         .unwrap_or(100.0);
+    let idw_power = job
+        .output_spec
+        .pointer("/node_ui/idw_power")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(2.0)
+        .clamp(1.0, 4.0);
+    let smoothness = job
+        .output_spec
+        .pointer("/node_ui/smoothness")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(256)
+        .clamp(128, 512);
+    let search_radius_m = job
+        .output_spec
+        .pointer("/node_ui/search_radius_m")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        .max(0.0);
+    let min_points = job
+        .output_spec
+        .pointer("/node_ui/min_points")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .max(1) as usize;
+    let max_points = job
+        .output_spec
+        .pointer("/node_ui/max_points")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(32)
+        .max(min_points as u64) as usize;
+    let contours_enabled = job
+        .output_spec
+        .pointer("/node_ui/contours_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let contour_mode = job
+        .output_spec
+        .pointer("/node_ui/contour_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("fixed_interval")
+        .to_string();
+    let contour_interval = job
+        .output_spec
+        .pointer("/node_ui/contour_interval")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0)
+        .max(0.0001);
+    let contour_levels = job
+        .output_spec
+        .pointer("/node_ui/contour_levels")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+        .max(2) as usize;
+    let gradient_enabled = job
+        .output_spec
+        .pointer("/node_ui/gradient_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let gradient_mode = job
+        .output_spec
+        .pointer("/node_ui/gradient_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("magnitude")
+        .to_string();
+
+    let mut measure_candidates: Vec<String> = Vec::new();
+    for p in &points {
+        let Some(obj) = p.as_object() else {
+            continue;
+        };
+        let attrs = obj
+            .get("attributes")
+            .and_then(|a| a.as_object())
+            .cloned()
+            .unwrap_or_default();
+        for (k, v) in attrs {
+            if v.is_number() && !measure_candidates.contains(&k) {
+                measure_candidates.push(k);
+            }
+        }
+    }
+    measure_candidates.sort();
+    let selected_measure = if !measure.is_empty() {
+        measure.clone()
+    } else {
+        measure_candidates.first().cloned().unwrap_or_default()
+    };
+
+    let mut raw_values: Vec<f64> = Vec::new();
+    for p in &points {
+        let Some(obj) = p.as_object() else {
+            continue;
+        };
+        let Some(attrs) = obj.get("attributes").and_then(|a| a.as_object()) else {
+            continue;
+        };
+        let Some(v) = attrs.get(&selected_measure).and_then(|x| x.as_f64()) else {
+            continue;
+        };
+        if v.is_finite() {
+            raw_values.push(v);
+        }
+    }
+    raw_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pctl = |pct: f64| -> f64 {
+        if raw_values.is_empty() {
+            return 0.0;
+        }
+        let t = pct.clamp(0.0, 100.0) / 100.0;
+        let idx = ((raw_values.len().saturating_sub(1)) as f64 * t).round() as usize;
+        raw_values[idx.min(raw_values.len().saturating_sub(1))]
+    };
+    let lo = pctl(clamp_low);
+    let hi = pctl(clamp_high).max(lo);
+    let transform = |v0: f64| -> Option<f64> {
+        let mut v = v0.clamp(lo, hi);
+        match scale.as_str() {
+            "log10" => {
+                if v <= 0.0 {
+                    return None;
+                }
+                v = v.log10();
+            }
+            "ln" => {
+                if v <= 0.0 {
+                    return None;
+                }
+                v = v.ln();
+            }
+            "sqrt" => {
+                if v < 0.0 {
+                    return None;
+                }
+                v = v.sqrt();
+            }
+            _ => {}
+        }
+        Some(v)
+    };
+
+    let mut transformed_values: Vec<f64> = Vec::new();
+    let mut enriched_points: Vec<serde_json::Value> = Vec::new();
+    for mut p in points {
+        let Some(obj) = p.as_object_mut() else {
+            continue;
+        };
+        let attrs = obj
+            .entry("attributes")
+            .or_insert_with(|| serde_json::json!({}));
+        let Some(attrs_obj) = attrs.as_object_mut() else {
+            continue;
+        };
+        if let Some(raw) = attrs_obj.get(&selected_measure).and_then(|x| x.as_f64()) {
+            if let Some(tv) = transform(raw) {
+                transformed_values.push(tv);
+                attrs_obj.insert("__heatmap_value".into(), serde_json::json!(tv));
+            }
+        }
+        enriched_points.push(serde_json::Value::Object(obj.clone()));
+    }
+    transformed_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let (vmin, vmax) = match (
+        transformed_values.first().copied(),
+        transformed_values.last().copied(),
+    ) {
+        (Some(a), Some(b)) => (a, b),
+        _ => (0.0, 0.0),
+    };
+
+    let mut contour_breaks: Vec<f64> = Vec::new();
+    if contours_enabled && vmax > vmin {
+        if contour_mode == "quantile" {
+            for i in 1..contour_levels {
+                let t = (i as f64) / (contour_levels as f64);
+                let idx = ((transformed_values.len().saturating_sub(1)) as f64 * t).round() as usize;
+                contour_breaks
+                    .push(transformed_values[idx.min(transformed_values.len().saturating_sub(1))]);
+            }
+        } else {
+            let mut x = vmin + contour_interval;
+            while x < vmax {
+                contour_breaks.push(x);
+                x += contour_interval;
+            }
+        }
+    }
 
     let out = serde_json::json!({
-        "type": "assay_heatmap_input",
-        "measure": measure,
-        "scale": scale,
-        "clamp_low_pct": clamp_low,
-        "clamp_high_pct": clamp_high,
-        "points": points
+        "type": "assay_heatmap_surface",
+        "measure": selected_measure,
+        "measure_candidates": measure_candidates,
+        "points": enriched_points,
+        "stats": {
+            "raw_count": raw_values.len(),
+            "value_min": vmin,
+            "value_max": vmax
+        },
+        "heatmap_config": {
+            "method": method,
+            "scale": scale,
+            "palette": palette,
+            "clamp_low_pct": clamp_low,
+            "clamp_high_pct": clamp_high,
+            "idw_power": idw_power,
+            "smoothness": smoothness,
+            "search_radius_m": search_radius_m,
+            "min_points": min_points,
+            "max_points": max_points,
+            "contours_enabled": contours_enabled,
+            "contour_mode": contour_mode,
+            "contour_interval": contour_interval,
+            "contour_levels": contour_levels,
+            "contour_breaks": contour_breaks,
+            "gradient_enabled": gradient_enabled,
+            "gradient_mode": gradient_mode,
+            "opacity": 0.52
+        }
     });
     let bytes = serde_json::to_vec(&out)?;
     let key = format!("graphs/{}/nodes/{}/heatmap.json", job.graph_id, job.node_id);
