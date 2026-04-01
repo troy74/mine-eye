@@ -1624,6 +1624,7 @@ pub async fn run_drillhole_model(
                 "to_depth_m": s.depth_to_m,
                 "from_xyz": [s.x_from, s.y_from, s.z_from],
                 "to_xyz": [s.x_to, s.y_to, s.z_to],
+                "crs": s.crs.clone(),
                 "radius_m": radius_m,
                 "assays": overlapping_assays,
             }));
@@ -1637,6 +1638,11 @@ pub async fn run_drillhole_model(
         };
         let mid = (a.from_m + a.to_m) * 0.5;
         if let Some((x, y, z)) = position_at_depth(segs, mid) {
+            let crs = segs
+                .iter()
+                .find(|s| mid >= s.depth_from_m && mid <= s.depth_to_m)
+                .map(|s| s.crs.clone())
+                .or_else(|| segs.first().map(|s| s.crs.clone()));
             assay_points.push(serde_json::json!({
                 "hole_id": a.hole_id,
                 "from_m": a.from_m,
@@ -1645,6 +1651,7 @@ pub async fn run_drillhole_model(
                 "x": x,
                 "y": y,
                 "z": z,
+                "crs": crs,
                 "attributes": a.attributes,
                 "qa_flags": a.qa_flags,
             }));
@@ -1653,6 +1660,10 @@ pub async fn run_drillhole_model(
 
     let mesh_payload = serde_json::json!({
         "kind": "drillhole_cylinder_mesh_segments",
+        "crs": hole_segments
+            .values()
+            .next()
+            .and_then(|segs| segs.first().map(|s| s.crs.clone())),
         "segments": mesh_segments,
     });
     let mesh_bytes = serde_json::to_vec(&mesh_payload)?;

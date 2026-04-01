@@ -262,6 +262,11 @@ function parseSceneJson(
       for (const row of segs) {
         if (!row || typeof row !== "object" || Array.isArray(row)) continue;
         const r = row as Record<string, unknown>;
+        let rowEpsg = artifactEpsg;
+        if (r.crs && typeof r.crs === "object" && !Array.isArray(r.crs)) {
+          const e = n((r.crs as Record<string, unknown>).epsg);
+          if (e !== null) rowEpsg = Math.trunc(e);
+        }
         const from_xyz = Array.isArray(r.from_xyz) ? r.from_xyz : null;
         const to_xyz = Array.isArray(r.to_xyz) ? r.to_xyz : null;
         const segMeasures = parseSegmentMeasuresFromAssays(r.assays);
@@ -275,7 +280,7 @@ function parseSceneJson(
             to_xyz[2],
             drillSegments,
             segMeasures,
-            artifactEpsg
+            rowEpsg
           );
         } else {
           maybePushSegment(
@@ -287,7 +292,7 @@ function parseSceneJson(
             r.z_to,
             drillSegments,
             segMeasures,
-            artifactEpsg
+            rowEpsg
           );
         }
       }
@@ -298,7 +303,12 @@ function parseSceneJson(
       for (const row of assayPts) {
         if (!row || typeof row !== "object" || Array.isArray(row)) continue;
         const r = row as Record<string, unknown>;
-        maybePushPoint(r.x, r.y, r.z, r.attributes, artifactEpsg);
+        let rowEpsg = artifactEpsg;
+        if (r.crs && typeof r.crs === "object" && !Array.isArray(r.crs)) {
+          const e = n((r.crs as Record<string, unknown>).epsg);
+          if (e !== null) rowEpsg = Math.trunc(e);
+        }
+        maybePushPoint(r.x, r.y, r.z, r.attributes, rowEpsg);
       }
     }
 
