@@ -113,6 +113,16 @@ export type DisplayContractHint = {
   editable?: string[];
 };
 
+export type HeatSurfaceGrid = {
+  nx: number;
+  ny: number;
+  xmin: number;
+  xmax: number;
+  ymin: number;
+  ymax: number;
+  values: Array<number | null>;
+};
+
 /**
  * Best-effort extraction of plan-view points from any upstream JSON artifact.
  * Does not assume collars; tries collars, trajectory segments, `points` arrays, and root arrays of {x,y}.
@@ -291,4 +301,42 @@ export function extractDisplayContractFromJson(text: string): DisplayContractHin
       .filter((x) => x.length > 0);
   }
   return out;
+}
+
+export function extractHeatSurfaceGridFromJson(text: string): HeatSurfaceGrid | null {
+  let root: unknown;
+  try {
+    root = JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+  if (!root || typeof root !== "object" || Array.isArray(root)) return null;
+  const obj = root as Record<string, unknown>;
+  const g = obj.surface_grid;
+  if (!g || typeof g !== "object" || Array.isArray(g)) return null;
+  const gg = g as Record<string, unknown>;
+  const nx = typeof gg.nx === "number" ? Math.trunc(gg.nx) : 0;
+  const ny = typeof gg.ny === "number" ? Math.trunc(gg.ny) : 0;
+  const xmin = num(gg.xmin);
+  const xmax = num(gg.xmax);
+  const ymin = num(gg.ymin);
+  const ymax = num(gg.ymax);
+  const valuesRaw = gg.values;
+  if (
+    nx <= 1 ||
+    ny <= 1 ||
+    xmin === null ||
+    xmax === null ||
+    ymin === null ||
+    ymax === null ||
+    !Array.isArray(valuesRaw)
+  ) {
+    return null;
+  }
+  const values: Array<number | null> = valuesRaw.map((v) => {
+    const n = num(v);
+    return n === null ? null : n;
+  });
+  if (values.length !== nx * ny) return null;
+  return { nx, ny, xmin, xmax, ymin, ymax, values };
 }

@@ -14,10 +14,12 @@ import {
   extractDisplayContractFromJson,
   epsgFromCollarJson,
   extractHeatmapConfigFromJson,
+  extractHeatSurfaceGridFromJson,
   extractMeasuredPlanPointsFromJson,
   extractPlanViewPointsFromJson,
   type DisplayContractHint,
   type HeatmapConfigHint,
+  type HeatSurfaceGrid,
 } from "./spatialExtract";
 
 type Props = {
@@ -44,6 +46,7 @@ type SourceData = {
   measureNames: string[];
   heatmapHint?: HeatmapConfigHint | null;
   displayContract?: DisplayContractHint | null;
+  surfaceGrid?: HeatSurfaceGrid | null;
 };
 
 function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
@@ -478,6 +481,7 @@ export function Map2DPanel({
         );
         const heatmapHint = extractHeatmapConfigFromJson(text);
         const displayContract = extractDisplayContractFromJson(text);
+        const surfaceGrid = extractHeatSurfaceGridFromJson(text);
         if (basic.length === 0 && measured.length === 0) continue;
 
         const mByXY = new Map<string, Record<string, number>>();
@@ -512,6 +516,7 @@ export function Map2DPanel({
           measureNames,
           heatmapHint,
           displayContract,
+          surfaceGrid,
         });
         total += points.length;
       }
@@ -644,64 +649,113 @@ export function Map2DPanel({
       if (pPane) pPane.style.zIndex = String(431 + z * 20);
 
       if (layer.heatmap.enabled && layer.heatmap.measure) {
-        const samples = src.points
-          .map((p) => {
-            const v = p.measures[layer.heatmap.measure];
-            return Number.isFinite(v) ? { ...p, value: v as number } : null;
-          })
-          .filter((v): v is RenderPoint & { value: number } => v !== null);
-        if (samples.length >= 3) {
-          const mm = valueMinMax(samples.map((s) => s.value));
+        const lockedRenderer = src.displayContract?.renderer === "heat_surface";
+        if (lockedRenderer && src.surfaceGrid) {
+          const g = src.surfaceGrid;
+          const vals = g.values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+          const mm = valueMinMax(vals);
           if (mm) {
-            const latMin = Math.min(...samples.map((s) => s.lat));
-            const latMax = Math.max(...samples.map((s) => s.lat));
-            const lonMin = Math.min(...samples.map((s) => s.lon));
-            const lonMax = Math.max(...samples.map((s) => s.lon));
-            if (latMax > latMin && lonMax > lonMin) {
-              const n = Math.max(128, Math.min(512, Math.trunc(layer.heatmap.smoothness)));
-              const power = Math.max(1, Math.min(4, layer.heatmap.power));
-              const canvas = document.createElement("canvas");
-              canvas.width = n;
-              canvas.height = n;
-              const ctx = canvas.getContext("2d");
-              if (ctx) {
-                const img = ctx.createImageData(n, n);
-                const idw = (lat: number, lon: number): number => {
-                  let num = 0;
-                  let den = 0;
-                  for (const s of samples) {
-                    const dx = lon - s.lon;
-                    const dy = lat - s.lat;
-                    const d2 = dx * dx + dy * dy;
-                    if (d2 < 1e-12) return s.value;
-                    const w = 1 / Math.pow(d2, power * 0.5);
-                    num += w * s.value;
-                    den += w;
+            const canvas = document.createElement("canvas");
+            canvas.width = g.nx;
+            canvas.height = g.ny;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              const img = ctx.createImageData(g.nx, g.ny);
+              for (let yi = 0; yi < g.ny; yi++) {
+                for (let xi = 0; xi < g.nx; xi++) {
+                  const v = g.values[yi * g.nx + xi];
+                  const idx = (yi * g.nx + xi) * 4;
+                  if (typeof v !== "number" || !Number.isFinite(v)) {
+                    img.data[idx + 3] = 0;
+                    continue;
                   }
-                  return den > 0 ? num / den : mm.min;
-                };
-                for (let yi = 0; yi < n; yi++) {
-                  const lat = latMax - ((yi + 0.5) / n) * (latMax - latMin);
-                  for (let xi = 0; xi < n; xi++) {
-                    const lon = lonMin + ((xi + 0.5) / n) * (lonMax - lonMin);
-                    const t = norm(idw(lat, lon), mm.min, mm.max);
-                    const { r, g, b } = hslToRgb(rainbowColor(t));
-                    const idx = (yi * n + xi) * 4;
-                    img.data[idx] = r;
-                    img.data[idx + 1] = g;
-                    img.data[idx + 2] = b;
-                    img.data[idx + 3] = 255;
-                  }
+                  const t = norm(v, mm.min, mm.max);
+                  const { r, g: gg, b } = hslToRgb(rainbowColor(t));
+                  img.data[idx] = r;
+                  img.data[idx + 1] = gg;
+                  img.data[idx + 2] = b;
+                  img.data[idx + 3] = 255;
                 }
-                ctx.putImageData(img, 0, 0);
-                L.imageOverlay(
-                  canvas.toDataURL("image/png"),
-                  [
-                    [latMin, lonMin],
-                    [latMax, lonMax],
-                  ],
-                  { pane: heatPane, opacity: layer.heatmap.opacity * layer.opacity, interactive: false }
-                ).addTo(map);
+              }
+              ctx.putImageData(img, 0, 0);
+              L.imageOverlay(
+                canvas.toDataURL("image/png"),
+                [
+                  [g.ymin, g.xmin],
+                  [g.ymax, g.xmax],
+                ],
+                {
+                  pane: heatPane,
+                  opacity: layer.heatmap.opacity * layer.opacity,
+                  interactive: false,
+                }
+              ).addTo(map);
+            }
+          }
+        } else {
+          const samples = src.points
+            .map((p) => {
+              const v = p.measures[layer.heatmap.measure];
+              return Number.isFinite(v) ? { ...p, value: v as number } : null;
+            })
+            .filter((v): v is RenderPoint & { value: number } => v !== null);
+          if (samples.length >= 3) {
+            const mm = valueMinMax(samples.map((s) => s.value));
+            if (mm) {
+              const latMin = Math.min(...samples.map((s) => s.lat));
+              const latMax = Math.max(...samples.map((s) => s.lat));
+              const lonMin = Math.min(...samples.map((s) => s.lon));
+              const lonMax = Math.max(...samples.map((s) => s.lon));
+              if (latMax > latMin && lonMax > lonMin) {
+                const n = Math.max(128, Math.min(512, Math.trunc(layer.heatmap.smoothness)));
+                const power = Math.max(1, Math.min(4, layer.heatmap.power));
+                const canvas = document.createElement("canvas");
+                canvas.width = n;
+                canvas.height = n;
+                const ctx = canvas.getContext("2d");
+                if (ctx) {
+                  const img = ctx.createImageData(n, n);
+                  const idw = (lat: number, lon: number): number => {
+                    let num = 0;
+                    let den = 0;
+                    for (const s of samples) {
+                      const dx = lon - s.lon;
+                      const dy = lat - s.lat;
+                      const d2 = dx * dx + dy * dy;
+                      if (d2 < 1e-12) return s.value;
+                      const w = 1 / Math.pow(d2, power * 0.5);
+                      num += w * s.value;
+                      den += w;
+                    }
+                    return den > 0 ? num / den : mm.min;
+                  };
+                  for (let yi = 0; yi < n; yi++) {
+                    const lat = latMax - ((yi + 0.5) / n) * (latMax - latMin);
+                    for (let xi = 0; xi < n; xi++) {
+                      const lon = lonMin + ((xi + 0.5) / n) * (lonMax - lonMin);
+                      const t = norm(idw(lat, lon), mm.min, mm.max);
+                      const { r, g, b } = hslToRgb(rainbowColor(t));
+                      const idx = (yi * n + xi) * 4;
+                      img.data[idx] = r;
+                      img.data[idx + 1] = g;
+                      img.data[idx + 2] = b;
+                      img.data[idx + 3] = 255;
+                    }
+                  }
+                  ctx.putImageData(img, 0, 0);
+                  L.imageOverlay(
+                    canvas.toDataURL("image/png"),
+                    [
+                      [latMin, lonMin],
+                      [latMax, lonMax],
+                    ],
+                    {
+                      pane: heatPane,
+                      opacity: layer.heatmap.opacity * layer.opacity,
+                      interactive: false,
+                    }
+                  ).addTo(map);
+                }
               }
             }
           }
