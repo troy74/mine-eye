@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { parseCsv } from "./csvParse";
 import type { ApiNode, ArtifactEntry } from "./graphApi";
-import { patchNodeParams, runGraph } from "./graphApi";
+import { api, patchNodeParams, runGraph } from "./graphApi";
+import { extractHeatmapMeasureCandidatesFromJson } from "./spatialExtract";
 import { NodeOutputPanel } from "./NodeOutputPanel";
 import { NodePreviewSnippet } from "./NodePreviewSnippet";
 import { PORT_TAXONOMY_SUMMARY } from "./portTaxonomy";
@@ -189,6 +190,7 @@ export function NodeInspector({
         ? String(initialUi.output_crs_epsg)
         : "4326"
   );
+  const [heatMeasureOptions, setHeatMeasureOptions] = useState<string[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -291,6 +293,36 @@ export function NodeInspector({
     setRunMsg(null);
     setRunErr(null);
   }, [node.id]);
+
+  useEffect(() => {
+    if (!isHeatmapNode) {
+      setHeatMeasureOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const hit =
+          nodeArtifacts.find((a) => a.key.endsWith("/heatmap.json")) ??
+          nodeArtifacts.find((a) => a.key.endsWith("heatmap.json")) ??
+          null;
+        if (!hit) {
+          if (!cancelled) setHeatMeasureOptions([]);
+          return;
+        }
+        const r = await fetch(api(hit.url));
+        if (!r.ok) return;
+        const txt = await r.text();
+        const opts = extractHeatmapMeasureCandidatesFromJson(txt);
+        if (!cancelled) setHeatMeasureOptions(opts);
+      } catch {
+        if (!cancelled) setHeatMeasureOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isHeatmapNode, nodeArtifacts]);
 
   useEffect(() => {
     const q = crsSearchQuery.trim();
@@ -853,13 +885,28 @@ export function NodeInspector({
             <div style={mapGrid}>
               <label style={lab}>
                 <span style={labSpan}>Primary measure field</span>
-                <input
-                  type="text"
-                  value={heatMeasure}
-                  onChange={(e) => setHeatMeasure(e.target.value)}
-                  placeholder="e.g. au_ppm"
-                  style={{ ...sel, fontFamily: "inherit" }}
-                />
+                {heatMeasureOptions.length > 0 ? (
+                  <select
+                    value={heatMeasure}
+                    onChange={(e) => setHeatMeasure(e.target.value)}
+                    style={sel}
+                  >
+                    <option value="">Auto (first numeric measure)</option>
+                    {heatMeasureOptions.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={heatMeasure}
+                    onChange={(e) => setHeatMeasure(e.target.value)}
+                    placeholder="e.g. au_ppm"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                )}
               </label>
               <label style={lab}>
                 <span style={labSpan}>Interpolation method</span>

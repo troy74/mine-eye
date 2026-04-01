@@ -14,10 +14,12 @@ import {
   extractDisplayContractFromJson,
   epsgFromCollarJson,
   extractHeatmapConfigFromJson,
+  extractLineFeaturesFromGeoJson,
   extractHeatSurfaceGridFromJson,
   extractMeasuredPlanPointsFromJson,
   extractPlanViewPointsFromJson,
   type DisplayContractHint,
+  type GeoLineString,
   type HeatmapConfigHint,
   type HeatSurfaceGrid,
 } from "./spatialExtract";
@@ -43,6 +45,7 @@ type SourceData = {
   id: string;
   label: string;
   points: RenderPoint[];
+  lines: GeoLineString[];
   measureNames: string[];
   heatmapHint?: HeatmapConfigHint | null;
   displayContract?: DisplayContractHint | null;
@@ -192,6 +195,33 @@ function rainbowColor(tRaw: number): string {
   const t = Math.max(0, Math.min(1, tRaw));
   const hue = (1 - t) * 240;
   return `hsl(${hue}, 95%, 50%)`;
+}
+
+function paletteColor(palette: string, tRaw: number): string {
+  const t = Math.max(0, Math.min(1, tRaw));
+  const p = palette.toLowerCase();
+  if (p === "inferno") {
+    // Dark purple -> red -> orange -> yellow-white
+    const hue = 300 - 250 * t;
+    const sat = 88 + 10 * t;
+    const light = 10 + 80 * t;
+    return `hsl(${hue}, ${sat}%, ${light}%)`;
+  }
+  if (p === "viridis") {
+    // Purple/blue -> green -> yellow
+    const hue = 280 - 220 * t;
+    const sat = 70;
+    const light = 24 + 46 * t;
+    return `hsl(${hue}, ${sat}%, ${light}%)`;
+  }
+  if (p === "terrain") {
+    // Blue/green low, brown high
+    const hue = 220 - 190 * t;
+    const sat = 70 - 20 * t;
+    const light = 42 + 18 * t;
+    return `hsl(${hue}, ${sat}%, ${light}%)`;
+  }
+  return rainbowColor(t);
 }
 
 function hslToRgb(color: string): { r: number; g: number; b: number } {
@@ -482,7 +512,10 @@ export function Map2DPanel({
         const heatmapHint = extractHeatmapConfigFromJson(text);
         const displayContract = extractDisplayContractFromJson(text);
         const surfaceGrid = extractHeatSurfaceGridFromJson(text);
-        if (basic.length === 0 && measured.length === 0) continue;
+        const lines = extractLineFeaturesFromGeoJson(text);
+        if (basic.length === 0 && measured.length === 0 && lines.length === 0 && !surfaceGrid) {
+          continue;
+        }
 
         const mByXY = new Map<string, Record<string, number>>();
         measured.forEach((m) => mByXY.set(`${m.x}|${m.y}`, m.measures));
@@ -513,6 +546,7 @@ export function Map2DPanel({
           id: `${art.node_id}:${art.key}:${art.content_hash}`,
           label: art.key.split("/").pop() ?? art.key,
           points,
+          lines,
           measureNames,
           heatmapHint,
           displayContract,
@@ -650,6 +684,7 @@ export function Map2DPanel({
 
       if (layer.heatmap.enabled && layer.heatmap.measure) {
         const lockedRenderer = src.displayContract?.renderer === "heat_surface";
+        const palette = src.heatmapHint?.palette ?? "rainbow";
         if (lockedRenderer && src.surfaceGrid) {
           const g = src.surfaceGrid;
           const vals = g.values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
@@ -663,14 +698,16 @@ export function Map2DPanel({
               const img = ctx.createImageData(g.nx, g.ny);
               for (let yi = 0; yi < g.ny; yi++) {
                 for (let xi = 0; xi < g.nx; xi++) {
-                  const v = g.values[yi * g.nx + xi];
+                  // Grid values are stored south->north; image rows are top->bottom, so flip Y.
+                  const srcYi = g.ny - 1 - yi;
+                  const v = g.values[srcYi * g.nx + xi];
                   const idx = (yi * g.nx + xi) * 4;
                   if (typeof v !== "number" || !Number.isFinite(v)) {
                     img.data[idx + 3] = 0;
                     continue;
                   }
                   const t = norm(v, mm.min, mm.max);
-                  const { r, g: gg, b } = hslToRgb(rainbowColor(t));
+                  const { r, g: gg, b } = hslToRgb(paletteColor(palette, t));
                   img.data[idx] = r;
                   img.data[idx + 1] = gg;
                   img.data[idx + 2] = b;
@@ -734,7 +771,7 @@ export function Map2DPanel({
                     for (let xi = 0; xi < n; xi++) {
                       const lon = lonMin + ((xi + 0.5) / n) * (lonMax - lonMin);
                       const t = norm(idw(lat, lon), mm.min, mm.max);
-                      const { r, g, b } = hslToRgb(rainbowColor(t));
+                      const { r, g, b } = hslToRgb(paletteColor(palette, t));
                       const idx = (yi * n + xi) * 4;
                       img.data[idx] = r;
                       img.data[idx + 1] = g;
@@ -760,6 +797,24 @@ export function Map2DPanel({
             }
           }
         }
+      }
+
+      if (src.lines.length > 0) {
+        src.lines.forEach((ln) => {
+          const latLngs: [number, number][] = ln.coords.map(([x, y]) => [y, x]);
+          if (latLngs.length < 2) return;
+          L.polyline(latLngs, {
+            pane: pointPane,
+            color: "#f8fafc",
+            opacity: Math.max(0.2, layer.opacity),
+            weight: 1.2,
+          })
+            .bindTooltip(
+              ln.level != null ? `Contour ${ln.level.toFixed(3)}` : "Contour",
+              { sticky: true }
+            )
+            .addTo(map);
+        });
       }
 
       const colorVals =

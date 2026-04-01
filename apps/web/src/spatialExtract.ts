@@ -123,6 +123,11 @@ export type HeatSurfaceGrid = {
   values: Array<number | null>;
 };
 
+export type GeoLineString = {
+  coords: [number, number][];
+  level?: number;
+};
+
 /**
  * Best-effort extraction of plan-view points from any upstream JSON artifact.
  * Does not assume collars; tries collars, trajectory segments, `points` arrays, and root arrays of {x,y}.
@@ -339,4 +344,62 @@ export function extractHeatSurfaceGridFromJson(text: string): HeatSurfaceGrid | 
   });
   if (values.length !== nx * ny) return null;
   return { nx, ny, xmin, xmax, ymin, ymax, values };
+}
+
+export function extractHeatmapMeasureCandidatesFromJson(text: string): string[] {
+  let root: unknown;
+  try {
+    root = JSON.parse(text) as unknown;
+  } catch {
+    return [];
+  }
+  if (!root || typeof root !== "object" || Array.isArray(root)) return [];
+  const obj = root as Record<string, unknown>;
+  const arr = obj.measure_candidates;
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((x): x is string => typeof x === "string")
+    .map((x) => x.trim())
+    .filter((x) => x.length > 0);
+}
+
+export function extractLineFeaturesFromGeoJson(text: string): GeoLineString[] {
+  let root: unknown;
+  try {
+    root = JSON.parse(text) as unknown;
+  } catch {
+    return [];
+  }
+  if (!root || typeof root !== "object") return [];
+  const obj = root as Record<string, unknown>;
+  const features = obj.features;
+  if (!Array.isArray(features)) return [];
+  const out: GeoLineString[] = [];
+  for (const f of features) {
+    if (!f || typeof f !== "object") continue;
+    const ff = f as Record<string, unknown>;
+    const g = ff.geometry;
+    if (!g || typeof g !== "object") continue;
+    const gg = g as Record<string, unknown>;
+    if (gg.type !== "LineString") continue;
+    const coordsRaw = gg.coordinates;
+    if (!Array.isArray(coordsRaw)) continue;
+    const coords: [number, number][] = [];
+    for (const c of coordsRaw) {
+      if (!Array.isArray(c) || c.length < 2) continue;
+      const x = num(c[0]);
+      const y = num(c[1]);
+      if (x === null || y === null) continue;
+      coords.push([x, y]);
+    }
+    if (coords.length < 2) continue;
+    const level =
+      ff.properties &&
+      typeof ff.properties === "object" &&
+      !Array.isArray(ff.properties)
+        ? num((ff.properties as Record<string, unknown>).level)
+        : null;
+    out.push({ coords, level: level ?? undefined });
+  }
+  return out;
 }
