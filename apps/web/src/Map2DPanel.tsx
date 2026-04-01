@@ -53,6 +53,7 @@ type ChannelMode = "fixed" | "measure";
 type SourceLayerConfig = {
   id: string;
   sourceId: string;
+  sourceHintSig?: string;
   title: string;
   visible: boolean;
   opacity: number;
@@ -76,6 +77,21 @@ type SourceLayerConfig = {
     power: number;
   };
 };
+
+function hintSig(hint: HeatmapConfigHint | null | undefined): string {
+  if (!hint) return "";
+  return JSON.stringify({
+    measure: hint.measure ?? "",
+    method: hint.method ?? "",
+    scale: hint.scale ?? "",
+    clampLowPct: hint.clampLowPct ?? null,
+    clampHighPct: hint.clampHighPct ?? null,
+    idwPower: hint.idwPower ?? null,
+    smoothness: hint.smoothness ?? null,
+    palette: hint.palette ?? "",
+    opacity: hint.opacity ?? null,
+  });
+}
 
 function upstreamSourcesForViewer(
   edges: ApiEdge[],
@@ -124,6 +140,7 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
   return {
     id: `src:${s.id}`,
     sourceId: s.id,
+    sourceHintSig: hintSig(s.heatmapHint),
     title: s.label,
     visible: true,
     opacity: 1,
@@ -523,11 +540,25 @@ export function Map2DPanel({
       const prevById = new Map(prev.map((l) => [l.id, l]));
       const desired = sourceData.map((s) => {
         const id = `src:${s.id}`;
+        const defaultFromSource = defaultLayerForSource(s);
+        const nextHintSig = hintSig(s.heatmapHint);
         const ex = prevById.get(id);
-        if (!ex) return defaultLayerForSource(s);
+        if (!ex) return defaultFromSource;
+        const hintChanged =
+          s.heatmapHint &&
+          (ex.sourceHintSig ?? "") !== nextHintSig;
+        if (hintChanged) {
+          return {
+            ...ex,
+            sourceId: s.id,
+            sourceHintSig: nextHintSig,
+            heatmap: defaultFromSource.heatmap,
+          };
+        }
         return {
           ...ex,
           sourceId: s.id,
+          sourceHintSig: nextHintSig,
           points: {
             ...ex.points,
             colorMeasure:

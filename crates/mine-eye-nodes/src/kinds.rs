@@ -334,7 +334,168 @@ pub async fn run_surface_sample_ingest(
     })
 }
 
-/// Starter heatmap node: selects/measures point records and emits heatmap-ready payload.
+#[derive(Clone, Copy)]
+struct HeatPt {
+    x: f64,
+    y: f64,
+    v: f64,
+}
+
+fn interpolate_value(
+    samples: &[HeatPt],
+    x: f64,
+    y: f64,
+    method: &str,
+    power: f64,
+    search_radius_m: f64,
+    min_points: usize,
+    max_points: usize,
+) -> Option<f64> {
+    let mut near: Vec<(f64, f64)> = samples
+        .iter()
+        .filter_map(|s| {
+            let dx = x - s.x;
+            let dy = y - s.y;
+            let d2 = dx * dx + dy * dy;
+            if d2 < 1e-12 {
+                return Some((0.0, s.v));
+            }
+            if search_radius_m > 0.0 && d2.sqrt() > search_radius_m {
+                return None;
+            }
+            Some((d2, s.v))
+        })
+        .collect();
+    if near.is_empty() {
+        return None;
+    }
+    near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if near.len() > max_points {
+        near.truncate(max_points);
+    }
+    if near.len() < min_points {
+        return None;
+    }
+    if near[0].0 <= 0.0 {
+        return Some(near[0].1);
+    }
+
+    let mut num = 0.0;
+    let mut den = 0.0;
+    match method {
+        "nearest" => Some(near[0].1),
+        "rbf" => {
+            let scale = near.last().map(|x| x.0.sqrt()).unwrap_or(1.0).max(1e-9);
+            for (d2, v) in near {
+                let d = d2.sqrt();
+                let w = (-(d / scale).powi(2)).exp();
+                num += w * v;
+                den += w;
+            }
+            (den > 0.0).then_some(num / den)
+        }
+        "kriging" => {
+            let range = near.last().map(|x| x.0.sqrt()).unwrap_or(1.0).max(1e-9);
+            let nugget = 0.05;
+            for (d2, v) in near {
+                let d = d2.sqrt();
+                let gamma = 1.0 - (-(d / range)).exp();
+                let w = 1.0 / (nugget + gamma.max(1e-6));
+                num += w * v;
+                den += w;
+            }
+            (den > 0.0).then_some(num / den)
+        }
+        _ => {
+            let p = power.clamp(1.0, 6.0);
+            for (d2, v) in near {
+                let w = 1.0 / d2.powf(0.5 * p);
+                num += w * v;
+                den += w;
+            }
+            (den > 0.0).then_some(num / den)
+        }
+    }
+}
+
+fn marching_segments(
+    grid: &[Option<f64>],
+    nx: usize,
+    ny: usize,
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
+    level: f64,
+) -> Vec<[[f64; 2]; 2]> {
+    let mut out = Vec::new();
+    if nx < 2 || ny < 2 {
+        return out;
+    }
+    let dx = (xmax - xmin) / (nx as f64 - 1.0);
+    let dy = (ymax - ymin) / (ny as f64 - 1.0);
+    let idx = |ix: usize, iy: usize| -> usize { iy * nx + ix };
+    let interp = |a: (f64, f64, f64), b: (f64, f64, f64)| -> [f64; 2] {
+        let (ax, ay, av) = a;
+        let (bx, by, bv) = b;
+        let t = if (bv - av).abs() < 1e-12 {
+            0.5
+        } else {
+            ((level - av) / (bv - av)).clamp(0.0, 1.0)
+        };
+        [ax + (bx - ax) * t, ay + (by - ay) * t]
+    };
+
+    for iy in 0..(ny - 1) {
+        for ix in 0..(nx - 1) {
+            let p00 = (xmin + ix as f64 * dx, ymin + iy as f64 * dy);
+            let p10 = (xmin + (ix + 1) as f64 * dx, ymin + iy as f64 * dy);
+            let p11 = (xmin + (ix + 1) as f64 * dx, ymin + (iy + 1) as f64 * dy);
+            let p01 = (xmin + ix as f64 * dx, ymin + (iy + 1) as f64 * dy);
+
+            let Some(v00) = grid[idx(ix, iy)] else {
+                continue;
+            };
+            let Some(v10) = grid[idx(ix + 1, iy)] else {
+                continue;
+            };
+            let Some(v11) = grid[idx(ix + 1, iy + 1)] else {
+                continue;
+            };
+            let Some(v01) = grid[idx(ix, iy + 1)] else {
+                continue;
+            };
+
+            let mut crosses: Vec<[f64; 2]> = Vec::new();
+            let s00 = v00 >= level;
+            let s10 = v10 >= level;
+            let s11 = v11 >= level;
+            let s01 = v01 >= level;
+            if s00 != s10 {
+                crosses.push(interp((p00.0, p00.1, v00), (p10.0, p10.1, v10)));
+            }
+            if s10 != s11 {
+                crosses.push(interp((p10.0, p10.1, v10), (p11.0, p11.1, v11)));
+            }
+            if s11 != s01 {
+                crosses.push(interp((p11.0, p11.1, v11), (p01.0, p01.1, v01)));
+            }
+            if s01 != s00 {
+                crosses.push(interp((p01.0, p01.1, v01), (p00.0, p00.1, v00)));
+            }
+
+            if crosses.len() == 2 {
+                out.push([crosses[0], crosses[1]]);
+            } else if crosses.len() == 4 {
+                out.push([crosses[0], crosses[1]]);
+                out.push([crosses[2], crosses[3]]);
+            }
+        }
+    }
+    out
+}
+
+/// Phase-2 heatmap node: configurable interpolation + contour and diagnostics artifacts.
 pub async fn run_assay_heatmap(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
@@ -570,6 +731,134 @@ pub async fn run_assay_heatmap(
         }
     }
 
+    let heat_samples: Vec<HeatPt> = enriched_points
+        .iter()
+        .filter_map(|p| {
+            let obj = p.as_object()?;
+            let x = obj.get("x")?.as_f64()?;
+            let y = obj.get("y")?.as_f64()?;
+            let attrs = obj.get("attributes")?.as_object()?;
+            let v = attrs.get("__heatmap_value")?.as_f64()?;
+            Some(HeatPt { x, y, v })
+        })
+        .collect();
+
+    let (xmin, xmax, ymin, ymax) = if heat_samples.is_empty() {
+        (0.0, 1.0, 0.0, 1.0)
+    } else {
+        let xs: Vec<f64> = heat_samples.iter().map(|s| s.x).collect();
+        let ys: Vec<f64> = heat_samples.iter().map(|s| s.y).collect();
+        (
+            xs.iter().copied().fold(f64::INFINITY, f64::min),
+            xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            ys.iter().copied().fold(f64::INFINITY, f64::min),
+            ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+
+    let grid_n = (smoothness as usize / 4).clamp(48, 128);
+    let nx = grid_n;
+    let ny = grid_n;
+    let gx = (xmax - xmin).max(1e-9);
+    let gy = (ymax - ymin).max(1e-9);
+    let mut grid_values: Vec<Option<f64>> = vec![None; nx * ny];
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let x = xmin + (ix as f64 + 0.5) / (nx as f64) * gx;
+            let y = ymin + (iy as f64 + 0.5) / (ny as f64) * gy;
+            grid_values[iy * nx + ix] = interpolate_value(
+                &heat_samples,
+                x,
+                y,
+                &method,
+                idw_power,
+                search_radius_m,
+                min_points,
+                max_points,
+            );
+        }
+    }
+
+    let mut residual_features: Vec<serde_json::Value> = Vec::new();
+    let mut residuals: Vec<f64> = Vec::new();
+    for (i, s) in heat_samples.iter().enumerate() {
+        let mut others = Vec::with_capacity(heat_samples.len().saturating_sub(1));
+        for (j, o) in heat_samples.iter().enumerate() {
+            if i != j {
+                others.push(*o);
+            }
+        }
+        let pred = interpolate_value(
+            &others,
+            s.x,
+            s.y,
+            &method,
+            idw_power,
+            search_radius_m,
+            min_points,
+            max_points,
+        );
+        if let Some(pv) = pred {
+            let r = s.v - pv;
+            residuals.push(r);
+            residual_features.push(serde_json::json!({
+                "type":"Feature",
+                "geometry":{"type":"Point","coordinates":[s.x,s.y]},
+                "properties":{"observed":s.v,"predicted":pv,"residual":r}
+            }));
+        }
+    }
+    let mae = if residuals.is_empty() {
+        0.0
+    } else {
+        residuals.iter().map(|r| r.abs()).sum::<f64>() / residuals.len() as f64
+    };
+    let rmse = if residuals.is_empty() {
+        0.0
+    } else {
+        (residuals.iter().map(|r| r * r).sum::<f64>() / residuals.len() as f64).sqrt()
+    };
+    let bias = if residuals.is_empty() {
+        0.0
+    } else {
+        residuals.iter().sum::<f64>() / residuals.len() as f64
+    };
+
+    let mut contour_features: Vec<serde_json::Value> = Vec::new();
+    if contours_enabled {
+        for br in &contour_breaks {
+            let segs = marching_segments(&grid_values, nx, ny, xmin, xmax, ymin, ymax, *br);
+            for seg in segs {
+                contour_features.push(serde_json::json!({
+                    "type":"Feature",
+                    "geometry":{"type":"LineString","coordinates":[[seg[0][0],seg[0][1]],[seg[1][0],seg[1][1]]]},
+                    "properties":{"level":br}
+                }));
+            }
+        }
+    }
+
+    let mut gradient_values: Vec<Option<f64>> = Vec::new();
+    if gradient_enabled {
+        gradient_values = vec![None; nx * ny];
+        for iy in 1..(ny.saturating_sub(1)) {
+            for ix in 1..(nx.saturating_sub(1)) {
+                let c = grid_values[iy * nx + ix];
+                let l = grid_values[iy * nx + (ix - 1)];
+                let r = grid_values[iy * nx + (ix + 1)];
+                let b = grid_values[(iy - 1) * nx + ix];
+                let t = grid_values[(iy + 1) * nx + ix];
+                let (Some(_cv), Some(lv), Some(rv), Some(bv), Some(tv)) = (c, l, r, b, t) else {
+                    continue;
+                };
+                let gx = (rv - lv) * 0.5;
+                let gy = (tv - bv) * 0.5;
+                let g = if gradient_mode == "directional" { gy.atan2(gx) } else { (gx * gx + gy * gy).sqrt() };
+                gradient_values[iy * nx + ix] = Some(g);
+            }
+        }
+    }
+
     let out = serde_json::json!({
         "type": "assay_heatmap_surface",
         "measure": selected_measure,
@@ -581,6 +870,7 @@ pub async fn run_assay_heatmap(
             "value_max": vmax
         },
         "heatmap_config": {
+            "measure": selected_measure,
             "method": method,
             "scale": scale,
             "palette": palette,
@@ -599,16 +889,71 @@ pub async fn run_assay_heatmap(
             "gradient_enabled": gradient_enabled,
             "gradient_mode": gradient_mode,
             "opacity": 0.52
+        },
+        "surface_grid": {
+            "nx": nx,
+            "ny": ny,
+            "xmin": xmin,
+            "xmax": xmax,
+            "ymin": ymin,
+            "ymax": ymax,
+            "values": grid_values
         }
     });
     let bytes = serde_json::to_vec(&out)?;
     let key = format!("graphs/{}/nodes/{}/heatmap.json", job.graph_id, job.node_id);
     let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+
+    let mut outputs = vec![artifact.clone()];
+    let mut hashes = vec![artifact.content_hash.clone()];
+
+    let residual_json = serde_json::json!({
+        "type":"FeatureCollection",
+        "features": residual_features,
+        "metrics": {"n": residuals.len(), "mae": mae, "rmse": rmse, "bias": bias}
+    });
+    let residual_bytes = serde_json::to_vec(&residual_json)?;
+    let residual_key = format!("graphs/{}/nodes/{}/residuals.json", job.graph_id, job.node_id);
+    let residual_ref = write_artifact(ctx, &residual_key, &residual_bytes, Some("application/json")).await?;
+    outputs.push(residual_ref.clone());
+    hashes.push(residual_ref.content_hash.clone());
+
+    if contours_enabled {
+        let contours_json = serde_json::json!({
+            "type":"FeatureCollection",
+            "features": contour_features
+        });
+        let contour_bytes = serde_json::to_vec(&contours_json)?;
+        let contour_key = format!("graphs/{}/nodes/{}/contours.geojson", job.graph_id, job.node_id);
+        let contour_ref = write_artifact(ctx, &contour_key, &contour_bytes, Some("application/geo+json")).await?;
+        outputs.push(contour_ref.clone());
+        hashes.push(contour_ref.content_hash.clone());
+    }
+
+    if gradient_enabled {
+        let gradient_json = serde_json::json!({
+            "type":"gradient_grid",
+            "mode": gradient_mode,
+            "nx": nx,
+            "ny": ny,
+            "xmin": xmin,
+            "xmax": xmax,
+            "ymin": ymin,
+            "ymax": ymax,
+            "values": gradient_values
+        });
+        let gradient_bytes = serde_json::to_vec(&gradient_json)?;
+        let gradient_key = format!("graphs/{}/nodes/{}/gradient.json", job.graph_id, job.node_id);
+        let gradient_ref = write_artifact(ctx, &gradient_key, &gradient_bytes, Some("application/json")).await?;
+        outputs.push(gradient_ref.clone());
+        hashes.push(gradient_ref.content_hash.clone());
+    }
+
     Ok(JobResult {
         job_id: job.job_id,
         status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
+        output_artifact_refs: outputs,
+        content_hashes: hashes,
         error_message: None,
     })
 }
