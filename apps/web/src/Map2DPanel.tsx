@@ -8,6 +8,7 @@ import {
   patchNodeParams,
   type ApiEdge,
   type ArtifactEntry,
+  type ViewerManifestLayer,
 } from "./graphApi";
 import { isPlanViewInputSemantic } from "./portTaxonomy";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
@@ -361,6 +362,7 @@ export function Map2DPanel({
   const [status, setStatus] = useState("");
   const [sourceData, setSourceData] = useState<SourceData[]>([]);
   const [manifestArtifacts, setManifestArtifacts] = useState<ArtifactEntry[]>([]);
+  const [manifestLayers, setManifestLayers] = useState<ViewerManifestLayer[]>([]);
   const [layers, setLayers] = useState<SourceLayerConfig[]>([]);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -425,6 +427,7 @@ export function Map2DPanel({
   useEffect(() => {
     if (!graphId || !viewerNodeId) {
       setManifestArtifacts([]);
+      setManifestLayers([]);
       return;
     }
     let cancelled = false;
@@ -439,8 +442,12 @@ export function Map2DPanel({
           content_hash: l.content_hash,
         }));
         setManifestArtifacts(arts);
+        setManifestLayers(mf.layers);
       } catch {
-        if (!cancelled) setManifestArtifacts([]);
+        if (!cancelled) {
+          setManifestArtifacts([]);
+          setManifestLayers([]);
+        }
       }
     })();
     return () => {
@@ -657,6 +664,10 @@ export function Map2DPanel({
 
     void (async () => {
       const all: SourceData[] = [];
+      const manifestByArtifact = new Map<string, ViewerManifestLayer>();
+      for (const ml of manifestLayers) {
+        manifestByArtifact.set(`${ml.artifact_key}:${ml.content_hash}`, ml);
+      }
       const fit: L.LatLngExpression[] = [];
       let total = 0;
       const notes: string[] = [];
@@ -669,13 +680,70 @@ export function Map2DPanel({
           continue;
         }
         const text = await r.text();
+        const manifestMeta = manifestByArtifact.get(`${art.key}:${art.content_hash}`);
+        const mPres =
+          manifestMeta?.presentation &&
+          typeof manifestMeta.presentation === "object" &&
+          !Array.isArray(manifestMeta.presentation)
+            ? (manifestMeta.presentation as Record<string, unknown>)
+            : null;
+        const mHeatCfg =
+          mPres?.heatmap_config &&
+          typeof mPres.heatmap_config === "object" &&
+          !Array.isArray(mPres.heatmap_config)
+            ? (mPres.heatmap_config as Record<string, unknown>)
+            : null;
+        const manifestDisplayContract: DisplayContractHint | null = mPres
+          ? {
+              renderer:
+                typeof mPres.renderer === "string" ? String(mPres.renderer) : undefined,
+              editable: Array.isArray(mPres.editable)
+                ? mPres.editable.filter((x): x is string => typeof x === "string")
+                : undefined,
+            }
+          : null;
+        const manifestHeatmapHint: HeatmapConfigHint | null = mHeatCfg
+          ? {
+              measure:
+                typeof mHeatCfg.measure === "string" ? String(mHeatCfg.measure) : undefined,
+              renderMeasure:
+                typeof mHeatCfg.render_measure === "string"
+                  ? String(mHeatCfg.render_measure)
+                  : undefined,
+              method:
+                typeof mHeatCfg.method === "string" ? String(mHeatCfg.method) : undefined,
+              scale:
+                typeof mHeatCfg.scale === "string" ? String(mHeatCfg.scale) : undefined,
+              palette:
+                typeof mHeatCfg.palette === "string" ? String(mHeatCfg.palette) : undefined,
+              clampLowPct:
+                typeof mHeatCfg.clamp_low_pct === "number" ? mHeatCfg.clamp_low_pct : undefined,
+              clampHighPct:
+                typeof mHeatCfg.clamp_high_pct === "number"
+                  ? mHeatCfg.clamp_high_pct
+                  : undefined,
+              idwPower:
+                typeof mHeatCfg.idw_power === "number" ? mHeatCfg.idw_power : undefined,
+              smoothness:
+                typeof mHeatCfg.smoothness === "number" ? mHeatCfg.smoothness : undefined,
+              opacity: typeof mHeatCfg.opacity === "number" ? mHeatCfg.opacity : undefined,
+              minVisibleRender:
+                typeof mHeatCfg.min_visible_render === "number"
+                  ? mHeatCfg.min_visible_render
+                  : undefined,
+              maxVisibleRender:
+                typeof mHeatCfg.max_visible_render === "number"
+                  ? mHeatCfg.max_visible_render
+                  : undefined,
+            }
+          : null;
         const basic = extractPlanViewPointsFromJson(text, art.key.split("/").pop() ?? art.key);
         const measured = extractMeasuredPlanPointsFromJson(
           text,
           art.key.split("/").pop() ?? art.key
         );
-        const heatmapHint = extractHeatmapConfigFromJson(text);
-        const displayContract = extractDisplayContractFromJson(text);
+        const heatmapHint = manifestHeatmapHint ?? extractHeatmapConfigFromJson(text);
+        const displayContract = manifestDisplayContract ?? extractDisplayContractFromJson(text);
         const surfaceGrid = extractHeatSurfaceGridFromJson(text);
         const lines = extractLineFeaturesFromGeoJson(text);
         if (basic.length === 0 && measured.length === 0 && lines.length === 0 && !surfaceGrid) {
@@ -746,7 +814,7 @@ export function Map2DPanel({
         loadInFlightRef.current = false;
       }
     });
-  }, [graphId, viewerNodeId, artifacts, manifestArtifacts, inputLinks, sourceData.length]);
+  }, [graphId, viewerNodeId, artifacts, manifestArtifacts, manifestLayers, inputLinks, sourceData.length]);
 
   useEffect(() => {
     if (sourceData.length === 0) return;

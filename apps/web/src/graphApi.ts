@@ -109,6 +109,7 @@ export type ViewerManifestLayer = {
   artifact_url: string;
   content_hash: string;
   media_type?: string | null;
+  presentation?: Record<string, unknown>;
 };
 
 export type ViewerManifestResponse = {

@@ -32,6 +32,7 @@ struct AppState {
     store: Arc<PgStore>,
     jobs: Arc<PgJobQueue>,
     scheduler: Arc<Scheduler>,
+    artifact_root: PathBuf,
 }
 
 #[tokio::main]
@@ -62,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         store,
         jobs,
         scheduler: Arc::new(Scheduler::default()),
+        artifact_root: PathBuf::from(&artifact_root),
     };
 
     let cors = CorsLayer::new()
@@ -1385,6 +1387,7 @@ struct ViewerManifestLayer {
     artifact_url: String,
     content_hash: String,
     media_type: Option<String>,
+    presentation: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -1465,6 +1468,7 @@ async fn get_viewer_manifest(
             if !(lower.ends_with(".json") || lower.ends_with(".geojson")) {
                 continue;
             }
+            let presentation = layer_presentation_from_artifact(&s.artifact_root, &key).await;
             layers.push(ViewerManifestLayer {
                 source_node_id: edge.from_node,
                 source_node_kind: source_kind.clone(),
@@ -1476,6 +1480,7 @@ async fn get_viewer_manifest(
                 artifact_url: format!("/files/{}", key),
                 content_hash: hash,
                 media_type,
+                presentation,
             });
         }
     }
@@ -1494,6 +1499,61 @@ async fn get_viewer_manifest(
         viewer_ui,
         layers,
     }))
+}
+
+async fn layer_presentation_from_artifact(
+    artifact_root: &PathBuf,
+    key: &str,
+) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "renderer": "generic",
+        "editable": ["visible", "opacity", "style"],
+        "has_surface_grid": false,
+        "has_contours": key.to_ascii_lowercase().ends_with(".geojson"),
+        "measure_candidates": [],
+    });
+    if !key.to_ascii_lowercase().ends_with(".json") {
+        return out;
+    }
+    let path = artifact_root.join(key);
+    let Ok(bytes) = tokio::fs::read(path).await else {
+        return out;
+    };
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return out;
+    };
+    let Some(obj) = root.as_object() else {
+        return out;
+    };
+    if let Some(dc) = obj.get("display_contract").and_then(|v| v.as_object()) {
+        if let Some(r) = dc.get("renderer").and_then(|v| v.as_str()) {
+            out["renderer"] = serde_json::json!(r);
+        }
+        if let Some(ed) = dc.get("editable").and_then(|v| v.as_array()) {
+            out["editable"] = serde_json::Value::Array(
+                ed.iter()
+                    .filter_map(|x| x.as_str().map(|s| serde_json::json!(s)))
+                    .collect(),
+            );
+        }
+    }
+    if let Some(mc) = obj.get("measure_candidates").and_then(|v| v.as_array()) {
+        out["measure_candidates"] = serde_json::Value::Array(
+            mc.iter()
+                .filter_map(|x| x.as_str().map(|s| serde_json::json!(s)))
+                .collect(),
+        );
+    }
+    if let Some(cfg) = obj.get("heatmap_config").and_then(|v| v.as_object()) {
+        out["heatmap_config"] = serde_json::Value::Object(cfg.clone());
+    }
+    if let Some(stats) = obj.get("stats").and_then(|v| v.as_object()) {
+        out["stats"] = serde_json::Value::Object(stats.clone());
+    }
+    if obj.get("surface_grid").is_some() {
+        out["has_surface_grid"] = serde_json::json!(true);
+    }
+    out
 }
 
 #[derive(Deserialize)]
