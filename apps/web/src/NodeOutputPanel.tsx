@@ -147,7 +147,7 @@ export function NodeOutputPanel({
     setRunOk(null);
     setRunBusy(true);
     try {
-      const res = await runGraph(graphId, { dirtyRoots: [nodeId] });
+      const res = await runGraph(graphId, { dirtyRoots: [nodeId], includeManual: true });
       const nq = res.queued?.length ?? 0;
       const ns = res.skipped_manual?.length ?? 0;
       if (nq === 0) {

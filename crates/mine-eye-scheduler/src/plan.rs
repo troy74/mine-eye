@@ -32,8 +32,10 @@ impl Scheduler {
         &self,
         snapshot: &GraphSnapshot,
         dirty_nodes: &HashSet<Uuid>,
+        run_roots: &HashSet<Uuid>,
         input_artifacts: &HashMap<Uuid, Vec<ArtifactRef>>,
         project_crs: Option<mine_eye_types::CrsRecord>,
+        include_manual: bool,
     ) -> SchedulePlan {
         let order = match snapshot.topological_order() {
             Ok(o) => o,
@@ -50,11 +52,13 @@ impl Scheduler {
             let Some(node) = snapshot.nodes.get(&node_id) else {
                 continue;
             };
-            if matches!(node.policy.recompute, RecomputePolicy::Manual) {
+            if !include_manual && matches!(node.policy.recompute, RecomputePolicy::Manual) {
                 skipped_manual.push(node_id);
                 continue;
             }
-            if matches!(node.policy.propagation, PropagationPolicy::Hold) {
+            if matches!(node.policy.propagation, PropagationPolicy::Hold)
+                && !(include_manual && run_roots.contains(&node_id))
+            {
                 continue;
             }
 

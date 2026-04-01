@@ -1,12 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
+use async_stream::stream;
 mod ingest_synth;
 const NODE_REGISTRY_JSON: &str = include_str!("node-registry.json");
 
@@ -74,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/workspaces", post(create_workspace))
         .route("/workspaces/{ws_id}/graphs", post(create_graph))
         .route("/graphs/{graph_id}", get(get_graph))
+        .route("/graphs/{graph_id}/events", get(graph_events))
         .route(
             "/graphs/{graph_id}/branches",
             get(list_graph_branches).post(create_graph_branch),
@@ -1076,6 +1080,7 @@ async fn add_node(
 #[derive(Deserialize)]
 struct PatchNodeParamsReq {
     params: serde_json::Value,
+    policy: Option<NodeExecutionPolicy>,
     branch_id: Option<Uuid>,
 }
 
@@ -1086,7 +1091,7 @@ async fn patch_node_params(
 ) -> Result<Json<NodeRecord>, (StatusCode, String)> {
     let node = s
         .store
-        .patch_node_params(graph_id, node_id, body.params)
+        .patch_node_config(graph_id, node_id, body.params, body.policy)
         .await
         .map_err(|e| match e {
             StoreError::NotFound(_) => (StatusCode::NOT_FOUND, e.to_string()),
@@ -1103,6 +1108,65 @@ async fn patch_node_params(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(node))
+}
+
+fn stable_graph_sig(snap: &mine_eye_graph::GraphSnapshot, arts: &[ArtifactEntry]) -> String {
+    let mut nodes = snap.nodes.values().cloned().collect::<Vec<_>>();
+    nodes.sort_by_key(|n| n.id);
+    let mut edges = snap.edges.clone();
+    edges.sort_by_key(|e| (e.from_node, e.to_node, e.from_port.clone(), e.to_port.clone()));
+    let mut art_map: BTreeMap<String, String> = BTreeMap::new();
+    for a in arts {
+        art_map.insert(format!("{}:{}", a.node_id, a.key), a.content_hash.clone());
+    }
+    serde_json::json!({
+        "nodes": nodes,
+        "edges": edges,
+        "artifacts": art_map
+    })
+    .to_string()
+}
+
+async fn graph_events(
+    State(s): State<AppState>,
+    Path(graph_id): Path<Uuid>,
+) -> Sse<impl futures_core::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let stream = stream! {
+        let mut last_sig = String::new();
+        loop {
+            let mut out_event: Option<Event> = None;
+            match s.store.load_graph(graph_id).await {
+                Ok(snap) => {
+                    let mut out = Vec::new();
+                    for nid in snap.nodes.keys() {
+                        if let Ok(rows) = s.store.list_artifacts_for_node(*nid).await {
+                            for (key, hash, _) in rows {
+                                out.push(ArtifactEntry {
+                                    node_id: *nid,
+                                    key: key.clone(),
+                                    url: format!("/files/{}", key),
+                                    content_hash: hash,
+                                });
+                            }
+                        }
+                    }
+                    let sig = stable_graph_sig(&snap, &out);
+                    if sig != last_sig {
+                        last_sig = sig.clone();
+                        out_event = Some(Event::default().event("changed").data(sig));
+                    }
+                }
+                Err(e) => {
+                    out_event = Some(Event::default().event("error").data(e.to_string()));
+                }
+            }
+            if let Some(ev) = out_event {
+                yield Ok(ev);
+            }
+            tokio::time::sleep(Duration::from_millis(900)).await;
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
 }
 
 #[derive(Deserialize)]
@@ -1206,6 +1270,8 @@ struct RunGraphReq {
     dirty_roots: Option<Vec<Uuid>>,
     /// Per-node inline payloads for workers (e.g. ingest JSON).
     input_payloads: Option<HashMap<Uuid, serde_json::Value>>,
+    /// Include nodes with recompute=manual in this run request.
+    include_manual: Option<bool>,
 }
 
 async fn run_graph(
@@ -1222,6 +1288,7 @@ async fn run_graph(
     let roots = body
         .dirty_roots
         .unwrap_or_else(|| snapshot.nodes.keys().copied().collect());
+    let root_set: HashSet<Uuid> = roots.iter().copied().collect();
     let dirty = collect_dirty_nodes(&snapshot, &roots);
     let input_map = build_input_artifacts(&s.store, &snapshot)
         .await
@@ -1236,7 +1303,14 @@ async fn run_graph(
 
     let plan = s
         .scheduler
-        .plan(&snapshot, &dirty, &input_map, project_crs.clone());
+        .plan(
+            &snapshot,
+            &dirty,
+            &root_set,
+            &input_map,
+            project_crs.clone(),
+            body.include_manual.unwrap_or(false),
+        );
 
     let mut queued = Vec::new();
     for mut job in plan.jobs {
@@ -1524,13 +1598,21 @@ async fn demo_seed(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let roots: Vec<Uuid> = snapshot.nodes.keys().copied().collect();
+    let root_set: HashSet<Uuid> = roots.iter().copied().collect();
     let dirty = propagate_stale(&snapshot, &roots);
     let input_map = build_input_artifacts(&s.store, &snapshot)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let plan = s
         .scheduler
-        .plan(&snapshot, &dirty, &input_map, Some(CrsRecord::epsg(4326)));
+        .plan(
+            &snapshot,
+            &dirty,
+            &root_set,
+            &input_map,
+            Some(CrsRecord::epsg(4326)),
+            false,
+        );
 
     for mut job in plan.jobs {
         if job.node_id == n_collar {

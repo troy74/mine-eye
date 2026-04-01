@@ -740,12 +740,14 @@ impl PgStore {
         Ok(Some((workspace_id, project_crs)))
     }
 
-    /// Deep-merge `params_patch` into `node.config.params`. Marks cache stale.
-    pub async fn patch_node_params(
+    /// Deep-merge `params_patch` into `node.config.params`, optionally replace policy.
+    /// Marks cache stale.
+    pub async fn patch_node_config(
         &self,
         graph_id: Uuid,
         node_id: Uuid,
         params_patch: serde_json::Value,
+        policy_patch: Option<NodeExecutionPolicy>,
     ) -> Result<NodeRecord, StoreError> {
         let snap = self.load_graph(graph_id).await?;
         let Some(mut node) = snap.nodes.get(&node_id).cloned() else {
@@ -755,6 +757,9 @@ impl PgStore {
             return Err(StoreError::NotFound(node_id.to_string()));
         }
         merge_json_params(&mut node.config.params, &params_patch);
+        if let Some(policy) = policy_patch {
+            node.policy = policy;
+        }
         node.cache = CacheState::Stale;
         self.upsert_node(&node).await?;
         Ok(node)

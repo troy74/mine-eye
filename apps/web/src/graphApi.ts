@@ -77,6 +77,11 @@ export type ApiNode = {
   id: string;
   graph_id: string;
   config: { kind: string; version: number; params: Record<string, unknown> };
+  policy: {
+    recompute: "auto" | "manual" | string;
+    propagation: "eager" | "debounce" | "hold" | string;
+    quality: "preview" | "final" | string;
+  };
   category: string;
   execution: string;
   cache: string;
@@ -114,11 +119,14 @@ export type RunGraphResponse = {
  */
 export async function runGraph(
   graphId: string,
-  opts?: { dirtyRoots?: string[] }
+  opts?: { dirtyRoots?: string[]; includeManual?: boolean }
 ): Promise<RunGraphResponse> {
   const body: Record<string, unknown> = {};
   if (opts?.dirtyRoots !== undefined) {
     body.dirty_roots = opts.dirtyRoots;
+  }
+  if (opts?.includeManual !== undefined) {
+    body.include_manual = opts.includeManual;
   }
   const r = await fetch(api(`/graphs/${graphId}/run`), {
     method: "POST",
@@ -151,6 +159,14 @@ function normalizeNode(raw: unknown): ApiNode {
       version: Number(cfg.version ?? 1),
       params: safeParams,
     },
+    policy: (() => {
+      const p = (o.policy ?? {}) as Record<string, unknown>;
+      return {
+        recompute: String(p.recompute ?? "auto"),
+        propagation: String(p.propagation ?? "debounce"),
+        quality: String(p.quality ?? "preview"),
+      };
+    })(),
     category: String(o.category ?? ""),
     execution: String(o.execution ?? ""),
     cache: String(o.cache ?? ""),
@@ -368,12 +384,23 @@ export async function patchNodeParams(
   graphId: string,
   nodeId: string,
   params: Record<string, unknown>,
-  opts?: { branchId?: string | null }
+  opts?: {
+    branchId?: string | null;
+    policy?: {
+      recompute?: "auto" | "manual";
+      propagation?: "eager" | "debounce" | "hold";
+      quality?: "preview" | "final";
+    };
+  }
 ): Promise<ApiNode> {
   const r = await fetch(api(`/graphs/${graphId}/nodes/${nodeId}`), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ params, branch_id: opts?.branchId ?? null }),
+    body: JSON.stringify({
+      params,
+      policy: opts?.policy,
+      branch_id: opts?.branchId ?? null,
+    }),
   });
   if (!r.ok) throw new Error(`PATCH failed: ${r.status}`);
   return normalizeNode(await r.json());

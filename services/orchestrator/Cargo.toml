@@ -25,3 +25,5 @@ sqlx = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 urlencoding = "2.1"
+async-stream = "0.3"
+futures-core = "0.3"

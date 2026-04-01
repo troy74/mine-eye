@@ -33,6 +33,7 @@ import {
   deleteGraphEdge,
   deleteGraphNode,
   fetchGraph,
+  runGraph,
   type ApiEdge,
   type ApiNode,
   type ArtifactEntry,
@@ -60,13 +61,11 @@ const CAT_ACCENT: Record<string, string> = {
 };
 
 type ExecTone =
-  | "running"
-  | "failed"
-  | "ok_hit"
+  | "unset"
   | "stale"
-  | "idle_miss"
-  | "no_inputs"
-  | "default";
+  | "locked"
+  | "current"
+  | "error";
 
 type PipelineData = {
   kind: string;
@@ -76,8 +75,9 @@ type PipelineData = {
   categoryAccent: string;
   statusLine: string;
   hashShort: string | null;
-  busy: boolean;
-  execTone: ExecTone;
+  isRunning: boolean;
+  nodeState: ExecTone;
+  isLocked: boolean;
   lastErrorShort: string | null;
   lastErrorFull: string | null;
   feeds: string;
@@ -95,13 +95,27 @@ function computeExecTone(
 ): ExecTone {
   const ex = node.execution;
   const cache = node.cache;
-  if (ex === "running" || ex === "pending") return "running";
-  if (ex === "failed") return "failed";
-  if (!isAcquisitionCsvKind(kind) && incomingPortCount === 0) return "no_inputs";
-  if (ex === "succeeded" && cache === "hit") return "ok_hit";
-  if (cache === "stale") return "stale";
-  if (ex === "idle" && cache === "miss") return "idle_miss";
-  return "default";
+  const isFailed = ex === "failed" || (node.last_error ?? "").trim().length > 0;
+  if (isFailed) return "error";
+
+  const ui = (
+    node.config?.params?.ui &&
+    typeof node.config.params.ui === "object" &&
+    !Array.isArray(node.config.params.ui)
+      ? node.config.params.ui
+      : {}
+  ) as Record<string, unknown>;
+  const csvRows = ui.csv_rows;
+  const hasCsvRows = Array.isArray(csvRows) && csvRows.length > 0;
+  const needsCsv = isAcquisitionCsvKind(kind);
+  const noWiredInputs = !needsCsv && incomingPortCount === 0;
+  const missingInputConfig = needsCsv && !hasCsvRows;
+  if (noWiredInputs || missingInputConfig) return "unset";
+
+  if (node.policy.recompute === "manual") return "locked";
+  if (ex === "succeeded" && cache === "hit") return "current";
+  if (cache === "stale" || cache === "miss") return "stale";
+  return "stale";
 }
 
 function borderStyleForExec(
@@ -109,18 +123,16 @@ function borderStyleForExec(
   categoryAccent: string
 ): { width: number; color: string; style: "solid" | "dashed" } {
   switch (tone) {
-    case "running":
-      return { width: 2, color: "#58a6ff", style: "solid" };
-    case "failed":
+    case "error":
       return { width: 2, color: "#f85149", style: "solid" };
-    case "ok_hit":
+    case "current":
       return { width: 2, color: "#3fb950", style: "solid" };
     case "stale":
       return { width: 2, color: "#d29922", style: "solid" };
-    case "idle_miss":
+    case "locked":
+      return { width: 2, color: "#a371f7", style: "solid" };
+    case "unset":
       return { width: 2, color: "#6e7681", style: "dashed" };
-    case "no_inputs":
-      return { width: 2, color: "#a371f7", style: "dashed" };
     default:
       return { width: 1, color: categoryAccent, style: "solid" };
   }
@@ -168,11 +180,11 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
   const ctx = useContextOptional();
   const nIn = data.incomingPorts.length;
   const nOut = data.outgoingPorts.length;
-  const b = borderStyleForExec(data.execTone, data.categoryAccent);
+  const b = borderStyleForExec(data.nodeState, data.categoryAccent);
 
   return (
     <div
-      className={data.execTone === "running" ? "mineeye-node-running" : undefined}
+      className={data.isRunning ? "mineeye-node-running" : undefined}
       style={{
         background: "#21262d",
         color: "#e6edf3",
@@ -218,23 +230,26 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
         >
           {data.category}
         </span>
-        {data.busy && <span style={{ fontSize: 10, color: "#58a6ff" }}>Running…</span>}
-        {data.execTone === "failed" && (
+        {data.isRunning && <span style={{ fontSize: 10, color: "#58a6ff" }}>Running…</span>}
+        {data.nodeState === "error" && (
           <span style={{ fontSize: 10, color: "#f85149", fontWeight: 600 }}>Error</span>
         )}
-        {data.execTone === "stale" && !data.busy && (
+        {data.nodeState === "stale" && !data.isRunning && (
           <span style={{ fontSize: 10, color: "#d29922" }}>Stale</span>
         )}
-        {data.execTone === "ok_hit" && !data.busy && (
-          <span style={{ fontSize: 10, color: "#3fb950" }}>OK</span>
+        {data.nodeState === "current" && !data.isRunning && (
+          <span style={{ fontSize: 10, color: "#3fb950" }}>Current</span>
         )}
-        {data.execTone === "no_inputs" && (
-          <span style={{ fontSize: 10, color: "#a371f7" }}>No inputs</span>
+        {data.nodeState === "locked" && !data.isRunning && (
+          <span style={{ fontSize: 10, color: "#a371f7" }}>Locked</span>
+        )}
+        {data.nodeState === "unset" && !data.isRunning && (
+          <span style={{ fontSize: 10, color: "#8b949e" }}>Unset</span>
         )}
       </div>
       <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{data.title}</div>
       <div style={{ fontSize: 11, opacity: 0.82, marginTop: 5, lineHeight: 1.35 }}>{data.role}</div>
-      {data.execTone === "failed" && data.lastErrorShort && (
+      {data.nodeState === "error" && data.lastErrorShort && (
         <div
           style={{
             fontSize: 10,
@@ -247,7 +262,7 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
           {data.lastErrorShort}
         </div>
       )}
-      {((data.showCsv && ctx && id) || (ctx && id) || (data.execTone === "failed" && ctx && id)) && (
+      {((data.showCsv && ctx && id) || (ctx && id) || (data.nodeState === "error" && ctx && id)) && (
         <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
           {data.showCsv && ctx && id && (
             <>
@@ -276,6 +291,20 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
           {ctx && id && (
             <button
               type="button"
+              style={runBtn}
+              title={data.isLocked ? "Run this node now (includes manual nodes for this run)." : "Run this node now"}
+              disabled={data.isRunning}
+              onClick={(e) => {
+                e.stopPropagation();
+                void ctx.queueNodeRun(id, { includeManual: true });
+              }}
+            >
+              Run
+            </button>
+          )}
+          {ctx && id && (
+            <button
+              type="button"
               style={mapBtn}
               title="Open node preview"
               onClick={(e) => {
@@ -286,7 +315,7 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
               Preview
             </button>
           )}
-          {data.execTone === "failed" && ctx && id && (
+          {data.nodeState === "error" && ctx && id && (
             <button
               type="button"
               style={miniBtn}
@@ -369,6 +398,12 @@ const mapBtn: CSSProperties = {
   ...miniBtn,
   color: "#34d399",
   borderColor: "#1f6f55",
+};
+
+const runBtn: CSSProperties = {
+  ...miniBtn,
+  color: "#58a6ff",
+  borderColor: "#1f6feb",
 };
 
 const menuBtn: CSSProperties = {
@@ -471,8 +506,9 @@ function toFlowElements(
     const title = kind.replace(/_/g, " ");
     const role = nodeRole(kind) ?? `Node · ${kind}`;
     const incomingPorts = incomingPortIds(node.id, kind, edges);
-    const execTone = computeExecTone(node, incomingPorts.length, kind);
-    const busy = execTone === "running";
+    const nodeState = computeExecTone(node, incomingPorts.length, kind);
+    const isRunning = node.execution === "running" || node.execution === "pending";
+    const isLocked = node.policy.recompute === "manual";
     const cat = node.category;
     const categoryAccent = CAT_ACCENT[cat] ?? "#484f58";
     const hashShort = node.content_hash
@@ -515,8 +551,9 @@ function toFlowElements(
         categoryAccent,
         statusLine: `Execution: ${node.execution} · cache: ${node.cache}`,
         hashShort,
-        busy,
-        execTone,
+        isRunning,
+        nodeState,
+        isLocked,
         lastErrorShort: shortErr(node.last_error),
         lastErrorFull: node.last_error,
         feeds: feeds.get(node.id) ?? "",
@@ -627,9 +664,24 @@ function FlowWorkspace({
     [onOpenNodeViewer]
   );
 
+  const queueNodeRun = useCallback(
+    async (nodeId: string, opts?: { includeManual?: boolean }) => {
+      try {
+        await runGraph(graphId, {
+          dirtyRoots: [nodeId],
+          includeManual: opts?.includeManual ?? true,
+        });
+        onPipelineQueued?.();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [graphId, onPipelineQueued]
+  );
+
   const ctxValue = useMemo(
-    () => ({ openInspector, openNodeViewer }),
-    [openInspector, openNodeViewer]
+    () => ({ openInspector, openNodeViewer, queueNodeRun }),
+    [openInspector, openNodeViewer, queueNodeRun]
   );
 
   const load = useCallback(async () => {
@@ -781,7 +833,8 @@ function FlowWorkspace({
 
   const onNodeUpdated = useCallback((n: ApiNode) => {
     setApiNodes((prev) => prev.map((x) => (x.id === n.id ? n : x)));
-  }, []);
+    void load();
+  }, [load]);
 
   const proOptions = useMemo(() => ({ hideAttribution: true }), []);
 

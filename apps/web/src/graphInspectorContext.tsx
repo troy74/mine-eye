@@ -11,6 +11,8 @@ type Ctx = {
   openInspector: (nodeId: string, tab?: InspectorTab) => void;
   /** Open/focus a preview tab for this node. */
   openNodeViewer: (nodeId: string) => void;
+  /** Queue this node (and downstream) for execution. */
+  queueNodeRun: (nodeId: string, opts?: { includeManual?: boolean }) => Promise<void>;
 };
 
 export const GraphInspectorContext = createContext<Ctx | null>(null);

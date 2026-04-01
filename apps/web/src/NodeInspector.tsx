@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { parseCsv } from "./csvParse";
 import type { ApiNode, ArtifactEntry } from "./graphApi";
-import { patchNodeParams } from "./graphApi";
+import { patchNodeParams, runGraph } from "./graphApi";
 import { NodeOutputPanel } from "./NodeOutputPanel";
 import { NodePreviewSnippet } from "./NodePreviewSnippet";
 import { PORT_TAXONOMY_SUMMARY } from "./portTaxonomy";
@@ -112,6 +112,12 @@ export function NodeInspector({
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [policyBusy, setPolicyBusy] = useState(false);
+  const [policyMsg, setPolicyMsg] = useState<string | null>(null);
+  const [policyErr, setPolicyErr] = useState<string | null>(null);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runMsg, setRunMsg] = useState<string | null>(null);
+  const [runErr, setRunErr] = useState<string | null>(null);
 
   useEffect(() => {
     const u = getUiParams(node);
@@ -157,6 +163,13 @@ export function NodeInspector({
       setPreviewRows([]);
     }
   }, [node]);
+
+  useEffect(() => {
+    setPolicyMsg(null);
+    setPolicyErr(null);
+    setRunMsg(null);
+    setRunErr(null);
+  }, [node.id]);
 
   useEffect(() => {
     const q = crsSearchQuery.trim();
@@ -262,6 +275,71 @@ export function NodeInspector({
     outputCustomEpsg,
     onNodeUpdated,
   ]);
+
+  const setRecomputePolicy = useCallback(
+    async (next: "auto" | "manual") => {
+      setPolicyBusy(true);
+      setPolicyMsg(null);
+      setPolicyErr(null);
+      try {
+        const updated = await patchNodeParams(
+          graphId,
+          node.id,
+          {},
+          {
+            branchId: activeBranchId,
+            policy: {
+              recompute: next,
+              propagation:
+                node.policy.propagation === "eager" ||
+                node.policy.propagation === "debounce" ||
+                node.policy.propagation === "hold"
+                  ? node.policy.propagation
+                  : "debounce",
+              quality:
+                node.policy.quality === "preview" || node.policy.quality === "final"
+                  ? node.policy.quality
+                  : "preview",
+            },
+          }
+        );
+        onNodeUpdated(updated);
+        setPolicyMsg(
+          next === "auto"
+            ? "Autorun enabled for this node."
+            : "Autorun disabled (node is locked until manually run)."
+        );
+      } catch (e) {
+        setPolicyErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setPolicyBusy(false);
+      }
+    },
+    [activeBranchId, graphId, node.id, node.policy.propagation, node.policy.quality, onNodeUpdated]
+  );
+
+  const runThisNode = useCallback(async () => {
+    setRunBusy(true);
+    setRunMsg(null);
+    setRunErr(null);
+    try {
+      const res = await runGraph(graphId, { dirtyRoots: [node.id], includeManual: true });
+      const nq = res.queued?.length ?? 0;
+      const ns = res.skipped_manual?.length ?? 0;
+      setRunMsg(
+        nq > 0
+          ? ns > 0
+            ? `Queued ${nq} job(s); ${ns} still skipped manual.`
+            : `Queued ${nq} job(s).`
+          : "No jobs queued."
+      );
+      onPipelineQueued?.();
+    } catch (e) {
+      setRunErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunBusy(false);
+    }
+  }, [graphId, node.id, onPipelineQueued]);
 
   const selectCol = (field: string, label: string) => (
     <label style={lab}>
@@ -394,6 +472,10 @@ export function NodeInspector({
               <dd style={{ margin: "2px 0 10px" }}>{node.execution}</dd>
               <dt style={{ opacity: 0.55, fontSize: 10 }}>Cache</dt>
               <dd style={{ margin: "2px 0 10px" }}>{node.cache}</dd>
+              <dt style={{ opacity: 0.55, fontSize: 10 }}>Recompute policy</dt>
+              <dd style={{ margin: "2px 0 10px" }}>
+                {node.policy.recompute === "manual" ? "manual (locked)" : "auto"}
+              </dd>
               <dt style={{ opacity: 0.55, fontSize: 10 }}>Content hash</dt>
               <dd style={{ margin: "2px 0 10px", wordBreak: "break-all" }}>
                 {node.content_hash ?? "—"}
@@ -434,6 +516,50 @@ export function NodeInspector({
               Survey/collar/assay CSV nodes need <strong>Save to node</strong> after mapping so the
               orchestrator can attach preview rows to the job payload.
             </p>
+            <div
+              style={{
+                marginTop: 14,
+                borderTop: "1px solid #30363d",
+                paddingTop: 12,
+              }}
+            >
+              <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 8 }}>
+                <strong>Run Controls</strong>
+              </div>
+              <label style={lab}>
+                <span style={labSpan}>Autorun on change</span>
+                <select
+                  value={node.policy.recompute === "manual" ? "manual" : "auto"}
+                  onChange={(e) =>
+                    void setRecomputePolicy(
+                      e.target.value === "manual" ? "manual" : "auto"
+                    )
+                  }
+                  disabled={policyBusy}
+                  style={sel}
+                >
+                  <option value="auto">Auto</option>
+                  <option value="manual">Manual (locked)</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={() => void runThisNode()}
+                disabled={runBusy}
+                style={{
+                  ...btnPrimary,
+                  width: "100%",
+                  marginTop: 4,
+                  background: "#1f6feb",
+                }}
+              >
+                {runBusy ? "Queuing…" : "Run this node now"}
+              </button>
+              {policyMsg && <p style={{ color: "#3fb950", marginTop: 8, fontSize: 11 }}>{policyMsg}</p>}
+              {policyErr && <p style={{ color: "#f85149", marginTop: 8, fontSize: 11 }}>{policyErr}</p>}
+              {runMsg && <p style={{ color: "#3fb950", marginTop: 8, fontSize: 11 }}>{runMsg}</p>}
+              {runErr && <p style={{ color: "#f85149", marginTop: 8, fontSize: 11 }}>{runErr}</p>}
+            </div>
           </div>
         )}
 

@@ -285,8 +285,19 @@ export default function App() {
     void refreshArtifacts(graphId);
     void refreshGraphEdges(graphId);
     void refreshBranching(graphId);
-    const t = setInterval(() => refreshArtifacts(graphId), 12000);
-    return () => clearInterval(t);
+    const es = new EventSource(api(`/graphs/${graphId}/events`));
+    es.addEventListener("changed", () => {
+      void refreshArtifacts(graphId);
+      void refreshGraphEdges(graphId);
+      void refreshBranching(graphId);
+      setGraphRefreshToken((t) => t + 1);
+    });
+    es.addEventListener("error", () => {
+      // EventSource auto-reconnects; keep UI quiet unless manual refresh is needed.
+    });
+    return () => {
+      es.close();
+    };
   }, [graphId, refreshArtifacts, refreshGraphEdges, refreshBranching]);
 
   useEffect(() => {
