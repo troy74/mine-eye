@@ -182,6 +182,12 @@ A visualisation node with **inputs only**. The 2D map **must not** infer data fr
 - Manifest layers carry:
   - source node/edge provenance
   - artifact identity (`artifact_key`, `content_hash`, URL)
-  - `presentation` metadata inferred from artifact contracts (`display_contract`, `heatmap_config`, `measure_candidates`, stats/surface/contour hints)
+  - `presentation` metadata inferred from artifact contracts (`display_contract`, `heatmap_config`, `measure_candidates`, stats/surface/contour hints), plus renderer hints for 3D layers (`terrain`, `trace_polyline`, `grade_segments`, `sample_points`)
 - UI clients (web/iOS/desktop) should consume this manifest first and avoid duplicating rendering inference logic in each client.
 - Frontend-only parsing remains fallback behavior for legacy artifacts while contracts converge.
+
+### 18. Viewer Nodes (V1)
+
+- `plan_view_2d`: plan map with Esri basemap and layered overlays from wired inputs.
+- `plan_view_3d`: 3D scene with terrain + imagery baseline and layered traces/segments/samples from wired inputs.
+- Both are manual recompute visualisation nodes and support persisted viewer UI state in node params (`ui`).

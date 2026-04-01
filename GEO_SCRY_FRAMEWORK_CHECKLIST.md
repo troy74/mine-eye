@@ -42,6 +42,8 @@ Assessment date: 2026-04-01.
 - Added viewer manifest endpoint (`GET /graphs/{graph_id}/viewers/{viewer_node_id}/manifest`) as middleware-owned rendering contract.
 - Added backend presentation broker module (orchestrator) to infer per-layer UI metadata from artifacts (`display_contract`, `heatmap_config`, `measure_candidates`, contour/surface hints).
 - Web 2D viewer now consumes manifest presentation metadata first (with legacy fallback parsing), reducing UI-specific rendering drift.
+- Added `plan_view_3d` node type and runtime support (`mine-eye-nodes` executor + worker artifact output).
+- Added web `Map3DPanel` (Cesium) using viewer manifest + wired input artifacts to render terrain baseline, drill traces, grade segments, and assay points with persisted layer/measure/palette controls.
 
 ---
 

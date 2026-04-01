@@ -62,7 +62,8 @@ pub async fn build_viewer_manifest(
             if !(lower.ends_with(".json") || lower.ends_with(".geojson")) {
                 continue;
             }
-            let presentation = layer_presentation_from_artifact(artifact_root, &key).await;
+            let presentation =
+                layer_presentation_from_artifact(artifact_root, &key, &source_kind).await;
             layers.push(ViewerManifestLayer {
                 source_node_id: edge.from_node,
                 source_node_kind: source_kind.clone(),
@@ -95,7 +96,11 @@ pub async fn build_viewer_manifest(
     })
 }
 
-async fn layer_presentation_from_artifact(artifact_root: &Path, key: &str) -> serde_json::Value {
+async fn layer_presentation_from_artifact(
+    artifact_root: &Path,
+    key: &str,
+    source_kind: &str,
+) -> serde_json::Value {
     let mut out = serde_json::json!({
         "renderer": "generic",
         "editable": ["visible", "opacity", "style"],
@@ -103,7 +108,22 @@ async fn layer_presentation_from_artifact(artifact_root: &Path, key: &str) -> se
         "has_contours": key.to_ascii_lowercase().ends_with(".geojson"),
         "measure_candidates": [],
     });
-    if !key.to_ascii_lowercase().ends_with(".json") {
+    let lower = key.to_ascii_lowercase();
+    let sk = source_kind.to_ascii_lowercase();
+    if sk == "desurvey_trajectory" {
+        out["renderer"] = serde_json::json!("trace_polyline");
+        out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
+    } else if sk == "drillhole_model" && lower.contains("drillhole_meshes") {
+        out["renderer"] = serde_json::json!("grade_segments");
+        out["editable"] = serde_json::json!(["visible", "opacity", "width", "measure", "palette"]);
+    } else if lower.contains("assay_points") || sk == "assay_ingest" {
+        out["renderer"] = serde_json::json!("sample_points");
+        out["editable"] = serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
+    } else if sk == "dem_integrate" || lower.contains("dem") {
+        out["renderer"] = serde_json::json!("terrain");
+        out["editable"] = serde_json::json!(["visible", "opacity"]);
+    }
+    if !lower.ends_with(".json") {
         return out;
     }
     let path = artifact_root.join(key);

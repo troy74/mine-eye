@@ -7,7 +7,7 @@ use mine_eye_types::{JobEnvelope, JobResult};
 use crate::kinds::{
     run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
     run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
-    run_plan_view_2d,
+    run_plan_view_2d, run_plan_view_3d,
     run_surface_sample_ingest, run_survey_ingest,
 };
 use crate::NodeError;
@@ -53,6 +53,7 @@ impl RegistryExecutor {
         inner.insert("dem_integrate".into(), Arc::new(DemExecutor));
         inner.insert("block_model_basic".into(), Arc::new(BlockModelExecutor));
         inner.insert("plan_view_2d".into(), Arc::new(PlanView2DExecutor));
+        inner.insert("plan_view_3d".into(), Arc::new(PlanView3DExecutor));
         Self { inner }
     }
 }
@@ -224,6 +225,19 @@ impl NodeExecutor for PlanView2DExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_plan_view_2d(ctx, job).await
+    }
+}
+
+struct PlanView3DExecutor;
+
+#[async_trait]
+impl NodeExecutor for PlanView3DExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_plan_view_3d(ctx, job).await
     }
 }
 

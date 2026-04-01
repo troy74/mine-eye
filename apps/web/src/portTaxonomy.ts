@@ -103,6 +103,19 @@ export function isPlanViewInputSemantic(semantic: string): boolean {
   );
 }
 
+/** Semantics allowed into 3D scene viewer inputs in v1. */
+export function isSceneViewInputSemantic(semantic: string): boolean {
+  const k = normalizeSemantic(semantic);
+  return (
+    k === "point_set" ||
+    k === "table" ||
+    k === "interval_set" ||
+    k === "trajectory_set" ||
+    k === "surface" ||
+    k === "mesh"
+  );
+}
+
 /** Short doc block for inspector / V1SPEC alignment. */
 export const PORT_TAXONOMY_SUMMARY = `
 Base types: text, number, boolean, datetime; unconstrained dataframe; dataframe.2d (x,y + attrs);

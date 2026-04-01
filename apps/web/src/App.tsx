@@ -25,6 +25,7 @@ import {
 } from "./graphApi";
 import { LeftSidebar } from "./LeftSidebar";
 import { Map2DPanel } from "./Map2DPanel";
+import { Map3DPanel } from "./Map3DPanel";
 import { NodePreviewPanel } from "./NodePreviewPanel";
 import { loadNodeRegistryFromApi } from "./nodeRegistry";
 import {
@@ -414,14 +415,17 @@ export default function App() {
 
       if (!graphId) return;
       const node = graphNodes.find((n) => n.id === nodeId);
-      if (!node || node.config.kind !== "plan_view_2d") return;
+      if (!node) return;
+      const isViewerNode =
+        node.config.kind === "plan_view_2d" || node.config.kind === "plan_view_3d";
+      if (!isViewerNode) return;
 
       const upstream = graphEdges
         .filter((e) => e.to_node === nodeId)
         .map((e) => e.from_node);
 
       if (node.execution === "failed") {
-        setStatus("2D viewer node is failed; re-queuing that node now…");
+        setStatus(`${node.config.kind.replace(/_/g, " ")} is failed; re-queuing now…`);
         void (async () => {
           try {
             await runGraph(graphId, { dirtyRoots: [nodeId], includeManual: true });
@@ -437,7 +441,7 @@ export default function App() {
       const hasUpstreamArtifacts = artifacts.some((a) => upstreamSet.has(a.node_id));
       if (hasUpstreamArtifacts) return;
 
-      setStatus("No upstream artifacts for 2D view yet; queuing a run now…");
+      setStatus(`No upstream artifacts for ${node.config.kind.replace(/_/g, " ")} yet; queuing now…`);
       void (async () => {
         try {
           const res = await runGraph(graphId);
@@ -450,7 +454,7 @@ export default function App() {
                 : "No jobs queued."
             );
           } else {
-            setStatus(`Queued ${nq} job(s) for viewer inputs. Run worker to materialize artifacts.`);
+          setStatus(`Queued ${nq} job(s) for viewer inputs. Run worker to materialize artifacts.`);
           }
           refreshAll();
         } catch (e) {
@@ -710,6 +714,16 @@ export default function App() {
                     </div>
                   ) : node.config.kind === "plan_view_2d" ? (
                     <Map2DPanel
+                      graphId={graphId}
+                      activeBranchId={activeBranchId}
+                      active={active}
+                      edges={graphEdges}
+                      artifacts={artifacts}
+                      viewerNodeId={nodeId}
+                      onClearViewer={() => closeNodeViewer(nodeId)}
+                    />
+                  ) : node.config.kind === "plan_view_3d" ? (
+                    <Map3DPanel
                       graphId={graphId}
                       activeBranchId={activeBranchId}
                       active={active}

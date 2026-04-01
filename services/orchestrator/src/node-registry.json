@@ -107,6 +107,27 @@
         ],
         "outputs": []
       }
+    },
+    {
+      "kind": "plan_view_3d",
+      "category": "visualisation",
+      "label": "3D scene view",
+      "role": "Visualisation · 3D terrain + drill traces/segments",
+      "menu": { "enabled": true, "order": 95 },
+      "policy": { "recompute": "manual", "propagation": "hold", "quality": "preview" },
+      "ports": {
+        "inputs": [
+          { "id": "terrain_in", "label": "Terrain", "semantic": "surface" },
+          { "id": "traces_in", "label": "Traces", "semantic": "trajectory_set" },
+          { "id": "segments_in", "label": "Segments", "semantic": "mesh" },
+          { "id": "samples_in", "label": "Samples", "semantic": "table" },
+          { "id": "in_5", "label": "In 5", "semantic": "table" },
+          { "id": "in_6", "label": "In 6", "semantic": "table" },
+          { "id": "in_7", "label": "In 7", "semantic": "table" },
+          { "id": "in_8", "label": "In 8", "semantic": "table" }
+        ],
+        "outputs": []
+      }
     }
   ]
 }

@@ -12,6 +12,7 @@
     "@react-three/drei": "^10.0.0",
     "@react-three/fiber": "^9.0.0",
     "@xyflow/react": "^12.10.2",
+    "cesium": "^1.139.1",
     "leaflet": "^1.9.4",
     "proj4": "^2.20.4",
     "react": "^19.0.0",
