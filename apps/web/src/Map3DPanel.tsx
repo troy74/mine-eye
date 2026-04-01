@@ -33,12 +33,14 @@ type Point3D = {
   x: number;
   y: number;
   z: number;
+  epsg?: number;
   measures?: Record<string, number>;
 };
 
 type Segment3D = {
   from: [number, number, number];
   to: [number, number, number];
+  epsg?: number;
   measures?: Record<string, number>;
 };
 
@@ -46,6 +48,7 @@ type TerrainPoint = {
   x: number;
   y: number;
   z: number;
+  epsg?: number;
 };
 
 type SceneData = {
@@ -167,6 +170,14 @@ function parseSceneJson(
 
   const lowerKey = manifestLayer?.artifact_key.toLowerCase() ?? "";
   const sourceKind = manifestLayer?.source_node_kind ?? "";
+  let artifactEpsg: number | undefined;
+  if (!Array.isArray(root) && root && typeof root === "object") {
+    const crs = (root as Record<string, unknown>).crs;
+    if (crs && typeof crs === "object" && !Array.isArray(crs)) {
+      const e = n((crs as Record<string, unknown>).epsg);
+      if (e !== null) artifactEpsg = Math.trunc(e);
+    }
+  }
 
   const maybePushSegment = (
     xf: unknown,
@@ -176,7 +187,8 @@ function parseSceneJson(
     yt: unknown,
     zt: unknown,
     target: Segment3D[],
-    segMeasures?: Record<string, number>
+    segMeasures?: Record<string, number>,
+    epsg?: number
   ) => {
     const x0 = n(xf);
     const y0 = n(yf);
@@ -188,6 +200,7 @@ function parseSceneJson(
     target.push({
       from: [x0, y0, z0],
       to: [x1, y1, z1],
+      epsg,
       measures: segMeasures,
     });
     if (segMeasures) {
@@ -195,7 +208,13 @@ function parseSceneJson(
     }
   };
 
-  const maybePushPoint = (xv: unknown, yv: unknown, zv: unknown, rawMeasures?: unknown) => {
+  const maybePushPoint = (
+    xv: unknown,
+    yv: unknown,
+    zv: unknown,
+    rawMeasures?: unknown,
+    epsg?: number
+  ) => {
     const x = n(xv);
     const y = n(yv);
     const z = n(zv) ?? 0;
@@ -206,6 +225,7 @@ function parseSceneJson(
       x,
       y,
       z,
+      epsg,
       measures: Object.keys(parsedMeasures).length ? parsedMeasures : undefined,
     });
   };
@@ -215,6 +235,11 @@ function parseSceneJson(
       if (!row || typeof row !== "object" || Array.isArray(row)) continue;
       const r = row as Record<string, unknown>;
       if ("x_from" in r && "y_from" in r && "x_to" in r && "y_to" in r) {
+        let rowEpsg = artifactEpsg;
+        if (r.crs && typeof r.crs === "object" && !Array.isArray(r.crs)) {
+          const e = n((r.crs as Record<string, unknown>).epsg);
+          if (e !== null) rowEpsg = Math.trunc(e);
+        }
         maybePushSegment(
           r.x_from,
           r.y_from,
@@ -223,6 +248,9 @@ function parseSceneJson(
           r.y_to,
           r.z_to,
           sourceKind === "desurvey_trajectory" ? traces : drillSegments
+          ,
+          undefined,
+          rowEpsg
         );
       }
     }
@@ -246,7 +274,8 @@ function parseSceneJson(
             to_xyz[1],
             to_xyz[2],
             drillSegments,
-            segMeasures
+            segMeasures,
+            artifactEpsg
           );
         } else {
           maybePushSegment(
@@ -257,7 +286,8 @@ function parseSceneJson(
             r.y_to,
             r.z_to,
             drillSegments,
-            segMeasures
+            segMeasures,
+            artifactEpsg
           );
         }
       }
@@ -268,7 +298,7 @@ function parseSceneJson(
       for (const row of assayPts) {
         if (!row || typeof row !== "object" || Array.isArray(row)) continue;
         const r = row as Record<string, unknown>;
-        maybePushPoint(r.x, r.y, r.z, r.attributes);
+        maybePushPoint(r.x, r.y, r.z, r.attributes, artifactEpsg);
       }
     }
 
@@ -277,7 +307,7 @@ function parseSceneJson(
       for (const row of pts) {
         if (!row || typeof row !== "object" || Array.isArray(row)) continue;
         const r = row as Record<string, unknown>;
-        maybePushPoint(r.x, r.y, r.z, r.attributes);
+        maybePushPoint(r.x, r.y, r.z, r.attributes, artifactEpsg);
       }
     }
 
@@ -321,6 +351,7 @@ function parseSceneJson(
               x: xmin + ix * stepX,
               y: ymin + iy * stepY,
               z: zv,
+              epsg: artifactEpsg,
             });
           }
         }
@@ -356,6 +387,7 @@ function parseSceneJson(
       contourSegments.push({
         from: [x0, y0, z0],
         to: [x1, y1, z1],
+        epsg: artifactEpsg,
       });
     }
   }
@@ -697,11 +729,12 @@ export function Map3DPanel({
         viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
         viewer.camera.moveStart.addEventListener(() => setCameraMoved(true));
         viewerRef.current = viewer;
-        setStatus(
-          CESIUM_TOKEN.trim().length > 0
+        setStatus((prev) => {
+          if (!prev.startsWith("Loading")) return prev;
+          return CESIUM_TOKEN.trim().length > 0
             ? "3D viewer ready."
-            : "3D viewer ready (no Cesium token detected; ion-backed features may be limited)."
-        );
+            : "3D viewer ready (no Cesium token detected; ion-backed features may be limited).";
+        });
       } catch (e) {
         setStatus(`3D init failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -860,12 +893,17 @@ export function Map3DPanel({
       const coordsForFit: Array<[number, number, number]> = [];
       let idx = 0;
       const widthScale = Math.max(0.1, ui.radiusScale);
+      let conversionMisses = 0;
 
       if (ui.showTraces) {
         for (const s of sceneData.traces) {
-          const ll0 = await toLonLat(projectEpsg, s.from[0], s.from[1]);
-          const ll1 = await toLonLat(projectEpsg, s.to[0], s.to[1]);
-          if (cancelled || !ll0 || !ll1) continue;
+          const epsg = s.epsg ?? projectEpsg;
+          const ll0 = await toLonLat(epsg, s.from[0], s.from[1]);
+          const ll1 = await toLonLat(epsg, s.to[0], s.to[1]);
+          if (cancelled || !ll0 || !ll1) {
+            conversionMisses += 1;
+            continue;
+          }
           coordsForFit.push([ll0[0], ll0[1], s.from[2]]);
           coordsForFit.push([ll1[0], ll1[1], s.to[2]]);
           const id = `trace-${idx++}`;
@@ -891,9 +929,13 @@ export function Map3DPanel({
 
       if (ui.showSegments) {
         for (const s of sceneData.drillSegments) {
-          const ll0 = await toLonLat(projectEpsg, s.from[0], s.from[1]);
-          const ll1 = await toLonLat(projectEpsg, s.to[0], s.to[1]);
-          if (cancelled || !ll0 || !ll1) continue;
+          const epsg = s.epsg ?? projectEpsg;
+          const ll0 = await toLonLat(epsg, s.from[0], s.from[1]);
+          const ll1 = await toLonLat(epsg, s.to[0], s.to[1]);
+          if (cancelled || !ll0 || !ll1) {
+            conversionMisses += 1;
+            continue;
+          }
           coordsForFit.push([ll0[0], ll0[1], s.from[2]]);
           coordsForFit.push([ll1[0], ll1[1], s.to[2]]);
           const mVal =
@@ -923,9 +965,13 @@ export function Map3DPanel({
 
       if (ui.showContours) {
         for (const s of sceneData.contourSegments) {
-          const ll0 = await toLonLat(projectEpsg, s.from[0], s.from[1]);
-          const ll1 = await toLonLat(projectEpsg, s.to[0], s.to[1]);
-          if (cancelled || !ll0 || !ll1) continue;
+          const epsg = s.epsg ?? projectEpsg;
+          const ll0 = await toLonLat(epsg, s.from[0], s.from[1]);
+          const ll1 = await toLonLat(epsg, s.to[0], s.to[1]);
+          if (cancelled || !ll0 || !ll1) {
+            conversionMisses += 1;
+            continue;
+          }
           coordsForFit.push([ll0[0], ll0[1], s.from[2]]);
           coordsForFit.push([ll1[0], ll1[1], s.to[2]]);
           const id = `ctr-${idx++}`;
@@ -951,8 +997,12 @@ export function Map3DPanel({
 
       if (ui.showSamples) {
         for (const p of sceneData.assayPoints) {
-          const ll = await toLonLat(projectEpsg, p.x, p.y);
-          if (cancelled || !ll) continue;
+          const epsg = p.epsg ?? projectEpsg;
+          const ll = await toLonLat(epsg, p.x, p.y);
+          if (cancelled || !ll) {
+            conversionMisses += 1;
+            continue;
+          }
           coordsForFit.push([ll[0], ll[1], p.z]);
           const mVal =
             measure && p.measures && typeof p.measures[measure] === "number"
@@ -976,8 +1026,12 @@ export function Map3DPanel({
 
       if (ui.showTerrain) {
         for (const p of sceneData.terrainPoints) {
-          const ll = await toLonLat(projectEpsg, p.x, p.y);
-          if (cancelled || !ll) continue;
+          const epsg = p.epsg ?? projectEpsg;
+          const ll = await toLonLat(epsg, p.x, p.y);
+          if (cancelled || !ll) {
+            conversionMisses += 1;
+            continue;
+          }
           coordsForFit.push([ll[0], ll[1], p.z]);
           const id = `ter-${idx++}`;
           viewer.entities.add({
@@ -1019,6 +1073,22 @@ export function Map3DPanel({
           });
         } catch {
           /* ignore */
+        }
+      }
+      if (!cancelled) {
+        const drawn = renderedEntityIdsRef.current.length;
+        if (drawn === 0) {
+          setStatus(
+            conversionMisses > 0
+              ? `No renderable coordinates after CRS conversion (${conversionMisses} failed conversions). Check project CRS and source CRS.`
+              : "No renderable entities from connected artifacts. Check wiring and outputs."
+          );
+        } else if (conversionMisses > 0) {
+          setStatus(
+            `Rendered ${drawn} entities (${conversionMisses} skipped due to CRS conversion issues).`
+          );
+        } else {
+          setStatus(`Rendered ${drawn} entities.`);
         }
       }
     })();
