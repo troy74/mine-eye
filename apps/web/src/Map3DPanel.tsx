@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
+  api,
   fetchGraph,
   fetchViewerManifest,
   patchNodeParams,
@@ -816,7 +817,7 @@ export function Map3DPanel({
 
       for (const art of source) {
         try {
-          const r = await fetch(art.url);
+          const r = await fetch(api(art.url));
           if (!r.ok) continue;
           const txt = await r.text();
           const parsed = parseSceneJson(
