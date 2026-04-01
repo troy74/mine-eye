@@ -194,6 +194,7 @@ export function Map2DPanel({
   const loadTokenRef = useRef(0);
   const loadInFlightRef = useRef(false);
   const loadSigRef = useRef("");
+  const autoFitContextRef = useRef<string>("");
 
   const sourceById = useMemo(() => new Map(sourceData.map((s) => [s.id, s])), [sourceData]);
   const inputLinks = useMemo(
@@ -235,6 +236,7 @@ export function Map2DPanel({
       lastViewContextRef.current = ctx;
       userMovedMapRef.current = false;
       lastArtifactSigRef.current = "";
+      autoFitContextRef.current = "";
       try {
         const raw = localStorage.getItem(cacheKeyForView(graphId, viewerNodeId));
         if (raw) {
@@ -331,6 +333,29 @@ export function Map2DPanel({
     }, 30);
     return () => window.clearTimeout(tid);
   }, [active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const map = mapRef.current;
+    if (!map) return;
+    if (!graphId || !viewerNodeId) return;
+    if (sourceData.length === 0) return;
+    if (userMovedMapRef.current) return;
+
+    const viewCtx = `${graphId}:${viewerNodeId}`;
+    if (autoFitContextRef.current === viewCtx) return;
+
+    const fit: L.LatLngExpression[] = [];
+    sourceData.forEach((src) =>
+      src.points.forEach((p) => {
+        fit.push([p.lat, p.lon]);
+      })
+    );
+    if (fit.length === 0) return;
+
+    map.fitBounds(L.latLngBounds(fit).pad(0.25));
+    autoFitContextRef.current = viewCtx;
+  }, [active, graphId, viewerNodeId, sourceData]);
 
   useEffect(() => {
     const map = mapRef.current;
