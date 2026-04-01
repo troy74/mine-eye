@@ -52,6 +52,86 @@ type SourceData = {
   surfaceGrid?: HeatSurfaceGrid | null;
 };
 
+function normalizeSourceData(raw: unknown): SourceData[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((x) => {
+      if (!x || typeof x !== "object") return null;
+      const o = x as Record<string, unknown>;
+      const id = typeof o.id === "string" ? o.id : "";
+      const label = typeof o.label === "string" ? o.label : id;
+      if (!id) return null;
+
+      const pointsRaw = Array.isArray(o.points) ? o.points : [];
+      const points: RenderPoint[] = pointsRaw
+        .map((p) => {
+          if (!p || typeof p !== "object") return null;
+          const pp = p as Record<string, unknown>;
+          const lat = typeof pp.lat === "number" ? pp.lat : NaN;
+          const lon = typeof pp.lon === "number" ? pp.lon : NaN;
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+          const label = typeof pp.label === "string" ? pp.label : "";
+          const measures =
+            pp.measures && typeof pp.measures === "object" && !Array.isArray(pp.measures)
+              ? (pp.measures as Record<string, number>)
+              : {};
+          return { lat, lon, label, measures };
+        })
+        .filter((p): p is RenderPoint => p !== null);
+
+      const linesRaw = Array.isArray(o.lines) ? o.lines : [];
+      const lines: GeoLineString[] = linesRaw
+        .map((ln) => {
+          if (!ln || typeof ln !== "object") return null;
+          const ll = ln as Record<string, unknown>;
+          const c = Array.isArray(ll.coords) ? ll.coords : [];
+          const coords: [number, number][] = c
+            .map((xy) => {
+              if (!Array.isArray(xy) || xy.length < 2) return null;
+              const x = typeof xy[0] === "number" ? xy[0] : NaN;
+              const y = typeof xy[1] === "number" ? xy[1] : NaN;
+              if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+              return [x, y] as [number, number];
+            })
+            .filter((xy): xy is [number, number] => xy !== null);
+          if (coords.length < 2) return null;
+          const level = typeof ll.level === "number" ? ll.level : undefined;
+          return { coords, level };
+        })
+        .filter((ln): ln is GeoLineString => ln !== null);
+
+      const measureNames = Array.isArray(o.measureNames)
+        ? o.measureNames.filter((m): m is string => typeof m === "string")
+        : [];
+      const heatmapHint =
+        o.heatmapHint && typeof o.heatmapHint === "object" && !Array.isArray(o.heatmapHint)
+          ? (o.heatmapHint as HeatmapConfigHint)
+          : null;
+      const displayContract =
+        o.displayContract &&
+        typeof o.displayContract === "object" &&
+        !Array.isArray(o.displayContract)
+          ? (o.displayContract as DisplayContractHint)
+          : null;
+      const surfaceGrid =
+        o.surfaceGrid && typeof o.surfaceGrid === "object" && !Array.isArray(o.surfaceGrid)
+          ? (o.surfaceGrid as HeatSurfaceGrid)
+          : null;
+
+      return {
+        id,
+        label,
+        points,
+        lines,
+        measureNames,
+        heatmapHint,
+        displayContract,
+        surfaceGrid,
+      };
+    })
+    .filter((s): s is SourceData => s !== null);
+}
+
 function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
   return `mineeye:map2d:source:${graphId ?? ""}:${viewerNodeId ?? ""}`;
 }
@@ -322,8 +402,8 @@ export function Map2DPanel({
       try {
         const raw = localStorage.getItem(cacheKeyForView(graphId, viewerNodeId));
         if (raw) {
-          const parsed = JSON.parse(raw) as SourceData[];
-          if (Array.isArray(parsed) && parsed.length > 0) {
+          const parsed = normalizeSourceData(JSON.parse(raw) as unknown);
+          if (parsed.length > 0) {
             setSourceData(parsed);
           }
         }
@@ -799,8 +879,9 @@ export function Map2DPanel({
         }
       }
 
-      if (src.lines.length > 0) {
-        src.lines.forEach((ln) => {
+      const contourLines = src.lines ?? [];
+      if (contourLines.length > 0) {
+        contourLines.forEach((ln) => {
           const latLngs: [number, number][] = ln.coords.map(([x, y]) => [y, x]);
           if (latLngs.length < 2) return;
           L.polyline(latLngs, {
