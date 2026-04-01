@@ -133,6 +133,18 @@ export function NodeInspector({
         ? String(initialUi.clamp_high_pct)
         : "100"
   );
+  const [heatMinVisible, setHeatMinVisible] = useState<string>(
+    () =>
+      typeof initialUi.min_visible_value === "number"
+        ? String(initialUi.min_visible_value)
+        : ""
+  );
+  const [heatMaxVisible, setHeatMaxVisible] = useState<string>(
+    () =>
+      typeof initialUi.max_visible_value === "number"
+        ? String(initialUi.max_visible_value)
+        : ""
+  );
   const [heatIdwPower, setHeatIdwPower] = useState<string>(
     () => (typeof initialUi.idw_power === "number" ? String(initialUi.idw_power) : "2")
   );
@@ -170,6 +182,14 @@ export function NodeInspector({
   const [heatContourLevels, setHeatContourLevels] = useState<string>(
     () =>
       typeof initialUi.contour_levels === "number" ? String(initialUi.contour_levels) : "10"
+  );
+  const [heatContourLevelsList, setHeatContourLevelsList] = useState<string>(
+    () =>
+      Array.isArray(initialUi.contour_levels_list)
+        ? (initialUi.contour_levels_list as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .join(", ")
+        : ""
   );
   const [heatGradientEnabled, setHeatGradientEnabled] = useState<boolean>(
     () => Boolean(initialUi.gradient_enabled)
@@ -240,6 +260,12 @@ export function NodeInspector({
     setHeatClampHigh(
       typeof u.clamp_high_pct === "number" ? String(u.clamp_high_pct) : "100"
     );
+    setHeatMinVisible(
+      typeof u.min_visible_value === "number" ? String(u.min_visible_value) : ""
+    );
+    setHeatMaxVisible(
+      typeof u.max_visible_value === "number" ? String(u.max_visible_value) : ""
+    );
     setHeatIdwPower(typeof u.idw_power === "number" ? String(u.idw_power) : "2");
     setHeatSmoothness(
       typeof u.smoothness === "number" ? String(u.smoothness) : "256"
@@ -258,6 +284,13 @@ export function NodeInspector({
     );
     setHeatContourLevels(
       typeof u.contour_levels === "number" ? String(u.contour_levels) : "10"
+    );
+    setHeatContourLevelsList(
+      Array.isArray(u.contour_levels_list)
+        ? (u.contour_levels_list as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .join(", ")
+        : ""
     );
     setHeatGradientEnabled(Boolean(u.gradient_enabled));
     setHeatGradientMode(
@@ -407,6 +440,10 @@ export function NodeInspector({
       ui.palette = heatPalette;
       ui.clamp_low_pct = Math.max(0, Math.min(100, n(heatClampLow, 0)));
       ui.clamp_high_pct = Math.max(0, Math.min(100, n(heatClampHigh, 100)));
+      ui.min_visible_value =
+        heatMinVisible.trim().length > 0 ? n(heatMinVisible, 0) : undefined;
+      ui.max_visible_value =
+        heatMaxVisible.trim().length > 0 ? n(heatMaxVisible, 0) : undefined;
       ui.idw_power = Math.max(1, Math.min(4, n(heatIdwPower, 2)));
       ui.smoothness = Math.max(128, Math.min(512, Math.trunc(n(heatSmoothness, 256))));
       ui.search_radius_m = Math.max(0, n(heatRadius, 0));
@@ -416,6 +453,13 @@ export function NodeInspector({
       ui.contour_mode = heatContourMode;
       ui.contour_interval = Math.max(0.0001, n(heatContourInterval, 1));
       ui.contour_levels = Math.max(2, Math.trunc(n(heatContourLevels, 10)));
+      ui.contour_levels_list =
+        heatContourLevelsList.trim().length > 0
+          ? heatContourLevelsList
+              .split(",")
+              .map((x) => Number(x.trim()))
+              .filter((x) => Number.isFinite(x))
+          : undefined;
       ui.gradient_enabled = heatGradientEnabled;
       ui.gradient_mode = heatGradientMode;
       ui.output_crs_mode = heatOutputCrsMode;
@@ -454,6 +498,8 @@ export function NodeInspector({
     heatPalette,
     heatClampLow,
     heatClampHigh,
+    heatMinVisible,
+    heatMaxVisible,
     heatIdwPower,
     heatSmoothness,
     heatRadius,
@@ -463,6 +509,7 @@ export function NodeInspector({
     heatContourMode,
     heatContourInterval,
     heatContourLevels,
+    heatContourLevelsList,
     heatGradientEnabled,
     heatGradientMode,
     heatOutputCrsMode,
@@ -957,6 +1004,28 @@ export function NodeInspector({
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <label style={lab}>
+                  <span style={labSpan}>Min visible grade (mask below)</span>
+                  <input
+                    type="number"
+                    value={heatMinVisible}
+                    onChange={(e) => setHeatMinVisible(e.target.value)}
+                    placeholder="optional"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Max visible grade (mask above)</span>
+                  <input
+                    type="number"
+                    value={heatMaxVisible}
+                    onChange={(e) => setHeatMaxVisible(e.target.value)}
+                    placeholder="optional"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
                   <span style={labSpan}>IDW power</span>
                   <input
                     type="number"
@@ -1046,6 +1115,18 @@ export function NodeInspector({
                     />
                   </label>
                 </div>
+              )}
+              {heatContoursEnabled && (
+                <label style={lab}>
+                  <span style={labSpan}>Explicit contour grades (comma separated)</span>
+                  <input
+                    type="text"
+                    value={heatContourLevelsList}
+                    onChange={(e) => setHeatContourLevelsList(e.target.value)}
+                    placeholder="e.g. 0.1, 0.25, 0.5, 1.0"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
               )}
               <label style={lab}>
                 <input

@@ -180,6 +180,8 @@ function hintSig(hint: HeatmapConfigHint | null | undefined): string {
     smoothness: hint.smoothness ?? null,
     palette: hint.palette ?? "",
     opacity: hint.opacity ?? null,
+    minVisibleRender: hint.minVisibleRender ?? null,
+    maxVisibleRender: hint.maxVisibleRender ?? null,
   });
 }
 
@@ -202,7 +204,7 @@ function jsonArtifactsForNodes(
     (a) =>
       nodeIds.has(a.node_id) &&
       a.key.includes(graphPrefix) &&
-      a.key.toLowerCase().endsWith(".json")
+      (a.key.toLowerCase().endsWith(".json") || a.key.toLowerCase().endsWith(".geojson"))
   );
 }
 
@@ -277,57 +279,71 @@ function rainbowColor(tRaw: number): string {
   return `hsl(${hue}, 95%, 50%)`;
 }
 
-function paletteColor(palette: string, tRaw: number): string {
-  const t = Math.max(0, Math.min(1, tRaw));
-  const p = palette.toLowerCase();
-  if (p === "inferno") {
-    // Dark purple -> red -> orange -> yellow-white
-    const hue = 300 - 250 * t;
-    const sat = 88 + 10 * t;
-    const light = 10 + 80 * t;
-    return `hsl(${hue}, ${sat}%, ${light}%)`;
-  }
-  if (p === "viridis") {
-    // Purple/blue -> green -> yellow
-    const hue = 280 - 220 * t;
-    const sat = 70;
-    const light = 24 + 46 * t;
-    return `hsl(${hue}, ${sat}%, ${light}%)`;
-  }
-  if (p === "terrain") {
-    // Blue/green low, brown high
-    const hue = 220 - 190 * t;
-    const sat = 70 - 20 * t;
-    const light = 42 + 18 * t;
-    return `hsl(${hue}, ${sat}%, ${light}%)`;
-  }
-  return rainbowColor(t);
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const s = hex.replace("#", "");
+  const n = s.length === 3 ? s.split("").map((c) => `${c}${c}`).join("") : s;
+  const v = parseInt(n, 16);
+  if (!Number.isFinite(v)) return { r: 56, g: 189, b: 248 };
+  return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
 }
 
-function hslToRgb(color: string): { r: number; g: number; b: number } {
-  const m = color.match(/^hsl\(([-\d.]+),\s*([-\d.]+)%?,\s*([-\d.]+)%?\)$/i);
-  if (!m) return { r: 56, g: 189, b: 248 };
-  const h = Number(m[1]);
-  const s = Number(m[2]) / 100;
-  const l = Number(m[3]) / 100;
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const hp = (h / 60) % 6;
-  const x = c * (1 - Math.abs((hp % 2) - 1));
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  if (hp >= 0 && hp < 1) [r, g, b] = [c, x, 0];
-  else if (hp < 2) [r, g, b] = [x, c, 0];
-  else if (hp < 3) [r, g, b] = [0, c, x];
-  else if (hp < 4) [r, g, b] = [0, x, c];
-  else if (hp < 5) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  const m0 = l - c / 2;
+function lerpRgb(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }, t: number) {
   return {
-    r: Math.round((r + m0) * 255),
-    g: Math.round((g + m0) * 255),
-    b: Math.round((b + m0) * 255),
+    r: Math.round(a.r + (b.r - a.r) * t),
+    g: Math.round(a.g + (b.g - a.g) * t),
+    b: Math.round(a.b + (b.b - a.b) * t),
   };
+}
+
+function paletteStops(palette: string): Array<{ t: number; c: string }> {
+  switch (palette.toLowerCase()) {
+    case "inferno":
+      return [
+        { t: 0.0, c: "#000004" },
+        { t: 0.2, c: "#2b0a5a" },
+        { t: 0.45, c: "#781c6d" },
+        { t: 0.7, c: "#d13a2f" },
+        { t: 1.0, c: "#ff3b2f" },
+      ];
+    case "viridis":
+      return [
+        { t: 0.0, c: "#440154" },
+        { t: 0.25, c: "#3b528b" },
+        { t: 0.5, c: "#21908c" },
+        { t: 0.75, c: "#5dc863" },
+        { t: 1.0, c: "#fde725" },
+      ];
+    case "terrain":
+      return [
+        { t: 0.0, c: "#2b83ba" },
+        { t: 0.35, c: "#abdda4" },
+        { t: 0.6, c: "#66bd63" },
+        { t: 0.8, c: "#fdae61" },
+        { t: 1.0, c: "#d7191c" },
+      ];
+    default:
+      return [
+        { t: 0.0, c: "#2c7bb6" },
+        { t: 0.25, c: "#00a6ca" },
+        { t: 0.5, c: "#00cc6a" },
+        { t: 0.75, c: "#f9d057" },
+        { t: 1.0, c: "#d7191c" },
+      ];
+  }
+}
+
+function paletteRgb(palette: string, tRaw: number): { r: number; g: number; b: number } {
+  const t = Math.max(0, Math.min(1, tRaw));
+  const stops = paletteStops(palette);
+  for (let i = 1; i < stops.length; i++) {
+    const a = stops[i - 1];
+    const b = stops[i];
+    if (t <= b.t) {
+      const tt = (t - a.t) / Math.max(1e-9, b.t - a.t);
+      return lerpRgb(hexToRgb(a.c), hexToRgb(b.c), tt);
+    }
+  }
+  return hexToRgb(stops[stops.length - 1].c);
 }
 
 export function Map2DPanel({
@@ -359,6 +375,46 @@ export function Map2DPanel({
   const autoFitContextRef = useRef<string>("");
 
   const sourceById = useMemo(() => new Map(sourceData.map((s) => [s.id, s])), [sourceData]);
+  const legend = useMemo(() => {
+    const activeLayer = layers.find((l) => {
+      if (!l.visible || !l.heatmap.enabled) return false;
+      const s = sourceById.get(l.sourceId);
+      return Boolean(s);
+    });
+    if (!activeLayer) return null;
+    const s = sourceById.get(activeLayer.sourceId);
+    if (!s) return null;
+    const palette = s.heatmapHint?.palette ?? "rainbow";
+    let min = 0;
+    let max = 1;
+    if (s.surfaceGrid) {
+      const vals = s.surfaceGrid.values.filter(
+        (v): v is number => typeof v === "number" && Number.isFinite(v)
+      );
+      const mm = valueMinMax(vals);
+      if (mm) {
+        min = mm.min;
+        max = mm.max;
+      }
+    } else {
+      const vals = s.points
+        .map((p) => p.measures[activeLayer.heatmap.measure])
+        .filter((v): v is number => Number.isFinite(v));
+      const mm = valueMinMax(vals);
+      if (mm) {
+        min = mm.min;
+        max = mm.max;
+      }
+    }
+    return {
+      measure: activeLayer.heatmap.measure,
+      palette,
+      min,
+      max,
+      clipMin: s.heatmapHint?.minVisibleRender,
+      clipMax: s.heatmapHint?.maxVisibleRender,
+    };
+  }, [layers, sourceById]);
   const inputLinks = useMemo(
     () => (viewerNodeId ? upstreamSourcesForViewer(edges, viewerNodeId) : []),
     [edges, viewerNodeId]
@@ -765,6 +821,8 @@ export function Map2DPanel({
       if (layer.heatmap.enabled && layer.heatmap.measure) {
         const lockedRenderer = src.displayContract?.renderer === "heat_surface";
         const palette = src.heatmapHint?.palette ?? "rainbow";
+        const clipMin = src.heatmapHint?.minVisibleRender;
+        const clipMax = src.heatmapHint?.maxVisibleRender;
         if (lockedRenderer && src.surfaceGrid) {
           const g = src.surfaceGrid;
           const vals = g.values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
@@ -786,8 +844,16 @@ export function Map2DPanel({
                     img.data[idx + 3] = 0;
                     continue;
                   }
+                  if (typeof clipMin === "number" && v < clipMin) {
+                    img.data[idx + 3] = 0;
+                    continue;
+                  }
+                  if (typeof clipMax === "number" && v > clipMax) {
+                    img.data[idx + 3] = 0;
+                    continue;
+                  }
                   const t = norm(v, mm.min, mm.max);
-                  const { r, g: gg, b } = hslToRgb(paletteColor(palette, t));
+                  const { r, g: gg, b } = paletteRgb(palette, t);
                   img.data[idx] = r;
                   img.data[idx + 1] = gg;
                   img.data[idx + 2] = b;
@@ -850,8 +916,19 @@ export function Map2DPanel({
                     const lat = latMax - ((yi + 0.5) / n) * (latMax - latMin);
                     for (let xi = 0; xi < n; xi++) {
                       const lon = lonMin + ((xi + 0.5) / n) * (lonMax - lonMin);
-                      const t = norm(idw(lat, lon), mm.min, mm.max);
-                      const { r, g, b } = hslToRgb(paletteColor(palette, t));
+                      const iv = idw(lat, lon);
+                      if (typeof clipMin === "number" && iv < clipMin) {
+                        const idx = (yi * n + xi) * 4;
+                        img.data[idx + 3] = 0;
+                        continue;
+                      }
+                      if (typeof clipMax === "number" && iv > clipMax) {
+                        const idx = (yi * n + xi) * 4;
+                        img.data[idx + 3] = 0;
+                        continue;
+                      }
+                      const t = norm(iv, mm.min, mm.max);
+                      const { r, g, b } = paletteRgb(palette, t);
                       const idx = (yi * n + xi) * 4;
                       img.data[idx] = r;
                       img.data[idx + 1] = g;
@@ -1008,6 +1085,46 @@ export function Map2DPanel({
       </div>
       <div style={{ position: "relative", flex: 1, minHeight: 200 }}>
         <div ref={containerRef} style={{ position: "absolute", inset: 0, zIndex: 0 }} />
+        {legend && (
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              bottom: 12,
+              zIndex: 850,
+              background: "rgba(15,20,25,0.9)",
+              border: "1px solid #30363d",
+              borderRadius: 8,
+              padding: "8px 10px",
+              width: 220,
+              fontSize: 10,
+            }}
+          >
+            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+              {legend.measure || "heatmap"}
+            </div>
+            <div
+              style={{
+                height: 10,
+                borderRadius: 999,
+                border: "1px solid #30363d",
+                background: `linear-gradient(to right, ${paletteStops(legend.palette)
+                  .map((s) => s.c)
+                  .join(", ")})`,
+              }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <span>{legend.min.toFixed(3)}</span>
+              <span>{legend.max.toFixed(3)}</span>
+            </div>
+            {(typeof legend.clipMin === "number" || typeof legend.clipMax === "number") && (
+              <div style={{ marginTop: 4, opacity: 0.8 }}>
+                clip: {typeof legend.clipMin === "number" ? legend.clipMin.toFixed(3) : "—"} to{" "}
+                {typeof legend.clipMax === "number" ? legend.clipMax.toFixed(3) : "—"}
+              </div>
+            )}
+          </div>
+        )}
         <aside style={{ ...panel, width: panelCollapsed ? 168 : 320 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <strong>Layers</strong>

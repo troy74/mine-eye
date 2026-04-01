@@ -106,6 +106,8 @@ export type HeatmapConfigHint = {
   smoothness?: number;
   palette?: string;
   opacity?: number;
+  minVisibleRender?: number;
+  maxVisibleRender?: number;
 };
 
 export type DisplayContractHint = {
@@ -282,6 +284,8 @@ export function extractHeatmapConfigFromJson(text: string): HeatmapConfigHint | 
   if (typeof cfg.idw_power === "number") out.idwPower = cfg.idw_power;
   if (typeof cfg.smoothness === "number") out.smoothness = cfg.smoothness;
   if (typeof cfg.opacity === "number") out.opacity = cfg.opacity;
+  if (typeof cfg.min_visible_render === "number") out.minVisibleRender = cfg.min_visible_render;
+  if (typeof cfg.max_visible_render === "number") out.maxVisibleRender = cfg.max_visible_render;
   return out;
 }
 

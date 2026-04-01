@@ -597,6 +597,17 @@ pub async fn run_assay_heatmap(
         .and_then(|v| v.as_u64())
         .unwrap_or(10)
         .max(2) as usize;
+    let contour_levels_list: Vec<f64> = job
+        .output_spec
+        .pointer("/node_ui/contour_levels_list")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_f64())
+                .filter(|x| x.is_finite())
+                .collect::<Vec<f64>>()
+        })
+        .unwrap_or_default();
     let gradient_enabled = job
         .output_spec
         .pointer("/node_ui/gradient_enabled")
@@ -608,6 +619,14 @@ pub async fn run_assay_heatmap(
         .and_then(|v| v.as_str())
         .unwrap_or("magnitude")
         .to_string();
+    let min_visible_raw = job
+        .output_spec
+        .pointer("/node_ui/min_visible_value")
+        .and_then(|v| v.as_f64());
+    let max_visible_raw = job
+        .output_spec
+        .pointer("/node_ui/max_visible_value")
+        .and_then(|v| v.as_f64());
 
     let mut measure_candidates: Vec<String> = Vec::new();
     for p in &points {
@@ -715,7 +734,14 @@ pub async fn run_assay_heatmap(
 
     let mut contour_breaks: Vec<f64> = Vec::new();
     if contours_enabled && vmax > vmin {
-        if contour_mode == "quantile" {
+        if !contour_levels_list.is_empty() {
+            contour_breaks = contour_levels_list
+                .iter()
+                .filter_map(|v| transform(*v))
+                .collect();
+            contour_breaks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            contour_breaks.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        } else if contour_mode == "quantile" {
             for i in 1..contour_levels {
                 let t = (i as f64) / (contour_levels as f64);
                 let idx = ((transformed_values.len().saturating_sub(1)) as f64 * t).round() as usize;
@@ -730,6 +756,9 @@ pub async fn run_assay_heatmap(
             }
         }
     }
+
+    let min_visible_render = min_visible_raw.and_then(transform);
+    let max_visible_render = max_visible_raw.and_then(transform);
 
     let heat_samples: Vec<HeatPt> = enriched_points
         .iter()
@@ -886,10 +915,15 @@ pub async fn run_assay_heatmap(
             "contour_mode": contour_mode,
             "contour_interval": contour_interval,
             "contour_levels": contour_levels,
+            "contour_levels_list": contour_levels_list,
             "contour_breaks": contour_breaks,
             "gradient_enabled": gradient_enabled,
             "gradient_mode": gradient_mode,
-            "opacity": 0.52
+            "opacity": 0.52,
+            "min_visible_value": min_visible_raw,
+            "max_visible_value": max_visible_raw,
+            "min_visible_render": min_visible_render,
+            "max_visible_render": max_visible_render
         },
         "display_contract": {
             "renderer": "heat_surface",
