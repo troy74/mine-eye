@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ACQUISITION_EPSG_OPTIONS } from "./crsOptions";
 import { searchEpsg, type EpsgSearchHit } from "./epsgSearch";
 
@@ -60,6 +60,7 @@ export function CrsPicker({
   includeProject = true,
   placeholder = "Search EPSG code or name…",
 }: Props) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [cached, setCached] = useState<EpsgSearchHit[]>(() => loadCache());
@@ -85,7 +86,14 @@ export function CrsPicker({
       void (async () => {
         setSearchBusy(true);
         try {
-          const hits = await searchEpsg(q);
+          let hits = await searchEpsg(q);
+          // UTM shorthand helper: "30N" => "UTM zone 30N"
+          if (hits.length === 0) {
+            const m = /^(\d{1,2})\s*([ns])$/i.exec(q);
+            if (m) {
+              hits = await searchEpsg(`utm zone ${m[1]}${m[2].toUpperCase()}`);
+            }
+          }
           if (cancelled) return;
           setRemote(hits);
           const merged = mergeHits(cached, hits);
@@ -103,6 +111,19 @@ export function CrsPicker({
       window.clearTimeout(tid);
     };
   }, [cached, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (ev: MouseEvent) => {
+      const el = rootRef.current;
+      const t = ev.target as Node | null;
+      if (!el || !t || el.contains(t)) return;
+      setOpen(false);
+      setQuery("");
+    };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [open]);
 
   const options = useMemo(() => {
     const out: CrsOption[] = [];
@@ -143,11 +164,31 @@ export function CrsPicker({
     }
     const all = [...uniq.values()];
     const q = queryRaw.toLowerCase();
-    if (!q) return all.slice(0, 40);
+    if (!q) return all.slice(0, 60);
     return all
       .filter((o) => o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
-      .slice(0, 40);
+      .slice(0, 80);
   }, [cached, common, includeProject, projectEpsg, query, remote, workspaceUsedEpsgs]);
+
+  const quickOptions = useMemo(() => {
+    const out: CrsOption[] = [];
+    for (const o of options) {
+      if (o.source === "project" || o.source === "workspace" || o.source === "cached") {
+        out.push(o);
+      }
+      if (out.length >= 8) break;
+    }
+    if (out.length === 0) {
+      return options.slice(0, 5);
+    }
+    return out;
+  }, [options]);
+
+  const results = useMemo(() => {
+    const q = query.trim();
+    if (!q) return options.slice(0, 20);
+    return options;
+  }, [options, query]);
 
   const selectedLabel = useMemo(() => {
     if (value === "project") return `Project CRS (EPSG:${projectEpsg})`;
@@ -159,30 +200,84 @@ export function CrsPicker({
   }, [cached, options, projectEpsg, value]);
 
   return (
-    <div style={{ position: "relative" }}>
-      <input
-        value={query.length ? query : selectedLabel}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => {
-          window.setTimeout(() => {
-            setOpen(false);
-            setQuery("");
-          }, 120);
-        }}
-        placeholder={placeholder}
-        style={inputStyle}
-      />
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={selectedButtonStyle}
+        title={selectedLabel}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {selectedLabel || "Select CRS…"}
+        </span>
+        <span style={{ opacity: 0.7, marginLeft: 8 }}>▾</span>
+      </button>
       {open && (
-        <div style={menuStyle}>
+        <div
+          style={menuStyle}
+          onMouseDown={(e) => {
+            // Prevent outside blur handlers from closing while interacting inside.
+            e.stopPropagation();
+          }}
+        >
+          <div style={searchWrapStyle}>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  setOpen(false);
+                  setQuery("");
+                }
+              }}
+              autoFocus
+              placeholder={placeholder}
+              style={searchInputStyle}
+            />
+            {query.length > 0 && (
+              <button
+                type="button"
+                style={clearBtnStyle}
+                onClick={() => setQuery("")}
+                title="Clear search"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {quickOptions.length > 0 && (
+            <div style={quickSectionStyle}>
+              <div style={sectionLabelStyle}>Quick picks</div>
+              <div style={quickGridStyle}>
+                {quickOptions.map((o) => (
+                  <button
+                    key={`quick:${o.source}:${o.value}`}
+                    type="button"
+                    style={quickBtnStyle}
+                    onClick={() => {
+                      onChange(o.value);
+                      setOpen(false);
+                      setQuery("");
+                    }}
+                    title={o.label}
+                  >
+                    {o.value === "project" ? "Project CRS" : `EPSG:${o.value}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {searchBusy && <div style={busyStyle}>Searching full EPSG registry…</div>}
-          {options.length === 0 ? (
-            <div style={emptyStyle}>No matches yet. Type at least 2 chars.</div>
+          <div style={resultsHeaderStyle}>
+            {query.trim() ? "Search results" : "Suggested CRS"}
+          </div>
+          {results.length === 0 ? (
+            <div style={emptyStyle}>
+              No matches. Try terms like <code style={codeStyle}>UTM</code>,{" "}
+              <code style={codeStyle}>zone 30N</code>, or an EPSG code.
+            </div>
           ) : (
-            options.map((o) => (
+            results.map((o) => (
               <button
                 key={`${o.source}:${o.value}`}
                 type="button"
@@ -211,7 +306,7 @@ export function CrsPicker({
   );
 }
 
-const inputStyle: CSSProperties = {
+const selectedButtonStyle: CSSProperties = {
   width: "100%",
   background: "#0f1419",
   color: "#e6edf3",
@@ -219,6 +314,11 @@ const inputStyle: CSSProperties = {
   borderRadius: 6,
   padding: "6px 8px",
   fontSize: 12,
+  textAlign: "left",
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
 };
 
 const menuStyle: CSSProperties = {
@@ -226,12 +326,78 @@ const menuStyle: CSSProperties = {
   top: "calc(100% + 4px)",
   left: 0,
   right: 0,
-  maxHeight: 180,
+  maxHeight: 300,
   overflow: "auto",
   background: "#0f1419",
   border: "1px solid #30363d",
   borderRadius: 6,
   zIndex: 30,
+};
+
+const searchWrapStyle: CSSProperties = {
+  display: "flex",
+  gap: 6,
+  alignItems: "center",
+  padding: "8px",
+  borderBottom: "1px solid #30363d",
+  position: "sticky",
+  top: 0,
+  background: "#0f1419",
+  zIndex: 1,
+};
+
+const searchInputStyle: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  background: "#0b0f14",
+  color: "#e6edf3",
+  border: "1px solid #30363d",
+  borderRadius: 6,
+  padding: "6px 8px",
+  fontSize: 12,
+};
+
+const clearBtnStyle: CSSProperties = {
+  border: "1px solid #30363d",
+  background: "#161b22",
+  color: "#c9d1d9",
+  borderRadius: 6,
+  fontSize: 11,
+  padding: "6px 8px",
+  cursor: "pointer",
+};
+
+const quickSectionStyle: CSSProperties = {
+  padding: "8px",
+  borderBottom: "1px solid #30363d",
+};
+
+const sectionLabelStyle: CSSProperties = {
+  fontSize: 10,
+  opacity: 0.7,
+  marginBottom: 6,
+  textTransform: "uppercase",
+  letterSpacing: "0.03em",
+};
+
+const quickGridStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+};
+
+const quickBtnStyle: CSSProperties = {
+  border: "1px solid #30363d",
+  background: "#161b22",
+  color: "#e6edf3",
+  borderRadius: 999,
+  fontSize: 11,
+  padding: "4px 8px",
+  cursor: "pointer",
+  maxWidth: "100%",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
 };
 
 const optionStyle: CSSProperties = {
@@ -257,4 +423,17 @@ const busyStyle: CSSProperties = {
   fontSize: 11,
   opacity: 0.8,
   borderBottom: "1px solid #30363d",
+};
+
+const resultsHeaderStyle: CSSProperties = {
+  fontSize: 10,
+  opacity: 0.7,
+  padding: "8px 8px 4px 8px",
+  textTransform: "uppercase",
+  letterSpacing: "0.03em",
+};
+
+const codeStyle: CSSProperties = {
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 10,
 };
