@@ -7,7 +7,7 @@ const CACHE_KEY = "mineeye:epsg_picker_cache:v1";
 type CrsOption = {
   value: string;
   label: string;
-  source: "project" | "common" | "cached" | "search";
+  source: "project" | "common" | "workspace" | "cached" | "search";
 };
 
 function loadCache(): EpsgSearchHit[] {
@@ -47,6 +47,7 @@ type Props = {
   value: string;
   onChange: (next: string) => void;
   projectEpsg: number;
+  workspaceUsedEpsgs?: number[];
   includeProject?: boolean;
   placeholder?: string;
 };
@@ -55,6 +56,7 @@ export function CrsPicker({
   value,
   onChange,
   projectEpsg,
+  workspaceUsedEpsgs = [],
   includeProject = true,
   placeholder = "Search EPSG code or name…",
 }: Props) {
@@ -62,6 +64,7 @@ export function CrsPicker({
   const [open, setOpen] = useState(false);
   const [cached, setCached] = useState<EpsgSearchHit[]>(() => loadCache());
   const [remote, setRemote] = useState<EpsgSearchHit[]>([]);
+  const [searchBusy, setSearchBusy] = useState(false);
 
   const common = useMemo(() => {
     return ACQUISITION_EPSG_OPTIONS.filter((o) => /^\d+$/.test(o.value)).map((o) => ({
@@ -72,13 +75,15 @@ export function CrsPicker({
 
   useEffect(() => {
     const q = query.trim();
-    if (q.length < 2) {
+    if (q.length === 0 || (!/^\d+$/.test(q) && q.length < 2)) {
       setRemote([]);
+      setSearchBusy(false);
       return;
     }
     let cancelled = false;
     const tid = window.setTimeout(() => {
       void (async () => {
+        setSearchBusy(true);
         try {
           const hits = await searchEpsg(q);
           if (cancelled) return;
@@ -88,6 +93,8 @@ export function CrsPicker({
           saveCache(merged);
         } catch {
           if (!cancelled) setRemote([]);
+        } finally {
+          if (!cancelled) setSearchBusy(false);
         }
       })();
     }, 220);
@@ -106,6 +113,16 @@ export function CrsPicker({
         source: "project",
       });
     }
+    for (const epsg of workspaceUsedEpsgs) {
+      if (!Number.isFinite(epsg) || epsg <= 0 || Math.trunc(epsg) === Math.trunc(projectEpsg)) {
+        continue;
+      }
+      out.push({
+        value: String(Math.trunc(epsg)),
+        label: `EPSG:${Math.trunc(epsg)} - used in workspace`,
+        source: "workspace",
+      });
+    }
     const add = (h: EpsgSearchHit, source: CrsOption["source"]) => {
       out.push({ value: h.code, label: `EPSG:${h.code} - ${h.name}`, source });
     };
@@ -116,22 +133,29 @@ export function CrsPicker({
     for (const o of out) {
       if (!uniq.has(o.value)) uniq.set(o.value, o);
     }
+    const queryRaw = query.trim();
+    if (/^\d+$/.test(queryRaw) && !uniq.has(queryRaw)) {
+      uniq.set(queryRaw, {
+        value: queryRaw,
+        label: `EPSG:${queryRaw} - use this code`,
+        source: "search",
+      });
+    }
     const all = [...uniq.values()];
-    const q = query.trim().toLowerCase();
+    const q = queryRaw.toLowerCase();
     if (!q) return all.slice(0, 40);
     return all
       .filter((o) => o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
       .slice(0, 40);
-  }, [cached, common, includeProject, projectEpsg, query, remote]);
+  }, [cached, common, includeProject, projectEpsg, query, remote, workspaceUsedEpsgs]);
 
   const selectedLabel = useMemo(() => {
     if (value === "project") return `Project CRS (EPSG:${projectEpsg})`;
-    const hit =
-      options.find((o) => o.value === value) ??
-      cached.find((h) => h.code === value)
-        ? { label: `EPSG:${value}` }
-        : null;
-    return hit ? hit.label : value ? `EPSG:${value}` : "";
+    const fromOptions = options.find((o) => o.value === value);
+    if (fromOptions) return fromOptions.label;
+    const fromCache = cached.find((h) => h.code === value);
+    if (fromCache) return `EPSG:${fromCache.code} - ${fromCache.name}`;
+    return value ? `EPSG:${value}` : "";
   }, [cached, options, projectEpsg, value]);
 
   return (
@@ -154,6 +178,7 @@ export function CrsPicker({
       />
       {open && (
         <div style={menuStyle}>
+          {searchBusy && <div style={busyStyle}>Searching full EPSG registry…</div>}
           {options.length === 0 ? (
             <div style={emptyStyle}>No matches yet. Type at least 2 chars.</div>
           ) : (
@@ -225,4 +250,11 @@ const emptyStyle: CSSProperties = {
   padding: "8px",
   fontSize: 11,
   opacity: 0.7,
+};
+
+const busyStyle: CSSProperties = {
+  padding: "8px",
+  fontSize: 11,
+  opacity: 0.8,
+  borderBottom: "1px solid #30363d",
 };

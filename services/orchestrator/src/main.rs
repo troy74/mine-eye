@@ -169,7 +169,7 @@ async fn search_epsg(
     Query(q): Query<EpsgSearchQuery>,
 ) -> Result<Json<Vec<EpsgHit>>, (StatusCode, String)> {
     let query = q.q.trim();
-    if query.len() < 2 {
+    if query.is_empty() || (!query.chars().all(|c| c.is_ascii_digit()) && query.len() < 2) {
         return Ok(Json(Vec::new()));
     }
 
@@ -197,13 +197,21 @@ async fn search_epsg(
         .text()
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("epsg read error: {}", e)))?;
-    let root: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
-        let sample = body.chars().take(120).collect::<String>();
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("epsg parse error: {}; body_start={}", e, sample),
-        )
-    })?;
+    let root: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            // epsg.io occasionally returns HTML even with format=json. Try best-effort HTML parse.
+            let html_hits = parse_epsg_hits_from_html(&body);
+            if !html_hits.is_empty() {
+                return Ok(Json(limit_hits(html_hits)));
+            }
+            let sample = body.chars().take(120).collect::<String>();
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                format!("epsg parse error: body_start={}", sample),
+            ));
+        }
+    };
 
     let arr = root
         .get("results")
@@ -237,12 +245,52 @@ async fn search_epsg(
         if seen.insert(code.clone()) {
             out.push(EpsgHit { code, name });
         }
-        if out.len() >= 50 {
-            break;
-        }
     }
 
-    Ok(Json(out))
+    Ok(Json(limit_hits(out)))
+}
+
+fn limit_hits(mut items: Vec<EpsgHit>) -> Vec<EpsgHit> {
+    if items.len() > 50 {
+        items.truncate(50);
+    }
+    items
+}
+
+fn parse_epsg_hits_from_html(html: &str) -> Vec<EpsgHit> {
+    let mut out: Vec<EpsgHit> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for line in html.lines() {
+        let marker = "href=\"/";
+        let Some(idx) = line.find(marker) else {
+            continue;
+        };
+        let rest = &line[(idx + marker.len())..];
+        let code = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>();
+        if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let name = if let Some(gt) = line.find('>') {
+            let after = &line[(gt + 1)..];
+            if let Some(lt) = after.find('<') {
+                after[..lt].trim().to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if seen.insert(code.clone()) {
+            out.push(EpsgHit { code, name });
+        }
+    }
+    out
 }
 
 #[derive(Deserialize)]

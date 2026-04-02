@@ -18,6 +18,7 @@ type Props = {
   onSeedDemo: () => void;
   graphId: string | null;
   projectEpsg: number;
+  workspaceUsedEpsgs?: number[];
   artifacts: ArtifactEntry[];
   onSetProjectCrs: (epsg: number) => void;
   branches: ApiBranch[];
@@ -40,6 +41,7 @@ export function LeftSidebar({
   onSeedDemo,
   graphId,
   projectEpsg,
+  workspaceUsedEpsgs = [],
   artifacts,
   onSetProjectCrs,
   branches,
@@ -131,6 +133,7 @@ export function LeftSidebar({
                 if (Number.isFinite(epsg) && epsg > 0) onSetProjectCrs(epsg);
               }}
               projectEpsg={projectEpsg}
+              workspaceUsedEpsgs={workspaceUsedEpsgs}
               includeProject
             />
             <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>

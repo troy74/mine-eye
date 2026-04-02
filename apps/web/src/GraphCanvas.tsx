@@ -612,6 +612,7 @@ type Props = {
   activeBranchId?: string | null;
   refreshToken?: number;
   projectEpsg?: number;
+  workspaceUsedEpsgs?: number[];
   artifacts?: ArtifactEntry[];
   onPipelineQueued?: () => void;
   onOpenNodeViewer?: (nodeId: string) => void;
@@ -630,6 +631,7 @@ function FlowWorkspace({
   refreshToken,
   projectEpsg,
   artifacts,
+  workspaceUsedEpsgs,
   onPipelineQueued,
   onOpenNodeViewer,
   onGraphChanged,
@@ -639,6 +641,7 @@ function FlowWorkspace({
   refreshToken: number;
   projectEpsg: number;
   artifacts: ArtifactEntry[];
+  workspaceUsedEpsgs: number[];
   onPipelineQueued?: () => void;
   onOpenNodeViewer?: (nodeId: string) => void;
   onGraphChanged?: () => void;
@@ -1030,6 +1033,7 @@ function FlowWorkspace({
             activeBranchId={activeBranchId}
             node={selectedNode}
             projectEpsg={workspaceEpsg}
+            workspaceUsedEpsgs={workspaceUsedEpsgs}
             tab={inspectorTab}
             onTab={setInspectorTab}
             onClose={() => setSelectedId(null)}
@@ -1048,6 +1052,7 @@ export function GraphCanvas({
   activeBranchId,
   refreshToken = 0,
   projectEpsg = 4326,
+  workspaceUsedEpsgs = [],
   artifacts = [],
   onPipelineQueued,
   onOpenNodeViewer,
@@ -1085,6 +1090,7 @@ export function GraphCanvas({
         activeBranchId={activeBranchId}
         refreshToken={refreshToken}
         projectEpsg={projectEpsg}
+        workspaceUsedEpsgs={workspaceUsedEpsgs}
         artifacts={artifacts}
         onPipelineQueued={onPipelineQueued}
         onOpenNodeViewer={onOpenNodeViewer}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GraphCanvas } from "./GraphCanvas";
 import { GraphErrorBoundary } from "./GraphErrorBoundary";
 import {
@@ -45,6 +45,36 @@ type SeedResponse = {
 
 type MainTab = "workspace" | `node:${string}`;
 
+function collectWorkspaceUsedEpsg(nodes: ApiNode[]): number[] {
+  const out = new Set<number>();
+  const scan = (v: unknown, keyHint = "") => {
+    if (typeof v === "number" && Number.isFinite(v)) {
+      const n = Math.trunc(v);
+      if (n > 0 && (keyHint.toLowerCase().includes("epsg") || n === 4326)) out.add(n);
+      return;
+    }
+    if (typeof v === "string") {
+      const s = v.trim();
+      if (/^\d+$/.test(s) && keyHint.toLowerCase().includes("epsg")) {
+        const n = parseInt(s, 10);
+        if (n > 0) out.add(n);
+      }
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const it of v) scan(it, keyHint);
+      return;
+    }
+    if (v && typeof v === "object") {
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) scan(val, k);
+    }
+  };
+  for (const node of nodes) {
+    scan(node.config.params);
+  }
+  return [...out.values()].sort((a, b) => a - b);
+}
+
 export default function App() {
   const [projects, setProjects] = useState<StoredProject[]>(loadProjects);
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(null);
@@ -66,6 +96,10 @@ export default function App() {
   const [revisionDiff, setRevisionDiff] = useState<ApiRevisionDiff | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const autoRunOnLoadRef = useRef<Set<string>>(new Set());
+  const workspaceUsedEpsgs = useMemo(
+    () => collectWorkspaceUsedEpsg(graphNodes),
+    [graphNodes]
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -570,6 +604,7 @@ export default function App() {
               onSeedDemo={() => void seedDemo()}
               graphId={graphId}
               projectEpsg={projectEpsg}
+              workspaceUsedEpsgs={workspaceUsedEpsgs}
               artifacts={artifacts}
               onSetProjectCrs={(epsg) => void onSetProjectCrs(epsg)}
               branches={branches}
@@ -716,7 +751,8 @@ export default function App() {
                   graphId={graphId}
                   activeBranchId={activeBranchId}
                   refreshToken={graphRefreshToken}
-                  projectEpsg={4326}
+                  projectEpsg={projectEpsg}
+                  workspaceUsedEpsgs={workspaceUsedEpsgs}
                   artifacts={artifacts}
                   onPipelineQueued={refreshAll}
                   onOpenNodeViewer={openNodeViewer}

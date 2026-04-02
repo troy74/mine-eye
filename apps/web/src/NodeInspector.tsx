@@ -37,6 +37,7 @@ type Props = {
   activeBranchId?: string | null;
   node: ApiNode;
   projectEpsg: number;
+  workspaceUsedEpsgs?: number[];
   tab: InspectorTab;
   onTab: (t: InspectorTab) => void;
   onClose: () => void;
@@ -50,6 +51,7 @@ export function NodeInspector({
   activeBranchId,
   node,
   projectEpsg,
+  workspaceUsedEpsgs = [],
   tab,
   onTab,
   onClose,
@@ -1328,6 +1330,7 @@ export function NodeInspector({
               <CrsPicker
                 value={crsMode === "project" ? "project" : sourceCustomEpsg}
                 projectEpsg={projectEpsg}
+                workspaceUsedEpsgs={workspaceUsedEpsgs}
                 includeProject
                 onChange={(v) => {
                   if (v === "project") {

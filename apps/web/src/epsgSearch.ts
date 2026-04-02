@@ -17,7 +17,7 @@ function normHit(v: unknown): EpsgSearchHit | null {
 /** Search EPSG registry by code/name via epsg.io JSON API. */
 export async function searchEpsg(query: string): Promise<EpsgSearchHit[]> {
   const q = query.trim();
-  if (q.length < 2) return [];
+  if (q.length === 0 || (!/^\d+$/.test(q) && q.length < 2)) return [];
   const url = `/api/epsg/search?q=${encodeURIComponent(q)}`;
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) {
