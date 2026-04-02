@@ -7,7 +7,7 @@ const CACHE_KEY = "mineeye:epsg_picker_cache:v1";
 type CrsOption = {
   value: string;
   label: string;
-  source: "project" | "common" | "workspace" | "cached" | "search";
+  source: "project" | "common" | "workspace" | "cached" | "search" | "derived";
 };
 
 function loadCache(): EpsgSearchHit[] {
@@ -41,6 +41,51 @@ function mergeHits(base: EpsgSearchHit[], extra: EpsgSearchHit[]): EpsgSearchHit
   for (const h of base) map.set(h.code, h);
   for (const h of extra) map.set(h.code, h);
   return [...map.values()];
+}
+
+function tokenize(q: string): string[] {
+  return q
+    .toLowerCase()
+    .split(/[,\s/|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function utmFallbackHits(query: string): EpsgSearchHit[] {
+  const q = normalizeText(query);
+  const toks = tokenize(query);
+  const out: EpsgSearchHit[] = [];
+  const add = (zone: number, hemi: "N" | "S") => {
+    const code = hemi === "N" ? String(32600 + zone) : String(32700 + zone);
+    out.push({ code, name: `WGS 84 / UTM zone ${zone}${hemi}` });
+  };
+  const m = /(?:^|\s)(\d{1,2})\s*([ns])(?:\b|$)/i.exec(q);
+  if (m) {
+    const zone = parseInt(m[1], 10);
+    const hemi = m[2].toUpperCase() as "N" | "S";
+    if (zone >= 1 && zone <= 60) add(zone, hemi);
+    return out;
+  }
+  const hasUtm = toks.includes("utm");
+  const zoneTok = toks.find((t) => /^\d{1,2}$/.test(t));
+  const hemiTok = toks.find((t) => t === "n" || t === "s");
+  if (hasUtm && zoneTok && hemiTok) {
+    const zone = parseInt(zoneTok, 10);
+    const hemi = hemiTok.toUpperCase() as "N" | "S";
+    if (zone >= 1 && zone <= 60) add(zone, hemi);
+    return out;
+  }
+  if (hasUtm) {
+    for (let z = 1; z <= 60; z += 1) {
+      add(z, "N");
+      add(z, "S");
+    }
+  }
+  return out;
 }
 
 type Props = {
@@ -93,6 +138,9 @@ export function CrsPicker({
             if (m) {
               hits = await searchEpsg(`utm zone ${m[1]}${m[2].toUpperCase()}`);
             }
+          }
+          if (hits.length === 0) {
+            hits = utmFallbackHits(q);
           }
           if (cancelled) return;
           setRemote(hits);
@@ -150,6 +198,7 @@ export function CrsPicker({
     for (const h of common) add(h, "common");
     for (const h of cached) add(h, "cached");
     for (const h of remote) add(h, "search");
+    for (const h of utmFallbackHits(query)) add(h, "derived");
     const uniq = new Map<string, CrsOption>();
     for (const o of out) {
       if (!uniq.has(o.value)) uniq.set(o.value, o);
@@ -165,8 +214,12 @@ export function CrsPicker({
     const all = [...uniq.values()];
     const q = queryRaw.toLowerCase();
     if (!q) return all.slice(0, 60);
+    const toks = tokenize(q);
     return all
-      .filter((o) => o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q))
+      .filter((o) => {
+        const hay = `${o.value} ${normalizeText(o.label)}`;
+        return toks.every((t) => hay.includes(t));
+      })
       .slice(0, 80);
   }, [cached, common, includeProject, projectEpsg, query, remote, workspaceUsedEpsgs]);
 
