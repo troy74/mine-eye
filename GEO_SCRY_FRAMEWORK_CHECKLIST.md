@@ -1,6 +1,6 @@
 # Geo-Scry Framework Checklist (Working Draft)
 
-Status date: 2026-04-01  
+Status date: 2026-04-02  
 Scope: End-to-end foundation for mining/exploration workflows before broad expansion.
 
 This document has been adopted into this repository as the active framework checklist and contract freeze candidate.
@@ -47,6 +47,22 @@ Assessment date: 2026-04-01.
 - Added `terrain_adjust` node for control-point DEM nudging (vertical bias + affine XY/Z fit), with QC residual metrics and adjusted terrain output.
 - Added `surface_iso_extract` node for contour extraction from `surface_grid`, including 3D Z projection controls.
 - Extended 3D viewer controls with display-only radius scaling and contour/terrain overlay toggles.
+
+### Implemented update (2026-04-02)
+
+- Introduced `cesium_display_node` as the explicit Cesium-backed 3D viewer node kind (legacy-compatible alias path kept for `plan_view_3d`).
+- Added workspace-level project CRS update API (`PATCH /workspaces/{ws_id}/project-crs`) and sidebar control wiring.
+- Replaced fragmented CRS controls with a single unified picker control in web UI.
+- Unified CRS picker now merges:
+  - project CRS shortcut
+  - common CRS shortlist
+  - CRS already used in workspace
+  - cached prior selections
+  - live full EPSG search results
+- Improved EPSG search robustness:
+  - tolerates numeric-only short queries
+  - adds better fallback behavior when upstream EPSG API returns non-JSON responses
+  - improved UX flow with separate selected-value display vs search field, plus quick-pick chips.
 
 ---
 

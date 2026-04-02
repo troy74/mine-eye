@@ -189,8 +189,26 @@ A visualisation node with **inputs only**. The 2D map **must not** infer data fr
 ### 18. Viewer Nodes (V1)
 
 - `plan_view_2d`: plan map with Esri basemap and layered overlays from wired inputs.
-- `plan_view_3d`: 3D scene with terrain + imagery baseline and layered traces/segments/samples from wired inputs.
+- `cesium_display_node`: Cesium-backed 3D scene with terrain + imagery baseline and layered traces/segments/samples from wired inputs.
+- `plan_view_3d` is currently retained as a compatibility alias and should be treated as legacy naming in configs/migrations.
 - Both are manual recompute visualisation nodes and support persisted viewer UI state in node params (`ui`).
+
+### 20. CRS UX and Selection Contract (V1)
+
+- CRS selection in UI is a single control (no split dropdown/search/manual-code triad).
+- Control behavior:
+  - selected CRS is displayed in a stable field
+  - search input is separate and clearable
+  - quick picks are shown for project/workspace/recently used entries
+  - full EPSG search results are merged into the same list
+- Candidate source ordering is:
+  1. project CRS shortcut
+  2. common CRS shortlist
+  3. workspace-used CRS
+  4. cached prior selections
+  5. live EPSG search hits
+- Workspace project CRS is editable from sidebar and persisted via:
+  - `PATCH /workspaces/{ws_id}/project-crs`
 
 ### 19. Terrain + Iso Helpers (V1)
 
