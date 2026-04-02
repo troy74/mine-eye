@@ -1,188 +1,264 @@
 # Architecture
 
-## 1. Purpose
+## 1. Architecture Goals
 
-`mine-eye` is a graph-native execution platform for exploration/mining workflows.
+`mine-eye` is designed as a backend-first graph execution platform for exploration workflows.
 
-The architecture is designed so that:
+Primary goals:
 
-- backend owns graph truth, execution truth, and persistence
-- clients remain thin render/editor layers
-- node behavior is deterministic from persisted config + upstream artifacts
-- outputs are portable across multiple clients (web, and future iOS/desktop)
+- keep domain behavior deterministic and auditable
+- support multiple clients (web now, iOS field app later, desktop possible) without contract drift
+- isolate business rules from UI-specific implementation details
+- preserve reproducibility via persisted graph/node/viewer configuration and immutable artifacts
 
-## 2. High-Level System
+## 2. Layered System Model
+
+The platform is intentionally componentized into four layers:
+
+1. **Domain/Contract Layer**
+2. **Data/Persistence Layer**
+3. **Application Services Layer**
+4. **Presentation Layer**
 
 ```text
-Web UI (React) ──HTTP/SSE──> Orchestrator (Axum)
-                                │
-                                ├── Postgres (graphs, nodes, edges, branches, revisions, jobs, artifacts)
-                                ├── Artifact storage (filesystem)
-                                └── Job queue rows -> Worker (Rust)
-
-Worker (mine-eye-worker) executes node kinds from mine-eye-nodes and writes artifacts + execution state.
+Presentation Clients (Web, future iOS/Desktop)
+        │
+        ▼
+Application Services (Orchestrator API + Worker Execution)
+        │
+        ▼
+Data/Persistence (Postgres + Artifact Store)
+        │
+        ▼
+Domain Contracts (shared Rust types/semantics/registry)
 ```
 
-## 3. Main Components
+The key rule: clients do not define truth; they consume and mutate truth through service contracts.
 
-### 3.1 Web Client (`apps/web`)
+## 3. Domain and Contract Layer
 
-Responsibilities:
+Current modules:
 
-- graph canvas editing (nodes/edges)
-- node inspector for node-specific config (mapping, CRS, run/config/output)
-- workspace/project controls (including project CRS)
-- viewer tabs (workspace + node-scoped previews)
-- rendering from backend contracts (especially viewer manifest)
-
-Non-goals:
-
-- no authoritative graph state
-- no hidden business logic that should live in backend contracts
-
-### 3.2 Orchestrator (`services/orchestrator`)
+- `crates/mine-eye-types`
+- `crates/mine-eye-graph`
+- `crates/mine-eye-scheduler`
+- `crates/mine-eye-nodes` (executor implementations and node-kind behavior)
 
 Responsibilities:
 
-- API surface for graph CRUD, branch/revision flows, promotions
-- edge validation and scheduling preparation
-- job enqueueing (`runGraph`)
+- canonical graph/node/edge/job/artifact types
+- typed semantic ports and compatibility behavior
+- node execution semantics and envelope behavior
+- shared contracts that every client depends on indirectly via API
+
+Design constraints:
+
+- avoid “web-only” contract interpretation
+- promote node registry and viewer manifest contracts to first-class backend outputs
+
+## 4. Data and Persistence Layer
+
+Current module:
+
+- `crates/mine-eye-store`
+
+Backing systems:
+
+- Postgres for graph/workspace/branch/revision/job metadata
+- filesystem artifact root for produced artifacts
+
+Core persisted entities:
+
+- workspaces (includes project CRS)
+- graphs, nodes, edges
+- job queue and execution status
+- node artifacts (content and keys)
+- branch/revision/promotion records
+
+Data-layer principles:
+
+- graph revision history is append-oriented and backend-owned
+- artifacts are immutable records keyed by content/lineage semantics
+- UI state needed for deterministic behavior is persisted in node/workspace config
+
+## 5. Application Services Layer
+
+### 5.1 Orchestrator (`services/orchestrator`)
+
+Responsibilities:
+
+- graph CRUD and wiring validation
+- branch/revision/promotion orchestration
+- dirty-node run planning and job enqueueing
 - viewer manifest generation (`/graphs/{graph_id}/viewers/{viewer_node_id}/manifest`)
-- project CRS persistence (`PATCH /workspaces/{ws_id}/project-crs`)
-- EPSG lookup proxy (`/epsg/search`)
+- workspace CRS management (`PATCH /workspaces/{ws_id}/project-crs`)
+- EPSG search proxy and normalization (`/epsg/search`)
 
-Design role:
+Role:
 
-- middleware source of truth for committed graph and presentation contracts
+- middleware source of truth for graph and presentation contracts
 
-### 3.3 Worker (`services/worker`)
+### 5.2 Worker (`services/worker`)
 
 Responsibilities:
 
-- poll and claim queued jobs
-- resolve latest input artifacts for node execution
-- execute node kind via `NodeExecutorRegistry`
-- write artifact refs, content hashes, and execution/cache state
-- persist failures with error context
+- claim queued jobs
+- resolve latest input artifacts
+- execute node kinds through `NodeExecutorRegistry`
+- persist artifacts, hashes, execution status, and errors
 
-### 3.4 Shared Crates
+Role:
 
-- `mine-eye-types`: canonical structs/enums for graph, ports, jobs, artifacts
-- `mine-eye-graph`: graph logic helpers
-- `mine-eye-scheduler`: dirty-node planning/scheduling helpers
-- `mine-eye-nodes`: executable node implementations
-- `mine-eye-store`: Postgres access + migrations
+- deterministic runtime executor isolated from UI concerns
 
-## 4. Core Data Model
+## 6. Presentation Layer (Web First, Multi-Client Ready)
 
-At minimum:
+Current client:
 
-- `workspaces` (includes `project_crs`)
-- `graphs`
-- `nodes`
-- `edges`
-- `job_queue`
-- `node_artifacts`
-- `graph_branches`
-- `graph_revisions`
-- `branch_promotions`
+- `apps/web` (Vite + React)
 
-Principles:
+Responsibilities:
 
-- graph and branch history are backend-owned
-- artifacts are immutable content-addressed records
-- node UI/runtime config is persisted with nodes
+- graph editing and inspector UX
+- node-scoped previews (2D/3D/generic)
+- running nodes/pipeline and displaying execution state
+- rendering viewer layers from backend contracts
 
-## 5. Execution Model
+Future clients:
 
-1. User edits graph/config in UI.
-2. Orchestrator persists mutation and marks downstream stale where needed.
-3. `runGraph` computes dirty set and enqueues jobs.
-4. Worker claims jobs and executes node kinds.
-5. Worker writes artifacts + node execution status.
-6. UI refreshes graph/artifacts and renders latest or stale-last-good outputs.
+- iOS field app (offline-aware review + limited edit/run workflows)
+- desktop app for heavier visualization/analysis workflows
 
-## 6. Node and Port Contracts
+Presentation-layer rules:
 
-Node kinds are registry-driven (backend node registry JSON loaded by clients).
-
-Port semantics are typed (for example: `point_set`, `interval_set`, `trajectory_set`, `surface`, `mesh`, `table`) and used for:
-
-- compatibility checks
-- graph wiring UX
-- viewer layer interpretation
-
-This keeps add-node menus and wiring behavior consistent across clients.
+- no hidden client-only transforms for core business logic
+- no client-owned “source of truth”
+- all clients consume same graph/manifest/CRS contracts
 
 ## 7. Viewer Architecture
 
-Viewer nodes are graph nodes (not global panels):
+Viewer nodes are graph-native visualization nodes, not global singleton panels.
+
+Current viewer node kinds:
 
 - `plan_view_2d`
-- `cesium_display_node` (current Cesium-backed 3D display; legacy alias path exists for `plan_view_3d`)
+- `cesium_display_node` (active Cesium-backed 3D display node)
+- `plan_view_3d` remains as a compatibility alias path
 
-A viewer renders only artifacts reachable through its input edges.
+A viewer renders only connected upstream artifacts by edge semantics.
 
-### 7.1 Viewer Manifest Contract
+### 7.1 Viewer Manifest as Stable Broker Contract
 
-Manifest is generated in orchestrator and consumed by clients as rendering truth.
-
-Manifest includes:
+Manifest produced by orchestrator must contain sufficient layer metadata so each client can render consistently:
 
 - artifact identity/provenance
-- layer hints (`display_contract`, `measure_candidates`, heatmap/contour metadata)
-- render metadata for 2D and 3D layer types
+- display contract and measure candidates
+- heatmap/contour/terrain/traces hints
+- renderer-neutral layer intent
 
-This is the key anti-drift mechanism for multi-client support.
+This is the anti-drift mechanism for web/iOS/desktop parity.
 
-## 8. CRS Strategy
+## 8. CRS Architecture
 
-- workspace has a persisted project CRS
-- acquisition/source nodes can use project CRS or explicit source CRS
-- transform/model nodes preserve CRS metadata in artifacts
-- UI uses a single CRS picker control with merged sources:
+CRS behavior is backend-backed, not UI-local:
+
+- workspace stores project CRS
+- node configs declare source/output CRS intent
+- artifacts preserve CRS metadata
+
+UI pattern:
+
+- one unified CRS control with:
   - project CRS
-  - common CRS
+  - common shortlist
   - workspace-used CRS
-  - cached selections
+  - cached picks
   - full EPSG search
 
-Goal: no client-specific CRS hidden state; CRS intent is explicit in node/workspace config.
+This control model should be shared behavior across clients even if UI widgets differ.
 
-## 9. State and UX Semantics
+## 9. Execution and State Semantics
 
-Node execution states (current model in code) are shown on canvas and used in run decisions:
+Current execution lifecycle in code:
 
-- idle/pending/running/succeeded/failed
-- cache state tracks hit/miss/stale context
-- lock state prevents recalculation where configured
+- `idle`, `pending`, `running`, `succeeded`, `failed`
+- cache states (hit/miss/stale) and lock state influence run behavior
 
-Target UX behavior:
+Expected UX semantics:
 
-- preserve last-good outputs even when stale
-- make stale vs current explicit
-- allow node-scoped run and viewer-scoped preview
+- stale-last-good outputs should remain viewable
+- running and failed states should be explicit and actionable
+- node-level run and graph-level run remain first-class controls
 
-## 10. Multi-Client Readiness
+## 10. Security and Identity Roadmap (Placeholder Contracts)
 
-To support future iOS/desktop clients without logic duplication:
+The following are planned architecture components and should be treated as future backend services/contracts:
 
-- keep graph truth, node registry, viewer manifests, and CRS state in backend
-- avoid hardcoding rendering rules in any one UI
-- persist UI-affecting config on nodes/workspace (not local-only)
-- treat web as one consumer of backend contracts, not the contract owner
+### 10.1 Authentication
 
-## 11. Extension Points
+- token/session-based identity for all mutating API endpoints
+- standardized request identity context (`user_id`, `org_id`, role/scopes)
 
-- add new node kinds in `mine-eye-nodes` + registry
-- expand semantic port taxonomy and compatibility rules
-- strengthen branch/revision conflict semantics
-- add richer artifact envelope/version metadata
-- evolve from polling to event-driven updates (SSE/websocket)
-- introduce next-gen 3D renderer node (threejs/WGSL path) while retaining Cesium display node as legacy/parallel option
+### 10.2 Authorization
 
-## 12. Tradeoffs (Current)
+- policy checks at service boundary:
+  - workspace/project access
+  - branch promotion rights
+  - run/execute rights
+  - viewer/artifact read rights
 
-- Fast iteration over strict formalization: some contract freeze items are still draft.
-- Polling is still present in parts of UI; real-time push is partially implemented.
-- Backward compatibility for old demo workspaces is intentionally de-prioritized in this phase.
+### 10.3 Auditability
+
+- immutable audit events for:
+  - graph mutations
+  - promotions
+  - run requests
+  - AI-assisted actions
+
+## 11. Optional Additional Encryption (Placeholder)
+
+Baseline:
+
+- TLS for transport
+- database credentials and secrets managed via environment
+
+Planned optional controls:
+
+- envelope encryption for selected artifact classes
+- encrypted-at-rest columns for sensitive configuration metadata
+- key management abstraction with rotation support
+
+## 12. AI Credits and Organizational Allocation (Placeholder)
+
+Planned model:
+
+- org-level AI budget/credits
+- sub-allocation buckets (team/project/workspace/user)
+- policy enforcement before AI action execution
+- usage metering events (tokens/cost/feature/tool scope)
+- admin visibility and guardrails (hard/soft limits, alerts)
+
+Service split recommendation:
+
+- keep AI budget ledger and policy evaluation in backend services
+- expose read/write APIs for allocation and usage views
+- keep clients presentation-only for budget visuals and approvals
+
+## 13. Scalability and Evolution
+
+Near-term evolution priorities:
+
+- move from mixed polling to more reactive event delivery where practical
+- strengthen port compatibility matrix and semantic contract validation
+- continue registry-driven node metadata and backend-owned viewer contracts
+- introduce next-gen 3D renderer path (threejs/WGSL) as a new node/presentation contract without breaking current Cesium path
+
+## 14. Non-Goals (Current Phase)
+
+- strict backward compatibility for old demo/example workspaces
+- perfect final contract freeze before iterative usability delivery
+- embedding core business logic inside any single frontend
+
+## 15. Guiding Rule
+
+If a behavior must be consistent across web, iOS, and desktop, it belongs in contracts and services, not in a single UI implementation.

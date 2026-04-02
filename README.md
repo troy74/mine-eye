@@ -2,7 +2,7 @@
 
 Geo-Scry's graph-native exploration platform for mining workflows.
 
-This repository contains the backend graph/orchestration runtime, worker execution engine, and the web client used to design pipelines, run nodes, and preview 2D/3D outputs.
+This repository contains a componentized backend graph/orchestration runtime, worker execution engine, and the Vite web client used to design pipelines, run nodes, and preview 2D/3D outputs.
 
 ## What This Project Is
 
@@ -37,6 +37,30 @@ This repository contains the backend graph/orchestration runtime, worker executi
 - Typed port semantics gate wiring and keep workflows deterministic.
 - Persisted viewer + node UI state is part of graph config, so behavior is reproducible.
 - Prefer immutable artifact/version records with lineage-aware execution.
+
+## Application Layers
+
+`mine-eye` is intentionally split so we can support multiple front ends without duplicating business logic:
+
+1. **Domain and contracts layer** (`crates/mine-eye-types`, `crates/mine-eye-graph`):
+- shared graph/node/port/artifact types
+- execution and compatibility semantics
+
+2. **Data and persistence layer** (`crates/mine-eye-store`):
+- Postgres persistence, migrations, artifact references
+- branch/revision/promotion records and execution state
+
+3. **Application services layer** (`services/orchestrator`, `services/worker`):
+- API and orchestration logic
+- queue, scheduler, execution dispatch
+- viewer manifest and CRS/search APIs
+
+4. **Presentation clients layer** (currently `apps/web`):
+- graph editing UX
+- node inspectors and viewer tabs
+- no authoritative state ownership
+
+The current priority is the Vite web frontend, but all new workflow/business behavior should be implemented in backend contracts first so iOS/desktop clients can consume the same APIs.
 
 ## Quick Start
 
@@ -81,6 +105,20 @@ Default web URL: `http://localhost:5174`
 - Worker executes node kind logic, writes artifacts, updates node execution/cache state.
 - Viewer tabs use node inputs + artifact refs and (for visualization nodes) consume viewer manifests.
 
+## Multi-Frontend Direction (Web First, iOS Next)
+
+Planned clients:
+
+- `apps/web` (current primary delivery path)
+- future field iOS client for in-field validation, review, and lightweight edits
+- possible desktop client for heavier review/model workflows
+
+To keep this sustainable:
+
+- all graph truth, CRS logic, node registry, and viewer-layer contracts stay backend-owned
+- clients render from shared contracts and persist user-intent settings via API
+- avoid client-only “magic” transforms that cannot be replayed by another client
+
 ## CRS and Viewer Notes
 
 - Workspace project CRS is persisted in backend and editable from UI.
@@ -96,6 +134,23 @@ Default web URL: `http://localhost:5174`
 ## Current Scope
 
 This codebase is in active early development. Compatibility with old example workspaces is not guaranteed unless explicitly stated.
+
+## Security/Auth and AI Governance Placeholders
+
+These are intentionally scaffolded as architecture requirements for upcoming phases:
+
+- **Authentication/authorization**:
+  - move toward token-based auth and per-request identity context in orchestrator
+  - support role/scope checks (user, org, workspace/project permissions)
+- **Encryption options**:
+  - baseline TLS in transit
+  - optional envelope encryption at rest for sensitive artifacts/config metadata
+- **AI usage governance**:
+  - per-org and per-suballocation AI credit ledgers
+  - policy checks before AI actions (budget, role, allowed tool scope)
+  - auditable AI action logs linked to graph/project context
+
+See [ARCHITECTURE.md](/Users/troytravlos/mine-eye/ARCHITECTURE.md) for proposed component boundaries and service-level responsibilities.
 
 ## Useful Commands
 
