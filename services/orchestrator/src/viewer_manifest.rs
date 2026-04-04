@@ -72,7 +72,7 @@ pub async fn build_viewer_manifest(
                 from_port: edge.from_port.clone(),
                 to_port: edge.to_port.clone(),
                 artifact_key: key.clone(),
-                artifact_url: format!("/files/{}", key),
+                artifact_url: format!("/files/{}?h={}", key, hash),
                 content_hash: hash,
                 media_type,
                 presentation,
@@ -103,28 +103,55 @@ async fn layer_presentation_from_artifact(
 ) -> serde_json::Value {
     let mut out = serde_json::json!({
         "renderer": "generic",
+        "display_pointer": "scene3d.generic",
         "editable": ["visible", "opacity", "style"],
         "has_surface_grid": false,
         "has_contours": key.to_ascii_lowercase().ends_with(".geojson"),
+        "schema_id": null,
+        "is_contract": false,
         "measure_candidates": [],
     });
     let lower = key.to_ascii_lowercase();
     let sk = source_kind.to_ascii_lowercase();
     if sk == "desurvey_trajectory" {
         out["renderer"] = serde_json::json!("trace_polyline");
+        out["display_pointer"] = serde_json::json!("scene3d.trace_polyline");
         out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
     } else if sk == "drillhole_model" && lower.contains("drillhole_meshes") {
         out["renderer"] = serde_json::json!("grade_segments");
+        out["display_pointer"] = serde_json::json!("scene3d.grade_segments");
         out["editable"] = serde_json::json!(["visible", "opacity", "width", "measure", "palette"]);
     } else if sk == "surface_iso_extract" || lower.contains("iso_contours") {
         out["renderer"] = serde_json::json!("contour_lines");
+        out["display_pointer"] = serde_json::json!("scene3d.contour_lines");
         out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
     } else if lower.contains("assay_points") || sk == "assay_ingest" {
         out["renderer"] = serde_json::json!("sample_points");
+        out["display_pointer"] = serde_json::json!("scene3d.sample_points");
         out["editable"] = serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
-    } else if sk == "terrain_adjust" || sk == "dem_integrate" || lower.contains("dem") || lower.contains("terrain_adjusted") {
+    } else if sk == "terrain_adjust"
+        || sk == "dem_integrate"
+        || sk == "dem_fetch"
+        || sk == "xyz_to_surface"
+        || lower.contains("dem")
+        || lower.contains("terrain_adjusted")
+        || lower.contains("xyz_surface")
+    {
         out["renderer"] = serde_json::json!("terrain");
+        out["display_pointer"] = serde_json::json!("scene3d.terrain");
         out["editable"] = serde_json::json!(["visible", "opacity"]);
+    } else if sk == "imagery_provider" || sk == "tilebroker" {
+        out["renderer"] = serde_json::json!("drape");
+        out["display_pointer"] = serde_json::json!("scene3d.imagery_drape");
+        out["editable"] = serde_json::json!(["visible", "opacity", "provider"]);
+    } else if sk == "scene3d_layer_stack" {
+        out["renderer"] = serde_json::json!("layer_stack");
+        out["display_pointer"] = serde_json::json!("scene3d.layer_stack");
+        out["editable"] = serde_json::json!(["visible", "opacity", "order", "style"]);
+    } else if sk == "aoi" {
+        out["renderer"] = serde_json::json!("aoi");
+        out["display_pointer"] = serde_json::json!("spatial.aoi");
+        out["editable"] = serde_json::json!(["visible"]);
     }
     if !lower.ends_with(".json") {
         return out;
@@ -139,9 +166,45 @@ async fn layer_presentation_from_artifact(
     let Some(obj) = root.as_object() else {
         return out;
     };
+    if let Some(schema_id) = obj.get("schema_id").and_then(|v| v.as_str()) {
+        out["schema_id"] = serde_json::json!(schema_id);
+        out["is_contract"] = serde_json::json!(schema_id.ends_with(".v1"));
+        match schema_id {
+            "scene3d.imagery_drape.v1" => {
+                out["renderer"] = serde_json::json!("drape");
+                out["display_pointer"] = serde_json::json!("scene3d.imagery_drape");
+                out["editable"] = serde_json::json!(["visible", "opacity", "provider"]);
+            }
+            "scene3d.tilebroker_response.v1" => {
+                out["renderer"] = serde_json::json!("drape");
+                out["display_pointer"] = serde_json::json!("scene3d.imagery_drape");
+                out["editable"] = serde_json::json!(["visible", "opacity", "provider"]);
+            }
+            "scene3d.layer_stack.v1" => {
+                out["renderer"] = serde_json::json!("layer_stack");
+                out["display_pointer"] = serde_json::json!("scene3d.layer_stack");
+                out["editable"] = serde_json::json!(["visible", "opacity", "order", "style"]);
+            }
+            "spatial.aoi.v1" => {
+                out["renderer"] = serde_json::json!("aoi");
+                out["display_pointer"] = serde_json::json!("spatial.aoi");
+                out["editable"] = serde_json::json!(["visible"]);
+            }
+            "terrain.surface_grid.v1" => {
+                out["renderer"] = serde_json::json!("terrain");
+                out["display_pointer"] = serde_json::json!("scene3d.terrain");
+                out["editable"] = serde_json::json!(["visible", "opacity"]);
+                out["has_surface_grid"] = serde_json::json!(true);
+            }
+            _ => {}
+        }
+    }
     if let Some(dc) = obj.get("display_contract").and_then(|v| v.as_object()) {
         if let Some(r) = dc.get("renderer").and_then(|v| v.as_str()) {
             out["renderer"] = serde_json::json!(r);
+        }
+        if let Some(dp) = dc.get("display_pointer").and_then(|v| v.as_str()) {
+            out["display_pointer"] = serde_json::json!(dp);
         }
         if let Some(ed) = dc.get("editable").and_then(|v| v.as_array()) {
             out["editable"] = serde_json::Value::Array(
@@ -163,6 +226,14 @@ async fn layer_presentation_from_artifact(
     }
     if let Some(stats) = obj.get("stats").and_then(|v| v.as_object()) {
         out["stats"] = serde_json::Value::Object(stats.clone());
+    }
+    if let Some(ui_caps) = obj.get("ui_capabilities").and_then(|v| v.as_array()) {
+        out["editable"] = serde_json::Value::Array(
+            ui_caps
+                .iter()
+                .filter_map(|x| x.as_str().map(|s| serde_json::json!(s)))
+                .collect(),
+        );
     }
     if obj.get("surface_grid").is_some() {
         out["has_surface_grid"] = serde_json::json!(true);

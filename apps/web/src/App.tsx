@@ -27,8 +27,11 @@ import {
 import { LeftSidebar } from "./LeftSidebar";
 import { Map2DPanel } from "./Map2DPanel";
 import { Map3DPanel } from "./Map3DPanel";
+import { Map3DThreePanel } from "./Map3DThreePanel";
+import { NodeInspector } from "./NodeInspector";
 import { NodePreviewPanel } from "./NodePreviewPanel";
-import { loadNodeRegistryFromApi } from "./nodeRegistry";
+import { loadNodeRegistryFromApi, nodeSpec } from "./nodeRegistry";
+import type { InspectorTab } from "./graphInspectorContext";
 import {
   getActiveProjectId,
   loadProjects,
@@ -43,7 +46,7 @@ type SeedResponse = {
   nodes: Record<string, string>;
 };
 
-type MainTab = "workspace" | `node:${string}`;
+type MainTab = "workspace" | `node:${string}` | `edit:${string}`;
 
 function collectWorkspaceUsedEpsg(nodes: ApiNode[]): number[] {
   const out = new Set<number>();
@@ -88,7 +91,10 @@ export default function App() {
   const [graphNodes, setGraphNodes] = useState<ApiNode[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [projectEpsg, setProjectEpsg] = useState<number>(4326);
+  const [pendingProjectEpsg, setPendingProjectEpsg] = useState<number | null>(null);
   const [openViewerNodeIds, setOpenViewerNodeIds] = useState<string[]>([]);
+  const [openEditorNodeIds, setOpenEditorNodeIds] = useState<string[]>([]);
+  const [editorTabs, setEditorTabs] = useState<Record<string, InspectorTab>>({});
   const [branches, setBranches] = useState<ApiBranch[]>([]);
   const [revisions, setRevisions] = useState<ApiRevision[]>([]);
   const [promotions, setPromotions] = useState<ApiPromotion[]>([]);
@@ -154,7 +160,7 @@ export default function App() {
 
   const refreshArtifacts = useCallback(async (gid: string) => {
     try {
-      const r = await fetch(api(`/graphs/${gid}/artifacts`));
+      const r = await fetch(api(`/graphs/${gid}/artifacts`), { cache: "no-store" });
       if (!r.ok) return;
       const data: unknown = await r.json();
       if (!Array.isArray(data)) return;
@@ -221,7 +227,10 @@ export default function App() {
     setGraphNodes([]);
     setWorkspaceId(null);
     setProjectEpsg(4326);
+    setPendingProjectEpsg(null);
     setOpenViewerNodeIds([]);
+    setOpenEditorNodeIds([]);
+    setEditorTabs({});
     setRevisionDiff(null);
     setStatus("");
     setActiveBranchId(null);
@@ -278,6 +287,9 @@ export default function App() {
       setGraphId(data.graph_id);
       setMainTab("workspace");
       setOpenViewerNodeIds([]);
+      setOpenEditorNodeIds([]);
+      setEditorTabs({});
+      setPendingProjectEpsg(null);
       setStatus(
         "Demo graph ready. Queue pipeline run, start worker, then refresh. Project saved in this browser."
       );
@@ -319,6 +331,9 @@ export default function App() {
       setGraphId(g.id);
       setMainTab("workspace");
       setOpenViewerNodeIds([]);
+      setOpenEditorNodeIds([]);
+      setEditorTabs({});
+      setPendingProjectEpsg(null);
       setStatus(
         "Empty graph created. Add nodes via API or seed a demo in another project. This browser remembers projects locally."
       );
@@ -467,7 +482,8 @@ export default function App() {
       const isViewerNode =
         node.config.kind === "plan_view_2d" ||
         node.config.kind === "plan_view_3d" ||
-        node.config.kind === "cesium_display_node";
+        node.config.kind === "cesium_display_node" ||
+        node.config.kind === "threejs_display_node";
       if (!isViewerNode) return;
 
       const upstream = graphEdges
@@ -521,15 +537,77 @@ export default function App() {
     setMainTab((prev) => (prev === `node:${nodeId}` ? "workspace" : prev));
   }, []);
 
-  const onSetProjectCrs = useCallback(
-    async (epsg: number) => {
-      if (!workspaceId || !Number.isFinite(epsg) || epsg <= 0) return;
-      await updateWorkspaceProjectCrs(workspaceId, { epsg: Math.trunc(epsg), wkt: null });
-      setStatus(`Project CRS updated to EPSG:${Math.trunc(epsg)}.`);
+  const openNodeEditor = useCallback((nodeId: string) => {
+    setOpenEditorNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
+    setEditorTabs((prev) => ({ ...prev, [nodeId]: prev[nodeId] ?? "config" }));
+    setMainTab(`edit:${nodeId}`);
+  }, []);
+
+  const closeNodeEditor = useCallback((nodeId: string) => {
+    setOpenEditorNodeIds((prev) => prev.filter((id) => id !== nodeId));
+    setEditorTabs((prev) => {
+      const next = { ...prev };
+      delete next[nodeId];
+      return next;
+    });
+    setMainTab((prev) => (prev === `edit:${nodeId}` ? "workspace" : prev));
+  }, []);
+
+  const onNodeUpdatedFromEditor = useCallback((updated: ApiNode) => {
+    setGraphNodes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+  }, []);
+
+  const applyProjectCrs = useCallback(
+    async (wsId: string, epsg: number) => {
+      const next = Math.trunc(epsg);
+      await updateWorkspaceProjectCrs(wsId, { epsg: next, wkt: null });
+      setProjectEpsg(next);
+      setStatus(`Project CRS updated to EPSG:${next}.`);
       refreshAll();
     },
-    [refreshAll, workspaceId]
+    [refreshAll]
   );
+
+  const onSetProjectCrs = useCallback(
+    async (epsg: number) => {
+      if (!Number.isFinite(epsg) || epsg <= 0) return;
+      const next = Math.trunc(epsg);
+      setProjectEpsg(next);
+      if (!workspaceId) {
+        setPendingProjectEpsg(next);
+        setStatus(`Project CRS EPSG:${next} queued; applying when workspace metadata loads…`);
+        return;
+      }
+      try {
+        setPendingProjectEpsg(null);
+        await applyProjectCrs(workspaceId, next);
+      } catch (e) {
+        setStatus(`Project CRS update failed: ${e instanceof Error ? e.message : String(e)}`);
+        if (graphId) {
+          void refreshGraphEdges(graphId);
+        }
+      }
+    },
+    [applyProjectCrs, graphId, refreshGraphEdges, workspaceId]
+  );
+
+  useEffect(() => {
+    if (!workspaceId || pendingProjectEpsg === null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await applyProjectCrs(workspaceId, pendingProjectEpsg);
+        if (!cancelled) setPendingProjectEpsg(null);
+      } catch (e) {
+        if (!cancelled) {
+          setStatus(`Project CRS update failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyProjectCrs, pendingProjectEpsg, workspaceId]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -737,6 +815,24 @@ export default function App() {
                   />
                 );
               })}
+            {openEditorNodeIds
+              .filter((id) => graphNodes.some((n) => n.id === id))
+              .map((id) => {
+                const node = graphNodes.find((n) => n.id === id) ?? null;
+                const label = node
+                  ? `${node.config.kind.replace(/_/g, " ")} edit`
+                  : `Edit ${id.slice(0, 6)}`;
+                const tabId = `edit:${id}` as MainTab;
+                return (
+                  <TabButton
+                    key={`edit-tab:${id}`}
+                    active={mainTab === tabId}
+                    onClick={() => setMainTab(tabId)}
+                    onClose={() => closeNodeEditor(id)}
+                    label={label}
+                  />
+                );
+              })}
           </div>
           <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
             <div
@@ -756,6 +852,7 @@ export default function App() {
                   artifacts={artifacts}
                   onPipelineQueued={refreshAll}
                   onOpenNodeViewer={openNodeViewer}
+                  onOpenNodeEditor={openNodeEditor}
                   onGraphChanged={refreshAll}
                 />
               </GraphErrorBoundary>
@@ -786,6 +883,16 @@ export default function App() {
                       viewerNodeId={nodeId}
                       onClearViewer={() => closeNodeViewer(nodeId)}
                     />
+                  ) : node.config.kind === "threejs_display_node" ? (
+                    <Map3DThreePanel
+                      graphId={graphId}
+                      activeBranchId={activeBranchId}
+                      active={active}
+                      edges={graphEdges}
+                      artifacts={artifacts}
+                      viewerNodeId={nodeId}
+                      onClearViewer={() => closeNodeViewer(nodeId)}
+                    />
                   ) : node.config.kind === "plan_view_3d" ||
                     node.config.kind === "cesium_display_node" ? (
                     <Map3DPanel
@@ -804,6 +911,49 @@ export default function App() {
                       nodeKind={node.config.kind}
                       artifacts={artifacts}
                     />
+                  )}
+                </div>
+              );
+            })}
+            {openEditorNodeIds.map((nodeId) => {
+              const node = graphNodes.find((n) => n.id === nodeId) ?? null;
+              const active = mainTab === (`edit:${nodeId}` as MainTab);
+              const tab = editorTabs[nodeId] ?? "config";
+              const nodeArtifacts = artifacts.filter((a) => a.node_id === nodeId);
+              return (
+                <div
+                  key={`editor:${nodeId}`}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: active ? "block" : "none",
+                    background: "#0f1419",
+                  }}
+                >
+                  {!node ? (
+                    <div style={{ padding: 16, fontSize: 13, opacity: 0.8 }}>
+                      Node editor unavailable.
+                    </div>
+                  ) : (
+                    <div style={{ height: "100%", display: "flex" }}>
+                      <NodeInspector
+                        graphId={graphId ?? ""}
+                        activeBranchId={activeBranchId}
+                        node={node}
+                        nodeSpec={nodeSpec(node.config.kind)}
+                        projectEpsg={projectEpsg}
+                        workspaceUsedEpsgs={workspaceUsedEpsgs}
+                        tab={tab}
+                        onTab={(next) =>
+                          setEditorTabs((prev) => ({ ...prev, [nodeId]: next }))
+                        }
+                        onClose={() => closeNodeEditor(nodeId)}
+                        mode="editor"
+                        onNodeUpdated={onNodeUpdatedFromEditor}
+                        nodeArtifacts={nodeArtifacts}
+                        onPipelineQueued={refreshAll}
+                      />
+                    </div>
                   )}
                 </div>
               );

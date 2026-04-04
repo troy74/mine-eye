@@ -269,6 +269,48 @@ pub async fn run_surface_sample_ingest(
         .pointer("/points")
         .cloned()
         .unwrap_or(serde_json::json!([]));
+    let mut terrain_grid_for_fill: Option<(
+        usize,
+        usize,
+        f64,
+        f64,
+        f64,
+        f64,
+        Vec<Option<f64>>,
+    )> = None;
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        let Some(g) = v.get("surface_grid").and_then(|x| x.as_object()) else {
+            continue;
+        };
+        let nx = g
+            .get("nx")
+            .and_then(|x| x.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let ny = g
+            .get("ny")
+            .and_then(|x| x.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let xmin = g.get("xmin").and_then(|x| x.as_f64());
+        let xmax = g.get("xmax").and_then(|x| x.as_f64());
+        let ymin = g.get("ymin").and_then(|x| x.as_f64());
+        let ymax = g.get("ymax").and_then(|x| x.as_f64());
+        let vals = g.get("values").and_then(|x| x.as_array());
+        let (Some(xmin), Some(xmax), Some(ymin), Some(ymax), Some(vals)) =
+            (xmin, xmax, ymin, ymax, vals)
+        else {
+            continue;
+        };
+        if nx < 2 || ny < 2 || vals.len() != nx * ny {
+            continue;
+        }
+        let values: Vec<Option<f64>> = vals.iter().map(|v| v.as_f64()).collect();
+        terrain_grid_for_fill = Some((nx, ny, xmin, xmax, ymin, ymax, values));
+        break;
+    }
+
     if let Some(target) = collar_output_target_crs(job)? {
         let project_missing = collar_output_crs_mode(job) == "project" && job.project_crs.is_none();
         if let Some(arr) = points.as_array_mut() {
@@ -297,11 +339,9 @@ pub async fn run_surface_sample_ingest(
                 obj.insert("y".into(), serde_json::json!(ny));
                 obj.insert("crs".into(), serde_json::to_value(&target)?);
 
-                let qa = obj
-                    .entry("qa_flags")
-                    .or_insert_with(|| serde_json::json!([]));
-                let mut qa_vals: Vec<String> = qa
-                    .as_array()
+                let mut qa_vals: Vec<String> = obj
+                    .get("qa_flags")
+                    .and_then(|x| x.as_array())
                     .map(|a| {
                         a.iter()
                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -314,7 +354,21 @@ pub async fn run_surface_sample_ingest(
                 if src_crs != target {
                     qa_vals.push("reprojected_xy".into());
                 }
-                *qa = serde_json::json!(qa_vals);
+
+                let has_z = obj.get("z").and_then(|v| v.as_f64()).is_some();
+                if !has_z {
+                    if let Some((gnx, gny, gxmin, gxmax, gymin, gymax, gvals)) =
+                        terrain_grid_for_fill.as_ref()
+                    {
+                        if let Some(zv) = bilinear_from_grid(
+                            *gnx, *gny, *gxmin, *gxmax, *gymin, *gymax, gvals, nx, ny,
+                        ) {
+                            obj.insert("z".into(), serde_json::json!(zv));
+                            qa_vals.push("z_from_terrain_grid".into());
+                        }
+                    }
+                }
+                obj.insert("qa_flags".into(), serde_json::json!(qa_vals));
             }
         }
     }
@@ -504,7 +558,7 @@ struct XYZ {
 
 fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
     let mut out = Vec::new();
-    let mut push_row = |row: &serde_json::Value| {
+    let push_row = |out: &mut Vec<XYZ>, row: &serde_json::Value| {
         let Some(obj) = row.as_object() else {
             return;
         };
@@ -520,24 +574,320 @@ fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
 
     if let Some(arr) = v.get("points").and_then(|a| a.as_array()) {
         for row in arr {
-            push_row(row);
+            push_row(&mut out, row);
         }
     }
     if let Some(arr) = v.get("collars").and_then(|a| a.as_array()) {
         for row in arr {
-            push_row(row);
+            push_row(&mut out, row);
         }
     }
     if let Some(arr) = v.get("assay_points").and_then(|a| a.as_array()) {
         for row in arr {
-            push_row(row);
+            push_row(&mut out, row);
+        }
+    }
+    if let Some(arr) = v.get("surveys").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(&mut out, row);
+        }
+    }
+    if let Some(arr) = v.get("segments").and_then(|a| a.as_array()) {
+        for row in arr {
+            let Some(obj) = row.as_object() else {
+                continue;
+            };
+            if let Some(from_xyz) = obj.get("from_xyz").and_then(|x| x.as_array()) {
+                if from_xyz.len() >= 3 {
+                    if let (Some(x), Some(y), Some(z)) =
+                        (from_xyz[0].as_f64(), from_xyz[1].as_f64(), from_xyz[2].as_f64())
+                    {
+                        out.push(XYZ { x, y, z });
+                    }
+                }
+            }
+            if let Some(to_xyz) = obj.get("to_xyz").and_then(|x| x.as_array()) {
+                if to_xyz.len() >= 3 {
+                    if let (Some(x), Some(y), Some(z)) =
+                        (to_xyz[0].as_f64(), to_xyz[1].as_f64(), to_xyz[2].as_f64())
+                    {
+                        out.push(XYZ { x, y, z });
+                    }
+                }
+            }
+            let xf = obj.get("x_from").and_then(|v| v.as_f64());
+            let yf = obj.get("y_from").and_then(|v| v.as_f64());
+            let zf = obj.get("z_from").and_then(|v| v.as_f64());
+            if let (Some(x), Some(y), Some(z)) = (xf, yf, zf) {
+                out.push(XYZ { x, y, z });
+            }
+            let xt = obj.get("x_to").and_then(|v| v.as_f64());
+            let yt = obj.get("y_to").and_then(|v| v.as_f64());
+            let zt = obj.get("z_to").and_then(|v| v.as_f64());
+            if let (Some(x), Some(y), Some(z)) = (xt, yt, zt) {
+                out.push(XYZ { x, y, z });
+            }
         }
     }
     if v.is_array() {
         if let Some(rows) = v.as_array() {
             for row in rows {
-                push_row(row);
+                push_row(&mut out, row);
             }
+        }
+    }
+    out
+}
+
+fn collect_xy_points(v: &serde_json::Value) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let collect_coords = |coords: &serde_json::Value, out: &mut Vec<(f64, f64)>| {
+        fn walk(node: &serde_json::Value, out: &mut Vec<(f64, f64)>) {
+            if let Some(arr) = node.as_array() {
+                if arr.len() >= 2 {
+                    if let (Some(x), Some(y)) = (arr[0].as_f64(), arr[1].as_f64()) {
+                        if x.is_finite() && y.is_finite() {
+                            out.push((x, y));
+                            return;
+                        }
+                    }
+                }
+                for child in arr {
+                    walk(child, out);
+                }
+            }
+        }
+        walk(coords, out);
+    };
+    let push_row = |out: &mut Vec<(f64, f64)>, row: &serde_json::Value| {
+        let Some(obj) = row.as_object() else {
+            return;
+        };
+        let x = obj.get("x").and_then(|v| v.as_f64());
+        let y = obj.get("y").and_then(|v| v.as_f64());
+        if let (Some(x), Some(y)) = (x, y) {
+            if x.is_finite() && y.is_finite() {
+                out.push((x, y));
+            }
+        }
+    };
+
+    if let Some(arr) = v.get("points").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(&mut out, row);
+        }
+    }
+    if let Some(arr) = v.get("collars").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(&mut out, row);
+        }
+    }
+    if let Some(arr) = v.get("assay_points").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(&mut out, row);
+        }
+    }
+    if let Some(arr) = v.get("surveys").and_then(|a| a.as_array()) {
+        for row in arr {
+            push_row(&mut out, row);
+        }
+    }
+    if let Some(arr) = v.get("segments").and_then(|a| a.as_array()) {
+        for row in arr {
+            let Some(obj) = row.as_object() else {
+                continue;
+            };
+            let xf = obj.get("x_from").and_then(|v| v.as_f64());
+            let yf = obj.get("y_from").and_then(|v| v.as_f64());
+            if let (Some(x), Some(y)) = (xf, yf) {
+                if x.is_finite() && y.is_finite() {
+                    out.push((x, y));
+                }
+            }
+            let xt = obj.get("x_to").and_then(|v| v.as_f64());
+            let yt = obj.get("y_to").and_then(|v| v.as_f64());
+            if let (Some(x), Some(y)) = (xt, yt) {
+                if x.is_finite() && y.is_finite() {
+                    out.push((x, y));
+                }
+            }
+        }
+    }
+    if let Some(b) = v.get("bounds").and_then(|x| x.as_object()) {
+        let xmin = b.get("xmin").and_then(|x| x.as_f64());
+        let xmax = b.get("xmax").and_then(|x| x.as_f64());
+        let ymin = b.get("ymin").and_then(|x| x.as_f64());
+        let ymax = b.get("ymax").and_then(|x| x.as_f64());
+        if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax) {
+            if xmin.is_finite() && ymin.is_finite() {
+                out.push((xmin, ymin));
+            }
+            if xmin.is_finite() && ymax.is_finite() {
+                out.push((xmin, ymax));
+            }
+            if xmax.is_finite() && ymin.is_finite() {
+                out.push((xmax, ymin));
+            }
+            if xmax.is_finite() && ymax.is_finite() {
+                out.push((xmax, ymax));
+            }
+        }
+    }
+    if let Some(g) = v.get("surface_grid").and_then(|x| x.as_object()) {
+        let xmin = g.get("xmin").and_then(|x| x.as_f64());
+        let xmax = g.get("xmax").and_then(|x| x.as_f64());
+        let ymin = g.get("ymin").and_then(|x| x.as_f64());
+        let ymax = g.get("ymax").and_then(|x| x.as_f64());
+        if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax) {
+            if xmin.is_finite() && ymin.is_finite() {
+                out.push((xmin, ymin));
+            }
+            if xmin.is_finite() && ymax.is_finite() {
+                out.push((xmin, ymax));
+            }
+            if xmax.is_finite() && ymin.is_finite() {
+                out.push((xmax, ymin));
+            }
+            if xmax.is_finite() && ymax.is_finite() {
+                out.push((xmax, ymax));
+            }
+        }
+    }
+    if let Some(geom) = v.get("geometry").and_then(|x| x.as_object()) {
+        if let Some(coords) = geom.get("coordinates") {
+            collect_coords(coords, &mut out);
+        }
+    }
+    if let Some(features) = v.get("features").and_then(|x| x.as_array()) {
+        for f in features {
+            if let Some(geom) = f.get("geometry").and_then(|x| x.as_object()) {
+                if let Some(coords) = geom.get("coordinates") {
+                    collect_coords(coords, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn infer_extent(points: &[XYZ], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
+    if points.is_empty() {
+        return None;
+    }
+    let mut xmin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+    for p in points {
+        xmin = xmin.min(p.x);
+        xmax = xmax.max(p.x);
+        ymin = ymin.min(p.y);
+        ymax = ymax.max(p.y);
+    }
+    let dx = (xmax - xmin).abs().max(1e-6);
+    let dy = (ymax - ymin).abs().max(1e-6);
+    let px = dx * pad_pct.max(0.0);
+    let py = dy * pad_pct.max(0.0);
+    Some((xmin - px, xmax + px, ymin - py, ymax + py))
+}
+
+fn infer_extent_xy(points: &[(f64, f64)], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
+    if points.is_empty() {
+        return None;
+    }
+    let mut xmin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+    for (x, y) in points.iter().copied() {
+        xmin = xmin.min(x);
+        xmax = xmax.max(x);
+        ymin = ymin.min(y);
+        ymax = ymax.max(y);
+    }
+    if !xmin.is_finite() || !xmax.is_finite() || !ymin.is_finite() || !ymax.is_finite() {
+        return None;
+    }
+    let dx = (xmax - xmin).abs().max(1e-6);
+    let dy = (ymax - ymin).abs().max(1e-6);
+    let pad = pad_pct.clamp(0.0, 2.0);
+    Some((xmin - dx * pad, xmax + dx * pad, ymin - dy * pad, ymax + dy * pad))
+}
+
+fn merge_extents(
+    a: Option<(f64, f64, f64, f64)>,
+    b: Option<(f64, f64, f64, f64)>,
+) -> Option<(f64, f64, f64, f64)> {
+    match (a, b) {
+        (Some((ax0, ax1, ay0, ay1)), Some((bx0, bx1, by0, by1))) => Some((
+            ax0.min(bx0),
+            ax1.max(bx1),
+            ay0.min(by0),
+            ay1.max(by1),
+        )),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn grid_dims_from_extent(
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
+    resolution_hint: f64,
+    max_cells: usize,
+) -> (usize, usize) {
+    let dx = (xmax - xmin).abs().max(1e-6);
+    let dy = (ymax - ymin).abs().max(1e-6);
+    let res = resolution_hint.max(1e-6);
+    let mut nx = ((dx / res).ceil() as usize + 1).clamp(8, 512);
+    let mut ny = ((dy / res).ceil() as usize + 1).clamp(8, 512);
+    while nx.saturating_mul(ny) > max_cells.max(256) {
+        nx = ((nx as f64) * 0.9).floor().max(8.0) as usize;
+        ny = ((ny as f64) * 0.9).floor().max(8.0) as usize;
+        if nx <= 8 && ny <= 8 {
+            break;
+        }
+    }
+    (nx.max(2), ny.max(2))
+}
+
+fn idw_surface_from_xyz(
+    points: &[XYZ],
+    nx: usize,
+    ny: usize,
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
+) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(nx * ny);
+    if points.is_empty() {
+        out.resize(nx * ny, None);
+        return out;
+    }
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let x = xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
+            let y = ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
+            let mut num = 0.0;
+            let mut den = 0.0;
+            let mut snapped: Option<f64> = None;
+            for p in points {
+                let dx = x - p.x;
+                let dy = y - p.y;
+                let d2 = dx * dx + dy * dy;
+                if d2 <= 1e-12 {
+                    snapped = Some(p.z);
+                    break;
+                }
+                let w = 1.0 / d2;
+                num += w * p.z;
+                den += w;
+            }
+            out.push(snapped.or_else(|| (den > 0.0).then_some(num / den)));
         }
     }
     out
@@ -1414,6 +1764,1237 @@ pub async fn run_terrain_adjust(
         "graphs/{}/nodes/{}/terrain_adjusted.json",
         job.graph_id, job.node_id
     );
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+/// Build a surface_grid from any upstream XYZ-style datasets (points/collars/segments/assay_points).
+pub async fn run_xyz_to_surface(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let resolution_hint = job
+        .output_spec
+        .pointer("/node_ui/resolution")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(25.0)
+        .max(0.01);
+    let max_cells = job
+        .output_spec
+        .pointer("/node_ui/max_cells")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(65536) as usize;
+    let pad_pct = job
+        .output_spec
+        .pointer("/node_ui/pad_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.25);
+    let nx_cfg = job
+        .output_spec
+        .pointer("/node_ui/nx")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    let ny_cfg = job
+        .output_spec
+        .pointer("/node_ui/ny")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    let mut xyz_points: Vec<XYZ> = Vec::new();
+    let mut xy_points: Vec<(f64, f64)> = Vec::new();
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        xyz_points.extend(collect_xyz_points(&v));
+        xy_points.extend(collect_xy_points(&v));
+    }
+    if xyz_points.len() < 3 {
+        return Err(NodeError::InvalidConfig(
+            "xyz_to_surface requires at least 3 XYZ points from upstream artifacts".into(),
+        ));
+    }
+
+    let (xmin, xmax, ymin, ymax) = infer_extent(&xyz_points, pad_pct).ok_or_else(|| {
+        NodeError::InvalidConfig("unable to infer extent from XYZ points".into())
+    })?;
+    let (mut nx, mut ny) = grid_dims_from_extent(xmin, xmax, ymin, ymax, resolution_hint, max_cells);
+    if let Some(v) = nx_cfg {
+        nx = v.clamp(2, 1024);
+    }
+    if let Some(v) = ny_cfg {
+        ny = v.clamp(2, 1024);
+    }
+    let values = idw_surface_from_xyz(&xyz_points, nx, ny, xmin, xmax, ymin, ymax);
+    let finite_vals: Vec<f64> = values.iter().copied().flatten().collect();
+    let (zmin, zmax) = if finite_vals.is_empty() {
+        (0.0, 0.0)
+    } else {
+        (
+            finite_vals.iter().copied().fold(f64::INFINITY, f64::min),
+            finite_vals
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+
+    let out = serde_json::json!({
+        "type":"xyz_surface",
+        "source":"idw_interpolation",
+        "display_contract": {
+            "renderer":"terrain",
+            "display_pointer":"scene3d.terrain",
+            "editable":["visible","opacity"]
+        },
+        "stats":{
+            "input_points": xyz_points.len(),
+            "z_min": zmin,
+            "z_max": zmax
+        },
+        "surface_grid":{
+            "nx":nx,
+            "ny":ny,
+            "xmin":xmin,
+            "xmax":xmax,
+            "ymin":ymin,
+            "ymax":ymax,
+            "values":values
+        },
+        "crs": job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326))
+    });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/xyz_surface.json", job.graph_id, job.node_id);
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+async fn fetch_open_meteo_elevations(lat_lon: &[(f64, f64)]) -> Vec<Option<f64>> {
+    if lat_lon.is_empty() {
+        return Vec::new();
+    }
+    let client = reqwest::Client::new();
+    let mut out: Vec<Option<f64>> = Vec::with_capacity(lat_lon.len());
+    let chunk = 100usize;
+    for part in lat_lon.chunks(chunk) {
+        let lat_csv = part
+            .iter()
+            .map(|p| format!("{:.7}", p.0))
+            .collect::<Vec<_>>()
+            .join(",");
+        let lon_csv = part
+            .iter()
+            .map(|p| format!("{:.7}", p.1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let req = client
+            .get("https://api.open-meteo.com/v1/elevation")
+            .query(&[("latitude", lat_csv), ("longitude", lon_csv)]);
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(_) => {
+                out.extend((0..part.len()).map(|_| None));
+                continue;
+            }
+        };
+        let json = match resp.json::<serde_json::Value>().await {
+            Ok(v) => v,
+            Err(_) => {
+                out.extend((0..part.len()).map(|_| None));
+                continue;
+            }
+        };
+        if let Some(arr) = json.get("elevation").and_then(|v| v.as_array()) {
+            for i in 0..part.len() {
+                out.push(arr.get(i).and_then(|v| v.as_f64()));
+            }
+        } else {
+            out.extend((0..part.len()).map(|_| None));
+        }
+    }
+    out
+}
+
+fn bilinear_sample_grid(
+    ncols: usize,
+    nrows: usize,
+    xll: f64,
+    yll: f64,
+    cell: f64,
+    vals: &[Option<f64>],
+    lon: f64,
+    lat: f64,
+) -> Option<f64> {
+    if ncols < 2 || nrows < 2 || cell <= 0.0 {
+        return None;
+    }
+    let gx = (lon - xll) / cell;
+    let gy = (lat - yll) / cell;
+    if !gx.is_finite() || !gy.is_finite() {
+        return None;
+    }
+    if gx < 0.0 || gy < 0.0 || gx > (ncols - 1) as f64 || gy > (nrows - 1) as f64 {
+        return None;
+    }
+    let ix0 = gx.floor().clamp(0.0, (ncols - 1) as f64) as usize;
+    let iy0s = gy.floor().clamp(0.0, (nrows - 1) as f64) as usize;
+    let ix1 = (ix0 + 1).min(ncols - 1);
+    let iy1s = (iy0s + 1).min(nrows - 1);
+    // AAIGrid rows are north->south; gy is from south->north.
+    let iy0 = (nrows - 1).saturating_sub(iy0s);
+    let iy1 = (nrows - 1).saturating_sub(iy1s);
+    let fx = (gx - ix0 as f64).clamp(0.0, 1.0);
+    let fy = (gy - iy0s as f64).clamp(0.0, 1.0);
+    let idx = |x: usize, y: usize| -> usize { y * ncols + x };
+    let v00 = vals.get(idx(ix0, iy0)).copied().flatten()?;
+    let v10 = vals.get(idx(ix1, iy0)).copied().flatten()?;
+    let v01 = vals.get(idx(ix0, iy1)).copied().flatten()?;
+    let v11 = vals.get(idx(ix1, iy1)).copied().flatten()?;
+    let a = v00 * (1.0 - fx) + v10 * fx;
+    let b = v01 * (1.0 - fx) + v11 * fx;
+    Some(a * (1.0 - fy) + b * fy)
+}
+
+fn parse_aai_grid(text: &str) -> Option<(usize, usize, f64, f64, f64, f64, Vec<Option<f64>>)> {
+    let mut ncols: Option<usize> = None;
+    let mut nrows: Option<usize> = None;
+    let mut xll: Option<f64> = None;
+    let mut yll: Option<f64> = None;
+    let mut cell: Option<f64> = None;
+    let mut nodata: f64 = -32768.0;
+    let mut values_start = 0usize;
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, ln) in lines.iter().enumerate() {
+        let parts: Vec<&str> = ln.split_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let k = parts[0].to_ascii_lowercase();
+        match k.as_str() {
+            "ncols" => ncols = parts[1].parse::<usize>().ok(),
+            "nrows" => nrows = parts[1].parse::<usize>().ok(),
+            "xllcorner" | "xllcenter" => xll = parts[1].parse::<f64>().ok(),
+            "yllcorner" | "yllcenter" => yll = parts[1].parse::<f64>().ok(),
+            "cellsize" => cell = parts[1].parse::<f64>().ok(),
+            "nodata_value" => nodata = parts[1].parse::<f64>().unwrap_or(nodata),
+            _ => {
+                values_start = i;
+                break;
+            }
+        }
+        values_start = i + 1;
+    }
+    let (Some(ncols), Some(nrows), Some(xll), Some(yll), Some(cell)) = (ncols, nrows, xll, yll, cell) else {
+        return None;
+    };
+    let mut vals: Vec<Option<f64>> = Vec::with_capacity(ncols * nrows);
+    for ln in lines.iter().skip(values_start) {
+        for t in ln.split_whitespace() {
+            let v = t.parse::<f64>().ok();
+            let vv = v.filter(|x| (x - nodata).abs() > 1e-9);
+            vals.push(vv);
+        }
+    }
+    if vals.len() < ncols * nrows {
+        vals.resize(ncols * nrows, None);
+    } else if vals.len() > ncols * nrows {
+        vals.truncate(ncols * nrows);
+    }
+    Some((ncols, nrows, xll, yll, cell, nodata, vals))
+}
+
+async fn fetch_opentopography_elevations(
+    lat_lon: &[(f64, f64)],
+    api_key: &str,
+) -> Vec<Option<f64>> {
+    if lat_lon.is_empty() || api_key.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    let mut west = f64::INFINITY;
+    let mut east = f64::NEG_INFINITY;
+    for (lat, lon) in lat_lon.iter().copied() {
+        south = south.min(lat);
+        north = north.max(lat);
+        west = west.min(lon);
+        east = east.max(lon);
+    }
+    if !south.is_finite() || !north.is_finite() || !west.is_finite() || !east.is_finite() {
+        return vec![None; lat_lon.len()];
+    }
+    let pad_lat = ((north - south).abs() * 0.01).max(1e-5);
+    let pad_lon = ((east - west).abs() * 0.01).max(1e-5);
+    let south = (south - pad_lat).max(-90.0);
+    let north = (north + pad_lat).min(90.0);
+    let west = (west - pad_lon).max(-180.0);
+    let east = (east + pad_lon).min(180.0);
+
+    let client = reqwest::Client::new();
+    let req = client
+        .get("https://portal.opentopography.org/API/globaldem")
+        .query(&[
+            ("demtype", "COP30"),
+            ("south", &format!("{south:.8}")),
+            ("north", &format!("{north:.8}")),
+            ("west", &format!("{west:.8}")),
+            ("east", &format!("{east:.8}")),
+            ("outputFormat", "AAIGrid"),
+            ("API_Key", api_key),
+        ]);
+    let text = match req.send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return vec![None; lat_lon.len()],
+        },
+        Err(_) => return vec![None; lat_lon.len()],
+    };
+    let Some((ncols, nrows, xll, yll, cell, _nodata, vals)) = parse_aai_grid(&text) else {
+        return vec![None; lat_lon.len()];
+    };
+    lat_lon
+        .iter()
+        .map(|(lat, lon)| bilinear_sample_grid(ncols, nrows, xll, yll, cell, &vals, *lon, *lat))
+        .collect()
+}
+
+/// Fetch DEM elevations for inferred AOI using a public API; fallback to XYZ-IDW when network unavailable.
+pub async fn run_dem_fetch(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let resolution_hint = job
+        .output_spec
+        .pointer("/node_ui/resolution")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(50.0)
+        .max(0.01);
+    let max_cells = job
+        .output_spec
+        .pointer("/node_ui/max_cells")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(32768) as usize;
+    let pad_pct = job
+        .output_spec
+        .pointer("/node_ui/pad_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.25);
+    let nx_cfg = job
+        .output_spec
+        .pointer("/node_ui/nx")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    let ny_cfg = job
+        .output_spec
+        .pointer("/node_ui/ny")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    let source_epsg_hint = job
+        .output_spec
+        .pointer("/node_ui/source_epsg")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    let bbox_cfg = job
+        .output_spec
+        .pointer("/node_ui/bbox")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut xyz_points: Vec<XYZ> = Vec::new();
+    let mut xy_points: Vec<(f64, f64)> = Vec::new();
+    let mut input_bbox: Option<(f64, f64, f64, f64)> = None;
+    let mut aoi_bbox: Option<(f64, f64, f64, f64)> = None;
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        xyz_points.extend(collect_xyz_points(&v));
+        xy_points.extend(collect_xy_points(&v));
+        let schema_id = v.get("schema_id").and_then(|x| x.as_str()).unwrap_or("");
+        if let Some(b) = v.get("bounds").and_then(|b| b.as_object()) {
+            let xmin = b.get("xmin").and_then(|x| x.as_f64());
+            let xmax = b.get("xmax").and_then(|x| x.as_f64());
+            let ymin = b.get("ymin").and_then(|y| y.as_f64());
+            let ymax = b.get("ymax").and_then(|y| y.as_f64());
+            if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax) {
+                if schema_id == "spatial.aoi.v1" {
+                    aoi_bbox = Some((xmin, xmax, ymin, ymax));
+                } else if input_bbox.is_none() {
+                    input_bbox = Some((xmin, xmax, ymin, ymax));
+                }
+            }
+        }
+        if aoi_bbox.is_none() {
+            if let Some(geom) = v.get("geometry") {
+                let gb = bbox_from_geojson_like(geom);
+                if schema_id == "spatial.aoi.v1" {
+                    if gb.is_some() {
+                        aoi_bbox = gb;
+                    }
+                } else if input_bbox.is_none() {
+                    input_bbox = gb;
+                }
+            }
+        }
+    }
+    let input_bbox = aoi_bbox.or(input_bbox);
+    let input_artifact_keys: Vec<String> = job
+        .input_artifact_refs
+        .iter()
+        .map(|a| a.key.clone())
+        .collect();
+
+    let (extent, extent_source): (Option<(f64, f64, f64, f64)>, &str) = if input_bbox.is_some() {
+        (input_bbox, "input_bounds_or_geometry")
+    } else if bbox_cfg.len() >= 4 {
+        let x0 = bbox_cfg[0].as_f64().unwrap_or(0.0);
+        let y0 = bbox_cfg[1].as_f64().unwrap_or(0.0);
+        let x1 = bbox_cfg[2].as_f64().unwrap_or(1.0);
+        let y1 = bbox_cfg[3].as_f64().unwrap_or(1.0);
+        (Some((x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1))), "node_ui_bbox")
+    } else {
+        let from_xyz = infer_extent(&xyz_points, pad_pct);
+        let from_xy = infer_extent_xy(&xy_points, pad_pct);
+        let merged = merge_extents(from_xyz, from_xy);
+        let src = match (from_xyz.is_some(), from_xy.is_some()) {
+            (true, true) => "xyz_xy_input",
+            (true, false) => "xyz_input",
+            (false, true) => "xy_input",
+            (false, false) => "none",
+        };
+        (merged, src)
+    };
+    let (xmin, xmax, ymin, ymax) = extent.ok_or_else(|| {
+        NodeError::InvalidConfig(
+            "dem_fetch needs either upstream XYZ inputs or node_ui.bbox=[xmin,ymin,xmax,ymax]"
+                .into(),
+        )
+    })?;
+
+    let (mut nx, mut ny) = grid_dims_from_extent(xmin, xmax, ymin, ymax, resolution_hint, max_cells);
+    if let Some(v) = nx_cfg {
+        nx = v.clamp(2, 1024);
+    }
+    if let Some(v) = ny_cfg {
+        ny = v.clamp(2, 1024);
+    }
+
+    let source_crs = source_epsg_hint
+        .or_else(|| job.project_crs.as_ref().and_then(|c| c.epsg))
+        .unwrap_or(4326);
+
+    let src = CrsRecord::epsg(source_crs);
+    let wgs84 = CrsRecord::epsg(4326);
+    let mut lat_lon: Vec<(f64, f64)> = Vec::with_capacity(nx * ny);
+    for iy in 0..ny {
+        for ix in 0..nx {
+            let x = xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
+            let y = ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
+            let ll = if source_crs == 4326 && x >= -180.0 && x <= 180.0 && y >= -90.0 && y <= 90.0 {
+                Some((x, y))
+            } else {
+                transform_xy(&src, &wgs84, x, y).ok()
+            };
+            if let Some((lon, lat)) = ll {
+                if lon.is_finite() && lat.is_finite() && lon >= -180.0 && lon <= 180.0 && lat >= -90.0 && lat <= 90.0 {
+                    lat_lon.push((lat, lon));
+                    continue;
+                }
+            }
+            if source_crs == 4326 {
+                if let Ok((lon, lat)) = transform_xy(&CrsRecord::epsg(3857), &wgs84, x, y) {
+                    if lon.is_finite() && lat.is_finite() && lon >= -180.0 && lon <= 180.0 && lat >= -90.0 && lat <= 90.0 {
+                        lat_lon.push((lat, lon));
+                        continue;
+                    }
+                }
+            }
+            lat_lon.push((f64::NAN, f64::NAN));
+        }
+    }
+
+    let valid_mask: Vec<bool> = lat_lon
+        .iter()
+        .map(|(lat, lon)| lat.is_finite() && lon.is_finite())
+        .collect();
+    let request_pts: Vec<(f64, f64)> = lat_lon
+        .iter()
+        .copied()
+        .filter(|(lat, lon)| lat.is_finite() && lon.is_finite())
+        .collect();
+
+    let ot_key = std::env::var("OPENTTOPOGRAPHY_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("OPENTOPOGRAPHY_API_KEY").ok())
+        .unwrap_or_default();
+    let mut provider_name = "open_meteo_elevation_api";
+    let fetched = if !ot_key.trim().is_empty() {
+        let ot = fetch_opentopography_elevations(&request_pts, &ot_key).await;
+        let ok = ot.iter().filter(|v| v.is_some()).count();
+        if ok > 0 {
+            provider_name = "opentopography_globaldem_cop30";
+            ot
+        } else {
+            fetch_open_meteo_elevations(&request_pts).await
+        }
+    } else {
+        fetch_open_meteo_elevations(&request_pts).await
+    };
+    let mut fetch_iter = fetched.into_iter();
+    let mut grid_values: Vec<Option<f64>> = Vec::with_capacity(nx * ny);
+    for ok in &valid_mask {
+        if *ok {
+            grid_values.push(fetch_iter.next().flatten());
+        } else {
+            grid_values.push(None);
+        }
+    }
+
+    let mut source_used = provider_name;
+    let fetch_success = grid_values.iter().filter(|v| v.is_some()).count();
+    if fetch_success < (nx * ny) / 4 {
+        if xyz_points.len() >= 3 {
+            grid_values = idw_surface_from_xyz(&xyz_points, nx, ny, xmin, xmax, ymin, ymax);
+            source_used = "fallback_idw_from_xyz";
+        } else {
+            return Err(NodeError::InvalidConfig(
+                "dem_fetch could not retrieve external elevation samples and has no XYZ fallback (need >=3 XYZ points with z)".into(),
+            ));
+        }
+    } else if fetch_success < (nx * ny) {
+        // Partial DEM responses can create hard cliffs if null cells are rendered as zero downstream.
+        // Fill only missing cells using IDW from successfully fetched DEM cells.
+        let mut seeds: Vec<XYZ> = Vec::with_capacity(fetch_success);
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let idx = iy * nx + ix;
+                let Some(z) = grid_values[idx] else {
+                    continue;
+                };
+                let x = xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
+                let y = ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
+                seeds.push(XYZ { x, y, z });
+            }
+        }
+        if seeds.len() >= 3 {
+            let filled = idw_surface_from_xyz(&seeds, nx, ny, xmin, xmax, ymin, ymax);
+            for i in 0..grid_values.len() {
+                if grid_values[i].is_none() {
+                    grid_values[i] = filled[i];
+                }
+            }
+            source_used = "open_meteo_elevation_api_filled";
+        }
+    }
+
+    let finite_vals: Vec<f64> = grid_values.iter().copied().flatten().collect();
+    let (zmin, zmax) = if finite_vals.is_empty() {
+        (0.0, 0.0)
+    } else {
+        (
+            finite_vals.iter().copied().fold(f64::INFINITY, f64::min),
+            finite_vals
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+    let out = serde_json::json!({
+        "type":"dem_fetch_surface",
+        "source": source_used,
+        "display_contract":{
+            "renderer":"terrain",
+            "display_pointer":"scene3d.terrain",
+            "editable":["visible","opacity"]
+        },
+        "bounds":{
+            "xmin":xmin,
+            "xmax":xmax,
+            "ymin":ymin,
+            "ymax":ymax
+        },
+        "stats":{
+            "fetch_success_cells": fetch_success,
+            "total_cells": nx * ny,
+            "z_min": zmin,
+            "z_max": zmax
+        },
+        "meta":{
+            "extent_source": extent_source,
+            "inferred_from_points": xyz_points.len(),
+            "inferred_from_xy_points": xy_points.len(),
+            "input_artifact_keys": input_artifact_keys,
+            "selected_input_bbox": input_bbox.map(|(x0,x1,y0,y1)| serde_json::json!({"xmin":x0,"xmax":x1,"ymin":y0,"ymax":y1})).unwrap_or(serde_json::Value::Null),
+            "selected_aoi_bbox": aoi_bbox.map(|(x0,x1,y0,y1)| serde_json::json!({"xmin":x0,"xmax":x1,"ymin":y0,"ymax":y1})).unwrap_or(serde_json::Value::Null)
+        },
+        "surface_grid":{
+            "nx":nx,
+            "ny":ny,
+            "xmin":xmin,
+            "xmax":xmax,
+            "ymin":ymin,
+            "ymax":ymax,
+            "values":grid_values
+        },
+        "crs": CrsRecord::epsg(source_crs)
+    });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/dem_surface.json", job.graph_id, job.node_id);
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+fn bbox_from_geojson_like(geom: &serde_json::Value) -> Option<(f64, f64, f64, f64)> {
+    let coords = geom.get("coordinates")?.as_array()?;
+    let first_ring = coords.first()?.as_array()?;
+    let mut xmin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+    for p in first_ring {
+        let a = p.as_array()?;
+        if a.len() < 2 {
+            continue;
+        }
+        let x = a[0].as_f64()?;
+        let y = a[1].as_f64()?;
+        xmin = xmin.min(x);
+        xmax = xmax.max(x);
+        ymin = ymin.min(y);
+        ymax = ymax.max(y);
+    }
+    if xmin.is_finite() && xmax.is_finite() && ymin.is_finite() && ymax.is_finite() {
+        Some((xmin, xmax, ymin, ymax))
+    } else {
+        None
+    }
+}
+
+pub async fn run_aoi(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let mode = job
+        .output_spec
+        .pointer("/node_ui/mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("inferred");
+    let margin_raw = job
+        .output_spec
+        .pointer("/node_ui/margin_pct")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(25.0);
+    let margin_pct = if margin_raw > 1.0 { margin_raw / 100.0 } else { margin_raw }.max(0.0);
+    let bbox_cfg = job
+        .output_spec
+        .pointer("/node_ui/bbox")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut xyz_points: Vec<XYZ> = Vec::new();
+    let mut xy_points: Vec<(f64, f64)> = Vec::new();
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        xyz_points.extend(collect_xyz_points(&v));
+        xy_points.extend(collect_xy_points(&v));
+    }
+
+    let inferred_bbox = if bbox_cfg.len() >= 4 {
+        let x0 = bbox_cfg[0].as_f64().unwrap_or(0.0);
+        let y0 = bbox_cfg[1].as_f64().unwrap_or(0.0);
+        let x1 = bbox_cfg[2].as_f64().unwrap_or(1.0);
+        let y1 = bbox_cfg[3].as_f64().unwrap_or(1.0);
+        Some((x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1)))
+    } else {
+        merge_extents(
+            infer_extent(&xyz_points, margin_pct),
+            infer_extent_xy(&xy_points, margin_pct),
+        )
+    };
+    let (xmin, xmax, ymin, ymax) = inferred_bbox.unwrap_or((-0.5, 0.5, -0.5, 0.5));
+
+    let geometry = serde_json::json!({
+        "type":"Polygon",
+        "coordinates":[[
+            [xmin, ymin],
+            [xmax, ymin],
+            [xmax, ymax],
+            [xmin, ymax],
+            [xmin, ymin]
+        ]]
+    });
+    let out = serde_json::json!({
+        "schema_id":"spatial.aoi.v1",
+        "schema_version":1,
+        "crs": job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326)),
+        "geometry": geometry,
+        "bounds":{"xmin":xmin,"xmax":xmax,"ymin":ymin,"ymax":ymax},
+        "meta":{
+            "mode":mode,
+            "locked": job.output_spec.pointer("/node_ui/locked").and_then(|v| v.as_bool()).unwrap_or(false),
+            "margin_pct": margin_raw,
+            "inferred_from_points": xyz_points.len(),
+            "inferred_from_xy_points": xy_points.len(),
+            "warning": if inferred_bbox.is_none() { serde_json::Value::String("fallback default AOI used".into()) } else { serde_json::Value::Null }
+        },
+        "provenance":{
+            "node_kind":"aoi",
+            "node_id": job.node_id.to_string()
+        }
+    });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/aoi.json", job.graph_id, job.node_id);
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+pub async fn run_imagery_provider(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let out = build_imagery_like_contract(
+        ctx,
+        job,
+        "scene3d.imagery_drape.v1",
+        "imagery_provider",
+    )
+    .await?;
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/imagery_drape.json", job.graph_id, job.node_id);
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+fn lonlat_to_web_mercator(lon_deg: f64, lat_deg: f64) -> (f64, f64) {
+    let max_lat = 85.051_128_78_f64;
+    let lat = lat_deg.max(-max_lat).min(max_lat);
+    let x = lon_deg * 20_037_508.34_f64 / 180.0;
+    let rad = lat.to_radians();
+    let y = (std::f64::consts::PI / 4.0 + rad / 2.0).tan().ln() * 6_378_137.0;
+    (x, y)
+}
+
+fn imagery_url_host_variants(url: &str) -> Vec<String> {
+    let mut out = vec![url.to_string()];
+    if url.contains("services.arcgisonline.com") {
+        out.push(url.replace("services.arcgisonline.com", "server.arcgisonline.com"));
+    } else if url.contains("server.arcgisonline.com") {
+        out.push(url.replace("server.arcgisonline.com", "services.arcgisonline.com"));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn imagery_provider_meta(provider_id: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+    match provider_id {
+        "esri_world_topo" => (
+            "Esri World Topo",
+            "Esri, HERE, Garmin, FAO, NOAA, USGS",
+            "https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/export",
+            "jpg",
+        ),
+        "esri_natgeo" => (
+            "Esri NatGeo World",
+            "Esri, National Geographic, Garmin, HERE, UNEP-WCMC, USGS, NASA",
+            "https://services.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/export",
+            "jpg",
+        ),
+        "usgs_imagery" => (
+            "USGS Imagery",
+            "USGS National Map",
+            "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/export",
+            "jpg",
+        ),
+        _ => (
+            "Esri World Imagery",
+            "Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+            "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export",
+            "jpg",
+        ),
+    }
+}
+
+fn build_imagery_urls(
+    export_url: &str,
+    image_format: &str,
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
+    crs_preference: &[i64],
+    resolution_ladder: &[i64],
+) -> Result<Vec<String>, NodeError> {
+    let mut urls: Vec<String> = Vec::new();
+    let is_wgs84_bounds =
+        xmin >= -180.0 && xmax <= 180.0 && ymin >= -90.0 && ymax <= 90.0 && xmin < xmax && ymin < ymax;
+    if !is_wgs84_bounds {
+        return Ok(urls);
+    }
+    let size_bases = if resolution_ladder.is_empty() {
+        vec![1024_i64, 768_i64, 512_i64]
+    } else {
+        resolution_ladder
+            .iter()
+            .copied()
+            .map(|x| x.max(256).min(4096))
+            .collect::<Vec<_>>()
+    };
+    let crs_order = if crs_preference.is_empty() {
+        vec![3857_i64, 4326_i64]
+    } else {
+        crs_preference.to_vec()
+    };
+    let (x0, y0) = lonlat_to_web_mercator(xmin, ymin);
+    let (x1, y1) = lonlat_to_web_mercator(xmax, ymax);
+    for w in size_bases {
+        for sr in &crs_order {
+            let mut u = reqwest::Url::parse(export_url)
+                .map_err(|e| NodeError::InvalidConfig(format!("invalid provider export url: {e}")))?;
+            match *sr {
+                3857 => {
+                    u.query_pairs_mut()
+                        .append_pair(
+                            "bbox",
+                            &format!("{},{},{},{}", x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)),
+                        )
+                        .append_pair("bboxSR", "3857")
+                        .append_pair("imageSR", "3857");
+                }
+                _ => {
+                    u.query_pairs_mut()
+                        .append_pair("bbox", &format!("{xmin},{ymin},{xmax},{ymax}"))
+                        .append_pair("bboxSR", "4326")
+                        .append_pair("imageSR", "4326");
+                }
+            }
+            u.query_pairs_mut()
+                .append_pair("size", &format!("{w},{w}"))
+                .append_pair("format", image_format)
+                .append_pair("transparent", "false")
+                .append_pair("f", "image");
+            for v in imagery_url_host_variants(&u.to_string()) {
+                urls.push(v);
+            }
+        }
+    }
+    urls.sort();
+    urls.dedup();
+    Ok(urls)
+}
+
+async fn build_imagery_like_contract(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+    schema_id: &str,
+    node_kind: &str,
+) -> Result<serde_json::Value, NodeError> {
+    let aoi_margin_raw = job
+        .output_spec
+        .pointer("/node_ui/aoi_margin_pct")
+        .and_then(|v| v.as_f64())
+        .or_else(|| {
+            job.output_spec
+                .pointer("/node_ui/margin_pct")
+                .and_then(|v| v.as_f64())
+        })
+        .unwrap_or(25.0);
+    let aoi_margin_pct = if aoi_margin_raw > 1.0 {
+        aoi_margin_raw / 100.0
+    } else {
+        aoi_margin_raw
+    }
+    .max(0.0);
+    let provider_precedence = job
+        .output_spec
+        .pointer("/node_ui/provider_precedence")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let provider_id_cfg = job
+        .output_spec
+        .pointer("/node_ui/provider_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("esri_world_imagery")
+        .to_string();
+    let provider_order = if provider_precedence.is_empty() {
+        vec![provider_id_cfg.clone()]
+    } else {
+        provider_precedence
+    };
+    let provider_id = provider_order
+        .first()
+        .map(String::as_str)
+        .unwrap_or("esri_world_imagery");
+    let custom_tileset = job
+        .output_spec
+        .pointer("/node_ui/custom_tileset")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let crs_preference = job
+        .output_spec
+        .pointer("/node_ui/crs_preference")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_i64()).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![3857, 4326]);
+    let resolution_ladder = job
+        .output_spec
+        .pointer("/node_ui/resolution_ladder_px")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_i64()).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![1024, 768, 512]);
+    let retry_limit = job
+        .output_spec
+        .pointer("/node_ui/retry_limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(2)
+        .max(0);
+    let timeout_ms = job
+        .output_spec
+        .pointer("/node_ui/timeout_ms")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(8000)
+        .max(500);
+    let max_candidates = job
+        .output_spec
+        .pointer("/node_ui/max_candidates")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(16)
+        .max(1);
+    let cache_scope = job
+        .output_spec
+        .pointer("/node_ui/cache_scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("project");
+    let cache_ttl_s = job
+        .output_spec
+        .pointer("/node_ui/cache_ttl_s")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(604800)
+        .max(60);
+    let allow_stale_on_error = job
+        .output_spec
+        .pointer("/node_ui/allow_stale_on_error")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let debounce_profile = job
+        .output_spec
+        .pointer("/node_ui/debounce_profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("free_default");
+    let (provider_label, attribution, export_url, image_format) = imagery_provider_meta(provider_id);
+
+    let mut bbox: Option<(f64, f64, f64, f64)> = None;
+    let mut aoi_source_used = String::from("fallback_default");
+    let mut target_crs = job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326));
+    let mut has_surface_grid = false;
+    let mut passthrough_surface_grid: Option<serde_json::Value> = None;
+    let mut passthrough_surface_grid_cells: usize = 0;
+    let mut xyz_points: Vec<XYZ> = Vec::new();
+    let mut xy_points: Vec<(f64, f64)> = Vec::new();
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        xyz_points.extend(collect_xyz_points(&v));
+        xy_points.extend(collect_xy_points(&v));
+        if bbox.is_none() {
+            if let Some(b) = v.get("bounds").and_then(|b| b.as_object()) {
+                let xmin = b.get("xmin").and_then(|x| x.as_f64());
+                let xmax = b.get("xmax").and_then(|x| x.as_f64());
+                let ymin = b.get("ymin").and_then(|y| y.as_f64());
+                let ymax = b.get("ymax").and_then(|y| y.as_f64());
+                if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax) {
+                    bbox = Some((xmin, xmax, ymin, ymax));
+                    let sid = v.get("schema_id").and_then(|x| x.as_str()).unwrap_or("");
+                    aoi_source_used = if sid == "spatial.aoi.v1" {
+                        "aoi_input".into()
+                    } else if v.get("surface_grid").is_some() {
+                        "terrain_input".into()
+                    } else {
+                        "bounds_input".into()
+                    };
+                }
+            }
+        }
+        if bbox.is_none() {
+            if let Some(g) = v.get("surface_grid").and_then(|g| g.as_object()) {
+                let xmin = g.get("xmin").and_then(|x| x.as_f64());
+                let xmax = g.get("xmax").and_then(|x| x.as_f64());
+                let ymin = g.get("ymin").and_then(|y| y.as_f64());
+                let ymax = g.get("ymax").and_then(|y| y.as_f64());
+                if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax)
+                {
+                    bbox = Some((xmin, xmax, ymin, ymax));
+                    aoi_source_used = "terrain_input".into();
+                }
+            }
+        }
+        if bbox.is_none() {
+            if let Some(geom) = v.get("geometry") {
+                bbox = bbox_from_geojson_like(geom);
+                if bbox.is_some() {
+                    aoi_source_used = "geometry_input".into();
+                }
+            }
+        }
+        if v.get("surface_grid").is_some() {
+            has_surface_grid = true;
+            if let Some(g) = v.get("surface_grid").and_then(|x| x.as_object()) {
+                let nx = g.get("nx").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                let ny = g.get("ny").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
+                let cells = nx.saturating_mul(ny);
+                if cells > passthrough_surface_grid_cells {
+                    passthrough_surface_grid_cells = cells;
+                    passthrough_surface_grid = Some(serde_json::Value::Object(g.clone()));
+                }
+            }
+        }
+        if let Some(crs) = v.get("crs") {
+            if let Ok(c) = serde_json::from_value::<CrsRecord>(crs.clone()) {
+                target_crs = c;
+            }
+        }
+    }
+    if bbox.is_none() {
+        let inferred = merge_extents(
+            infer_extent(&xyz_points, aoi_margin_pct),
+            infer_extent_xy(&xy_points, aoi_margin_pct),
+        );
+        if let Some(inferred) = inferred {
+            bbox = Some(inferred);
+            aoi_source_used = match (xyz_points.is_empty(), xy_points.is_empty()) {
+                (false, false) => "xyz_xy_input".into(),
+                (false, true) => "xyz_input".into(),
+                (true, false) => "xy_input".into(),
+                (true, true) => "fallback_default".into(),
+            };
+        }
+    }
+    let used_fallback_bbox = bbox.is_none();
+    let (xmin, xmax, ymin, ymax) = bbox.unwrap_or((-0.5, 0.5, -0.5, 0.5));
+    let source_crs = CrsRecord::epsg(4326);
+    let is_wgs84_bounds =
+        xmin >= -180.0 && xmax <= 180.0 && ymin >= -90.0 && ymax <= 90.0 && xmin < xmax && ymin < ymax;
+    let mut warnings = if used_fallback_bbox {
+        vec!["fallback_aoi_default".to_string()]
+    } else {
+        Vec::new()
+    };
+    let mut image_url_candidates = if custom_tileset.is_some() || used_fallback_bbox {
+        Vec::new()
+    } else {
+        build_imagery_urls(
+            export_url,
+            image_format,
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            &crs_preference,
+            &resolution_ladder,
+        )?
+    };
+    if used_fallback_bbox {
+        warnings.push("tilebroker_missing_aoi_inputs".to_string());
+    }
+    if (image_url_candidates.len() as i64) > max_candidates {
+        image_url_candidates.truncate(max_candidates as usize);
+    }
+    let image_url = image_url_candidates.first().cloned();
+    let quality_flags = if custom_tileset.is_some() {
+        vec!["custom_tileset_override".to_string()]
+    } else if is_wgs84_bounds {
+        vec!["bbox_wgs84".to_string(), "size_ladder".to_string()]
+    } else {
+        vec!["bbox_not_wgs84_reprojection_required".to_string()]
+    };
+    let fingerprint = hash_bytes(
+        format!("{provider_id}:{xmin:.6}:{xmax:.6}:{ymin:.6}:{ymax:.6}:{}", target_crs.epsg.unwrap_or(0))
+            .as_bytes(),
+    );
+
+    Ok(serde_json::json!({
+        "schema_id":schema_id,
+        "schema_version":1,
+        "provider_id":provider_id,
+        "provider_label":provider_label,
+        "attribution":attribution,
+        "license_terms_url":"https://www.esri.com/en-us/legal/terms/full-master-agreement",
+        "source_crs":source_crs,
+        "target_crs":target_crs,
+        "texture_mode": if custom_tileset.is_some() {"tile_template"} else {"single_image"},
+        "image_url": if custom_tileset.is_some() { serde_json::Value::Null } else { serde_json::json!(image_url) },
+        "image_url_candidates": image_url_candidates,
+        "tile_url_template": custom_tileset,
+        "bounds":{"xmin":xmin,"xmax":xmax,"ymin":ymin,"ymax":ymax},
+        "resolution_m_est": job.output_spec.pointer("/node_ui/target_resolution_m").and_then(|v| v.as_f64()),
+        "pixel_size":{"width":1024,"height":1024},
+        "z_mode": if has_surface_grid {"drape_on_surface"} else {"flat"},
+        "surface_grid": passthrough_surface_grid,
+        "quality_flags":quality_flags,
+        "fallback_chain_used": job.output_spec.pointer("/node_ui/fallback_provider_ids").cloned().unwrap_or(serde_json::json!([])),
+        "fingerprint":fingerprint,
+        "display_contract":{
+            "display_pointer":"scene3d.imagery_drape",
+            "renderer":"drape",
+            "editable":["visible","opacity","provider"]
+        },
+        "cache":{
+            "scope":cache_scope,
+            "status":"miss",
+            "ttl_s": cache_ttl_s,
+            "allow_stale_on_error": allow_stale_on_error
+        },
+        "effective_config":{
+            "provider_precedence": provider_order,
+            "provider_selected": provider_id,
+            "custom_tileset": job.output_spec.pointer("/node_ui/custom_tileset").cloned().unwrap_or(serde_json::Value::Null),
+            "crs_preference": crs_preference,
+            "resolution_ladder_px": resolution_ladder,
+            "retry_limit": retry_limit,
+            "timeout_ms": timeout_ms,
+            "max_candidates": max_candidates,
+            "cache_scope": cache_scope,
+            "cache_ttl_s": cache_ttl_s,
+            "debounce_profile": debounce_profile
+        },
+        "warnings": warnings,
+        "aoi_source_used": aoi_source_used,
+        "diagnostics":{
+            "provider_attempts": image_url_candidates.len(),
+            "request_strategy":"crs_preference_with_size_ladder",
+            "retry_limit": retry_limit,
+            "timeout_ms": timeout_ms
+        },
+        "provenance":{
+            "node_kind":node_kind,
+            "node_id": job.node_id.to_string()
+        }
+    }))
+}
+
+pub async fn run_tilebroker(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let out = build_imagery_like_contract(
+        ctx,
+        job,
+        "scene3d.tilebroker_response.v1",
+        "tilebroker",
+    )
+    .await?;
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/tilebroker_response.json", job.graph_id, job.node_id);
+    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}
+
+pub async fn run_scene3d_layer_stack(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let mut layers: Vec<serde_json::Value> = Vec::new();
+    let mut priority = 10i64;
+    for ar in &job.input_artifact_refs {
+        let v = read_json_artifact(ctx, &ar.key).await?;
+        let schema_id = v.get("schema_id").and_then(|x| x.as_str()).unwrap_or("");
+        let display_pointer = v
+            .pointer("/display_contract/display_pointer")
+            .and_then(|x| x.as_str())
+            .unwrap_or("scene3d.generic");
+        let kind = if schema_id == "scene3d.imagery_drape.v1"
+            || schema_id == "scene3d.tilebroker_response.v1"
+            || display_pointer == "scene3d.imagery_drape"
+        {
+            "imagery_drape"
+        } else if v.get("surface_grid").is_some() || display_pointer == "scene3d.terrain" {
+            "terrain"
+        } else if display_pointer == "scene3d.contour_lines" {
+            "contours"
+        } else if display_pointer == "scene3d.trace_polyline" {
+            "drill_segments"
+        } else if display_pointer == "scene3d.sample_points" {
+            "assay_points"
+        } else {
+            "mesh"
+        };
+        let ui_caps = match kind {
+            "imagery_drape" => serde_json::json!(["visible", "opacity", "provider"]),
+            "terrain" => serde_json::json!(["visible", "opacity"]),
+            "contours" => serde_json::json!(["visible", "opacity", "color", "width", "interval_step"]),
+            "drill_segments" => serde_json::json!(["visible", "opacity", "palette", "radius_scale", "measure"]),
+            "assay_points" => serde_json::json!(["visible", "opacity", "palette", "size_scale", "measure"]),
+            _ => serde_json::json!(["visible", "opacity"]),
+        };
+        layers.push(serde_json::json!({
+            "layer_id": format!("layer_{}", layers.len() + 1),
+            "kind": kind,
+            "source_artifact_ref": {
+                "key": ar.key,
+                "content_hash": ar.content_hash
+            },
+            "style_defaults": {
+                "opacity": 1.0
+            },
+            "ui_capabilities": ui_caps,
+            "priority": priority,
+            "visibility_default": true
+        }));
+        priority += 10;
+    }
+
+    let out = serde_json::json!({
+        "schema_id":"scene3d.layer_stack.v1",
+        "schema_version":1,
+        "layers":layers,
+        "provenance":{
+            "node_kind":"scene3d_layer_stack",
+            "node_id": job.node_id.to_string()
+        }
+    });
+    let bytes = serde_json::to_vec(&out)?;
+    let key = format!("graphs/{}/nodes/{}/scene3d_layer_stack.json", job.graph_id, job.node_id);
     let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
     Ok(JobResult {
         job_id: job.job_id,

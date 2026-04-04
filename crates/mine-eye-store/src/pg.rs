@@ -201,7 +201,7 @@ impl PgStore {
         sqlx::query(
             r#"
             UPDATE workspaces
-            SET project_crs = $2, updated_at = now()
+            SET project_crs = $2
             WHERE id = $1
             "#,
         )
@@ -569,14 +569,30 @@ impl PgStore {
     }
 
     pub async fn delete_node(&self, graph_id: Uuid, node_id: Uuid) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        // Remove all inbound/outbound edges first so no dangling topology can keep stale
+        // upstream artifacts in execution input resolution.
+        sqlx::query(
+            r#"DELETE FROM edges WHERE graph_id = $1 AND (from_node = $2 OR to_node = $2)"#,
+        )
+        .bind(graph_id)
+        .bind(node_id)
+        .execute(&mut *tx)
+        .await?;
+        // Remove current artifact pointers for the deleted node.
+        sqlx::query(r#"DELETE FROM node_artifacts WHERE node_id = $1"#)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await?;
         let r = sqlx::query(r#"DELETE FROM nodes WHERE id = $1 AND graph_id = $2"#)
             .bind(node_id)
             .bind(graph_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         if r.rows_affected() == 0 {
             return Err(StoreError::NotFound(node_id.to_string()));
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -715,6 +731,9 @@ impl PgStore {
 
         let mut edges = Vec::new();
         for (id, from_node, from_port, to_node, to_port, sem_t) in edge_rows {
+            if !nodes.contains_key(&from_node) || !nodes.contains_key(&to_node) {
+                continue;
+            }
             edges.push(EdgeRef {
                 id,
                 from_node,

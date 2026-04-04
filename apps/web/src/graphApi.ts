@@ -205,7 +205,7 @@ function normalizeNode(raw: unknown): ApiNode {
 }
 
 export async function fetchGraph(graphId: string): Promise<GraphResponse> {
-  const r = await fetch(api(`/graphs/${graphId}`));
+  const r = await fetch(api(`/graphs/${graphId}`), { cache: "no-store" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const raw = (await r.json()) as Record<string, unknown>;
   const nodesRaw = raw.nodes;
@@ -544,7 +544,9 @@ export async function fetchViewerManifest(
   graphId: string,
   viewerNodeId: string
 ): Promise<ViewerManifestResponse> {
-  const r = await fetch(api(`/graphs/${graphId}/viewers/${viewerNodeId}/manifest`));
+  const r = await fetch(api(`/graphs/${graphId}/viewers/${viewerNodeId}/manifest`), {
+    cache: "no-store",
+  });
   if (!r.ok) throw new Error((await r.text()) || `Viewer manifest ${r.status}`);
   return (await r.json()) as ViewerManifestResponse;
 }

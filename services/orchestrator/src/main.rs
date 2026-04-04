@@ -149,8 +149,49 @@ async fn health() -> &'static str {
 }
 
 async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let v: serde_json::Value = serde_json::from_str(NODE_REGISTRY_JSON)
+    let mut v: serde_json::Value = serde_json::from_str(NODE_REGISTRY_JSON)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if let Some(nodes) = v.get_mut("nodes").and_then(|x| x.as_array_mut()) {
+        for n in nodes {
+            let Some(obj) = n.as_object_mut() else { continue };
+            if obj.get("interaction").is_some() {
+                continue;
+            }
+            let kind = obj
+                .get("kind")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
+            let edit_enabled = matches!(
+                kind,
+                "collar_ingest"
+                    | "survey_ingest"
+                    | "surface_sample_ingest"
+                    | "assay_ingest"
+                    | "assay_heatmap"
+                    | "terrain_adjust"
+                    | "surface_iso_extract"
+                    | "aoi"
+                    | "tilebroker"
+            );
+            let edit_tab = match kind {
+                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" => "mapping",
+                "assay_heatmap" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
+                _ => "summary",
+            };
+            obj.insert(
+                "interaction".into(),
+                serde_json::json!({
+                    "actions": {
+                        "run": { "allowed": true, "tab": "diagnostics" },
+                        "lock_toggle": { "allowed": true, "tab": "diagnostics" },
+                        "edit": { "allowed": edit_enabled, "tab": edit_tab },
+                        "config": { "allowed": true, "tab": "config" },
+                        "preview": { "allowed": true, "tab": "preview" }
+                    }
+                }),
+            );
+        }
+    }
     Ok(Json(v))
 }
 
@@ -1468,7 +1509,7 @@ async fn list_artifacts(
             out.push(ArtifactEntry {
                 node_id: *nid,
                 key: key.clone(),
-                url: format!("/files/{}", key),
+                url: format!("/files/{}?h={}", key, hash),
                 content_hash: hash,
             });
         }

@@ -66,7 +66,7 @@ export function NodeOutputPanel({
       setLoading(true);
       void (async () => {
         try {
-          const r = await fetch(api(selected.url));
+          const r = await fetch(api(selected.url), { cache: "no-store" });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           const buf = await r.arrayBuffer();
           if (cancelled) return;
@@ -102,7 +102,7 @@ export function NodeOutputPanel({
     setPreviewText(null);
     void (async () => {
       try {
-        const r = await fetch(api(selected.url));
+        const r = await fetch(api(selected.url), { cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const raw = await r.text();
         if (cancelled) return;

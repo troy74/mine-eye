@@ -46,12 +46,39 @@ type RenderPoint = {
 type SourceData = {
   id: string;
   label: string;
+  artifactKey?: string;
+  contentHash?: string;
   points: RenderPoint[];
   lines: GeoLineString[];
   measureNames: string[];
   heatmapHint?: HeatmapConfigHint | null;
   displayContract?: DisplayContractHint | null;
   surfaceGrid?: HeatSurfaceGrid | null;
+};
+
+type ImageryDrapeContract = {
+  schema_id: "scene3d.imagery_drape.v1" | "scene3d.tilebroker_response.v1";
+  provider_id?: string;
+  provider_label?: string;
+  attribution?: string;
+  image_url?: string;
+  image_url_candidates?: string[];
+  bounds?: { xmin: number; xmax: number; ymin: number; ymax: number };
+  source_crs?: { epsg?: number };
+  fingerprint?: string;
+};
+
+type LayerStackLayer = {
+  layer_id?: string;
+  kind?: string;
+  source_artifact_ref?: { key?: string; content_hash?: string };
+  priority?: number;
+  visibility_default?: boolean;
+};
+
+type LayerStackContract = {
+  schema_id: "scene3d.layer_stack.v1";
+  layers?: LayerStackLayer[];
 };
 
 function normalizeSourceData(raw: unknown): SourceData[] {
@@ -62,6 +89,8 @@ function normalizeSourceData(raw: unknown): SourceData[] {
       const o = x as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : "";
       const label = typeof o.label === "string" ? o.label : id;
+      const artifactKey = typeof o.artifactKey === "string" ? o.artifactKey : undefined;
+      const contentHash = typeof o.contentHash === "string" ? o.contentHash : undefined;
       if (!id) return null;
 
       const pointsRaw = Array.isArray(o.points) ? o.points : [];
@@ -123,6 +152,8 @@ function normalizeSourceData(raw: unknown): SourceData[] {
       return {
         id,
         label,
+        artifactKey,
+        contentHash,
         points,
         lines,
         measureNames,
@@ -132,6 +163,20 @@ function normalizeSourceData(raw: unknown): SourceData[] {
       };
     })
     .filter((s): s is SourceData => s !== null);
+}
+
+function parseImageryContract(v: unknown): ImageryDrapeContract | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const obj = v as Record<string, unknown>;
+  if (obj.schema_id !== "scene3d.imagery_drape.v1" && obj.schema_id !== "scene3d.tilebroker_response.v1") return null;
+  return obj as unknown as ImageryDrapeContract;
+}
+
+function parseLayerStackContract(v: unknown): LayerStackContract | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const obj = v as Record<string, unknown>;
+  if (obj.schema_id !== "scene3d.layer_stack.v1") return null;
+  return obj as unknown as LayerStackContract;
 }
 
 function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
@@ -168,6 +213,8 @@ type SourceLayerConfig = {
     power: number;
   };
 };
+
+type LayerOrderMode = "contract" | "override";
 
 function hintSig(hint: HeatmapConfigHint | null | undefined): string {
   if (!hint) return "";
@@ -359,12 +406,17 @@ export function Map2DPanel({
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const baseTileLayerRef = useRef<L.TileLayer | null>(null);
+  const baseImageLayerRef = useRef<L.ImageOverlay | null>(null);
   const [status, setStatus] = useState("");
+  const [imageryContract, setImageryContract] = useState<ImageryDrapeContract | null>(null);
+  const [layerStackContract, setLayerStackContract] = useState<LayerStackContract | null>(null);
   const [sourceData, setSourceData] = useState<SourceData[]>([]);
   const [manifestArtifacts, setManifestArtifacts] = useState<ArtifactEntry[]>([]);
   const [manifestLayers, setManifestLayers] = useState<ViewerManifestLayer[]>([]);
   const [layers, setLayers] = useState<SourceLayerConfig[]>([]);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [layerOrderMode, setLayerOrderMode] = useState<LayerOrderMode>("contract");
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const lastViewContextRef = useRef<string>("");
   const userMovedMapRef = useRef(false);
@@ -423,6 +475,8 @@ export function Map2DPanel({
     () => (viewerNodeId ? upstreamSourcesForViewer(edges, viewerNodeId) : []),
     [edges, viewerNodeId]
   );
+  const hasLayerStackContract = Boolean(layerStackContract?.layers?.length);
+  const canDragLayers = !hasLayerStackContract || layerOrderMode === "override";
 
   useEffect(() => {
     if (!graphId || !viewerNodeId) {
@@ -461,7 +515,7 @@ export function Map2DPanel({
       zoomControl: true,
       attributionControl: true,
     }).setView([20, 0], 2);
-    L.tileLayer(
+    const base = L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
         maxZoom: 19,
@@ -469,6 +523,7 @@ export function Map2DPanel({
           '&copy; <a href="https://www.esri.com/">Esri</a> (World Imagery)',
       }
     ).addTo(map);
+    baseTileLayerRef.current = base;
     const onMoveStart = () => {
       userMovedMapRef.current = true;
     };
@@ -482,6 +537,77 @@ export function Map2DPanel({
       mapRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    let cancelled = false;
+    void (async () => {
+      const clearContractBase = () => {
+        if (baseImageLayerRef.current) {
+          map.removeLayer(baseImageLayerRef.current);
+          baseImageLayerRef.current = null;
+        }
+      };
+      const baseTile = baseTileLayerRef.current;
+      const contractImageUrl = typeof imageryContract?.image_url === "string" && imageryContract.image_url.trim().length
+        ? imageryContract.image_url
+        : Array.isArray(imageryContract?.image_url_candidates)
+          ? imageryContract.image_url_candidates.find((u) => typeof u === "string" && u.trim().length > 0)
+          : undefined;
+      if (!contractImageUrl || !imageryContract.bounds) {
+        clearContractBase();
+        if (baseTile && !map.hasLayer(baseTile)) baseTile.addTo(map);
+        return;
+      }
+      const epsg =
+        typeof imageryContract.source_crs?.epsg === "number"
+          ? imageryContract.source_crs.epsg
+          : 4326;
+      let sw: [number, number] | null = null;
+      let ne: [number, number] | null = null;
+      if (epsg === 4326) {
+        sw = [imageryContract.bounds.ymin, imageryContract.bounds.xmin];
+        ne = [imageryContract.bounds.ymax, imageryContract.bounds.xmax];
+      } else {
+        const swLl = await lonLatFromProjectedAsync(
+          epsg,
+          imageryContract.bounds.xmin,
+          imageryContract.bounds.ymin
+        );
+        const neLl = await lonLatFromProjectedAsync(
+          epsg,
+          imageryContract.bounds.xmax,
+          imageryContract.bounds.ymax
+        );
+        if (swLl && neLl) {
+          sw = [swLl[1], swLl[0]];
+          ne = [neLl[1], neLl[0]];
+        }
+      }
+      if (cancelled || !sw || !ne) {
+        clearContractBase();
+        if (baseTile && !map.hasLayer(baseTile)) baseTile.addTo(map);
+        return;
+      }
+      clearContractBase();
+      const paneId = "contract-base";
+      if (!map.getPane(paneId)) map.createPane(paneId);
+      const p = map.getPane(paneId);
+      if (p) p.style.zIndex = "250";
+      if (baseTile && map.hasLayer(baseTile)) map.removeLayer(baseTile);
+      const overlay = L.imageOverlay(contractImageUrl, [sw, ne], {
+        pane: paneId,
+        opacity: 1,
+        interactive: false,
+      });
+      overlay.addTo(map);
+      baseImageLayerRef.current = overlay;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [imageryContract]);
 
   useEffect(() => {
     const ctx = `${graphId ?? ""}:${viewerNodeId ?? ""}`;
@@ -524,11 +650,16 @@ export function Map2DPanel({
         if (mv && typeof mv === "object" && !Array.isArray(mv)) {
           const m = mv as Record<string, unknown>;
           const collapsed = Boolean(m.panel_collapsed);
+          const orderMode =
+            m.layer_order_mode === "override" || m.layer_order_mode === "contract"
+              ? (m.layer_order_mode as LayerOrderMode)
+              : "contract";
           const lay = m.layers;
           if (Array.isArray(lay)) {
             setLayers(lay as SourceLayerConfig[]);
           }
           setPanelCollapsed(collapsed);
+          setLayerOrderMode(orderMode);
         }
       } catch (e) {
         console.warn("load map2d view config:", e);
@@ -552,6 +683,7 @@ export function Map2DPanel({
         map2d_view: {
           version: 1,
           panel_collapsed: panelCollapsed,
+          layer_order_mode: layerOrderMode,
           layers,
         },
       };
@@ -570,7 +702,7 @@ export function Map2DPanel({
         saveTimerRef.current = null;
       }
     };
-  }, [graphId, viewerNodeId, activeBranchId, panelCollapsed, layers, configHydrated]);
+  }, [graphId, viewerNodeId, activeBranchId, panelCollapsed, layerOrderMode, layers, configHydrated]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -622,6 +754,8 @@ export function Map2DPanel({
     }
 
     if (!graphId || !viewerNodeId) {
+      setImageryContract(null);
+      setLayerStackContract(null);
       setStatus("Select a plan-view node and click Open 2D map.");
       return;
     }
@@ -664,6 +798,8 @@ export function Map2DPanel({
 
     void (async () => {
       const all: SourceData[] = [];
+      let foundImageryContract: ImageryDrapeContract | null = null;
+      let foundLayerStackContract: LayerStackContract | null = null;
       const manifestByArtifact = new Map<string, ViewerManifestLayer>();
       for (const ml of manifestLayers) {
         manifestByArtifact.set(`${ml.artifact_key}:${ml.content_hash}`, ml);
@@ -674,12 +810,25 @@ export function Map2DPanel({
 
       for (const art of arts) {
         if (token !== loadTokenRef.current || !mountedRef.current) return;
-        const r = await fetch(api(art.url));
+        const r = await fetch(api(art.url), { cache: "no-store" });
         if (!r.ok) {
           notes.push(`${art.key.split("/").pop()}: HTTP ${r.status}`);
           continue;
         }
         const text = await r.text();
+        try {
+          const raw = JSON.parse(text) as unknown;
+          const maybeImagery = parseImageryContract(raw);
+          if (!foundImageryContract && maybeImagery) {
+            foundImageryContract = maybeImagery;
+          }
+          const maybeLayerStack = parseLayerStackContract(raw);
+          if (!foundLayerStackContract && maybeLayerStack) {
+            foundLayerStackContract = maybeLayerStack;
+          }
+        } catch {
+          // ignore parse errors
+        }
         const manifestMeta = manifestByArtifact.get(`${art.key}:${art.content_hash}`);
         const mPres =
           manifestMeta?.presentation &&
@@ -778,6 +927,8 @@ export function Map2DPanel({
         all.push({
           id: `${art.node_id}:${art.key}:${art.content_hash}`,
           label: art.key.split("/").pop() ?? art.key,
+          artifactKey: art.key,
+          contentHash: art.content_hash,
           points,
           lines,
           measureNames,
@@ -789,6 +940,8 @@ export function Map2DPanel({
       }
 
       if (token !== loadTokenRef.current || !mountedRef.current) return;
+      setImageryContract(foundImageryContract);
+      setLayerStackContract(foundLayerStackContract);
       setSourceData(all);
       if (all.length > 0) {
         try {
@@ -798,10 +951,22 @@ export function Map2DPanel({
         }
       }
       if (all.length === 0) {
-        setStatus("No drawable points parsed.");
+        const imgNote = foundImageryContract?.fingerprint
+          ? ` Imagery fingerprint: ${foundImageryContract.fingerprint.slice(0, 10)}…`
+          : foundImageryContract?.provider_label
+            ? ` ${foundImageryContract.provider_label} contract loaded.`
+            : "";
+        const lsNote = foundLayerStackContract ? " Layer stack contract loaded." : "";
+        setStatus(`No drawable points parsed.${imgNote}${lsNote}`);
         return;
       }
-      setStatus(`${total} point(s) from ${all.length} input artifact(s). ${notes.join(" · ")}`);
+      const imgNote = foundImageryContract?.fingerprint
+        ? ` · imagery ${foundImageryContract.fingerprint.slice(0, 10)}…`
+        : foundImageryContract?.provider_label
+          ? ` · ${foundImageryContract.provider_label}`
+          : "";
+      const lsNote = foundLayerStackContract ? " · layer-stack contract" : "";
+      setStatus(`${total} point(s) from ${all.length} input artifact(s).${imgNote}${lsNote}${notes.length ? ` ${notes.join(" · ")}` : ""}`);
       if (fit.length && (!userMovedMapRef.current || ctxChanged)) {
         map.fitBounds(L.latLngBounds(fit).pad(0.25));
       }
@@ -819,11 +984,40 @@ export function Map2DPanel({
   useEffect(() => {
     if (sourceData.length === 0) return;
     setLayers((prev) => {
+      const contractBySource = new Map<
+        string,
+        { priority: number; visibilityDefault: boolean | null }
+      >();
+      if (layerStackContract?.layers?.length) {
+        for (const l of layerStackContract.layers) {
+          const k = l.source_artifact_ref?.key;
+          if (!k) continue;
+          const h = l.source_artifact_ref?.content_hash;
+          const src = sourceData.find(
+            (s) =>
+              s.artifactKey === k &&
+              (!h || !s.contentHash || s.contentHash === h)
+          );
+          if (!src) continue;
+          contractBySource.set(src.id, {
+            priority:
+              typeof l.priority === "number" && Number.isFinite(l.priority)
+                ? l.priority
+                : 1000,
+            visibilityDefault:
+              typeof l.visibility_default === "boolean" ? l.visibility_default : null,
+          });
+        }
+      }
       const sourceIds = new Set(sourceData.map((s) => s.id));
       const prevById = new Map(prev.map((l) => [l.id, l]));
       const desired = sourceData.map((s) => {
         const id = `src:${s.id}`;
         const defaultFromSource = defaultLayerForSource(s);
+        const c = contractBySource.get(s.id);
+        if (c && c.visibilityDefault !== null) {
+          defaultFromSource.visible = c.visibilityDefault;
+        }
         const nextHintSig = hintSig(s.heatmapHint);
         const lockedRenderer = s.displayContract?.renderer === "heat_surface";
         const ex = prevById.get(id);
@@ -890,15 +1084,24 @@ export function Map2DPanel({
         }
       }
       for (const n of desiredById.values()) ordered.push(n);
-      return ordered.filter((l) => sourceIds.has(l.sourceId));
+      const filtered = ordered.filter((l) => sourceIds.has(l.sourceId));
+      if (contractBySource.size === 0 || layerOrderMode !== "contract") return filtered;
+      return filtered
+        .slice()
+        .sort((a, b) => {
+          const ap = contractBySource.get(a.sourceId)?.priority ?? Number.MAX_SAFE_INTEGER;
+          const bp = contractBySource.get(b.sourceId)?.priority ?? Number.MAX_SAFE_INTEGER;
+          return ap - bp || a.title.localeCompare(b.title);
+        });
     });
-  }, [sourceData]);
+  }, [layerOrderMode, layerStackContract, sourceData]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     map.eachLayer((layer) => {
       if (layer instanceof L.TileLayer) return;
+      if (baseImageLayerRef.current && layer === baseImageLayerRef.current) return;
       map.removeLayer(layer);
     });
 
@@ -1138,6 +1341,7 @@ export function Map2DPanel({
   }, [layers, sourceById]);
 
   const onDropLayer = (targetId: string) => {
+    if (!canDragLayers) return;
     if (!draggingId || draggingId === targetId) return;
     setLayers((prev) => {
       const from = prev.findIndex((l) => l.id === draggingId);
@@ -1229,7 +1433,30 @@ export function Map2DPanel({
               {panelCollapsed ? "+" : "-"}
             </button>
           </div>
-          <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>Base: Esri satellite</div>
+          <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>
+            Base: {imageryContract?.provider_label ?? "Esri satellite"}
+          </div>
+          {imageryContract?.attribution ? (
+            <div style={{ fontSize: 10, opacity: 0.58, marginTop: 2 }}>
+              {imageryContract.attribution}
+            </div>
+          ) : null}
+          {hasLayerStackContract ? (
+            <div style={{ fontSize: 10, opacity: 0.68, marginTop: 6 }}>
+              Layer order:
+              <select
+                value={layerOrderMode}
+                onChange={(e) => setLayerOrderMode(e.target.value as LayerOrderMode)}
+                style={{ marginLeft: 6, fontSize: 11 }}
+              >
+              <option value="contract">Contract</option>
+              <option value="override">Local override</option>
+              </select>
+              {layerOrderMode === "contract" ? (
+                <span style={{ marginLeft: 6, opacity: 0.62 }}>(drag locked)</span>
+              ) : null}
+            </div>
+          ) : null}
           {!panelCollapsed && (
             <div style={{ marginTop: 8 }}>
               {layers.map((layer, i) => {
@@ -1239,14 +1466,17 @@ export function Map2DPanel({
                 return (
                   <div
                     key={layer.id}
-                    draggable
-                    onDragStart={() => setDraggingId(layer.id)}
+                    draggable={canDragLayers}
+                    onDragStart={() => {
+                      if (!canDragLayers) return;
+                      setDraggingId(layer.id);
+                    }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={() => onDropLayer(layer.id)}
                     style={card}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ opacity: 0.55, cursor: "grab" }}>⋮⋮</span>
+                      <span style={{ opacity: canDragLayers ? 0.55 : 0.28, cursor: canDragLayers ? "grab" : "not-allowed" }}>⋮⋮</span>
                       <input
                         type="checkbox"
                         checked={layer.visible}
