@@ -24,6 +24,31 @@ impl PgJobQueue {
 #[async_trait::async_trait]
 impl JobQueue for PgJobQueue {
     async fn enqueue(&self, envelope: &JobEnvelope) -> Result<Uuid, StoreError> {
+        // Coalesce duplicate work: if same node/config is already queued or running,
+        // reuse that queue row instead of creating another duplicate job.
+        let existing: Option<(Uuid,)> = sqlx::query_as(
+            r#"
+            SELECT id
+            FROM job_queue
+            WHERE graph_id = $1
+              AND node_id = $2
+              AND status IN ('queued','running')
+              AND (payload->>'config_hash') = $3
+              AND COALESCE(payload->>'input_fingerprint', '') = $4
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(envelope.graph_id)
+        .bind(envelope.node_id)
+        .bind(&envelope.config_hash)
+        .bind(&envelope.input_fingerprint)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((id,)) = existing {
+            return Ok(id);
+        }
+
         let id = Uuid::new_v4();
         let payload = serde_json::to_value(envelope)?;
         sqlx::query(

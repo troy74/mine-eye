@@ -101,7 +101,7 @@ export default function App() {
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [revisionDiff, setRevisionDiff] = useState<ApiRevisionDiff | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const autoRunOnLoadRef = useRef<Set<string>>(new Set());
+  const lastCheckoutRef = useRef<string | null>(null);
   const workspaceUsedEpsgs = useMemo(
     () => collectWorkspaceUsedEpsg(graphNodes),
     [graphNodes]
@@ -355,6 +355,8 @@ export default function App() {
       void refreshArtifacts(graphId);
       void refreshGraphEdges(graphId);
       void refreshBranching(graphId);
+      // Clear stale one-shot queue messages once graph/artifacts have changed.
+      setStatus("");
       setGraphRefreshToken((t) => t + 1);
     });
     es.addEventListener("error", () => {
@@ -366,37 +368,10 @@ export default function App() {
   }, [graphId, refreshArtifacts, refreshGraphEdges, refreshBranching]);
 
   useEffect(() => {
-    if (!graphId) return;
-    if (autoRunOnLoadRef.current.has(graphId)) return;
-    if (graphNodes.length === 0) return;
-    if (artifacts.length > 0) return;
-    autoRunOnLoadRef.current.add(graphId);
-    setStatus("No artifacts found for this graph yet; auto-queuing run…");
-    void (async () => {
-      try {
-        const res = await runGraph(graphId);
-        const nq = res.queued?.length ?? 0;
-        const ns = res.skipped_manual?.length ?? 0;
-        if (nq === 0) {
-          setStatus(
-            ns > 0
-              ? `Auto-run queued 0 jobs (${ns} manual).`
-              : "Auto-run queued 0 jobs."
-          );
-        } else {
-          setStatus(
-            `Auto-run queued ${nq} job(s)${ns ? `; ${ns} skipped (manual)` : ""}.`
-          );
-        }
-        refreshAll();
-      } catch (e) {
-        setStatus(`Auto-run failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    })();
-  }, [artifacts.length, graphId, graphNodes.length, refreshAll]);
-
-  useEffect(() => {
     if (!graphId || !activeBranchId) return;
+    const checkoutKey = `${graphId}:${activeBranchId}`;
+    if (lastCheckoutRef.current === checkoutKey) return;
+    lastCheckoutRef.current = checkoutKey;
     let cancelled = false;
     const run = async () => {
       try {
@@ -507,26 +482,9 @@ export default function App() {
       const hasUpstreamArtifacts = artifacts.some((a) => upstreamSet.has(a.node_id));
       if (hasUpstreamArtifacts) return;
 
-      setStatus(`No upstream artifacts for ${node.config.kind.replace(/_/g, " ")} yet; queuing now…`);
-      void (async () => {
-        try {
-          const res = await runGraph(graphId);
-          const nq = res.queued?.length ?? 0;
-          const ns = res.skipped_manual?.length ?? 0;
-          if (nq === 0) {
-            setStatus(
-              ns > 0
-                ? `No jobs queued (${ns} manual). Run worker if work was already queued.`
-                : "No jobs queued."
-            );
-          } else {
-          setStatus(`Queued ${nq} job(s) for viewer inputs. Run worker to materialize artifacts.`);
-          }
-          refreshAll();
-        } catch (e) {
-          setStatus(e instanceof Error ? e.message : String(e));
-        }
-      })();
+      setStatus(
+        `No upstream artifacts for ${node.config.kind.replace(/_/g, " ")}. Queue pipeline run when ready.`
+      );
 
     },
     [artifacts, graphEdges, graphId, graphNodes, refreshAll]

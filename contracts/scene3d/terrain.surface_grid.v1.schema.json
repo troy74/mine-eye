@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/terrain.surface_grid.v1.schema.json",
+  "title": "terrain.surface_grid.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "surface_grid"
+  ],
+  "properties": {
+    "schema_id": { "const": "terrain.surface_grid.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "surface_grid": {
+      "type": "object",
+      "required": ["nx", "ny", "xmin", "xmax", "ymin", "ymax", "values"],
+      "properties": {
+        "nx": { "type": "integer", "minimum": 2 },
+        "ny": { "type": "integer", "minimum": 2 },
+        "xmin": { "type": "number" },
+        "xmax": { "type": "number" },
+        "ymin": { "type": "number" },
+        "ymax": { "type": "number" },
+        "values": {
+          "type": "array",
+          "items": { "type": "number" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "display_contract": {
+      "type": "object",
+      "properties": {
+        "display_pointer": { "const": "scene3d.terrain" }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

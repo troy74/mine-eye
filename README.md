@@ -29,6 +29,23 @@ This repository contains a componentized backend graph/orchestration runtime, wo
 - `V1SPEC.md` — v1 behavior/spec notes
 - `ARCHITECTURE.md` — architecture and design principles
 
+### Node Kind Taxonomy (Current)
+
+`crates/mine-eye-nodes/src/kinds` is split by domain so public node behavior stays explicit and maintainable:
+
+- `acquisition` (ingest primitives)
+- `data_model` (table/dataset transforms)
+- `spatial` (AOI and spatial contracts)
+- `surface` (heatmap/iso/terrain/DEM/surface interpolation)
+- `imagery_raster` (imagery provider + tilebroker contracts)
+- `trajectory` (desurvey)
+- `drillhole` (merge/model)
+- `scene_contract` (scene layer composition)
+- `visualization` (viewer payload nodes)
+- `stubs` (alpha placeholders)
+
+`runtime.rs` is internal helper/runtime support. New public node entrypoints should be added to the domain module, not directly exposed from `runtime.rs`.
+
 ## Design Principles
 
 - Backend is source of truth: graph state, node configs, artifacts, branches/revisions, project CRS.
@@ -80,12 +97,26 @@ Defaults:
 - `LISTEN=0.0.0.0:3000`
 - `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5433/mine_eye`
 - `ARTIFACT_ROOT=./data/artifacts`
+- `.env.dev` / `.env` are auto-loaded at startup when present
 
 ### 3) Start worker
 
 ```bash
 cargo run -p mine-eye-worker
 ```
+
+Notes:
+- `.env.dev` / `.env` are auto-loaded at startup when present.
+- DEM fetch prefers OpenTopography when a key is available via
+  `OPENTTOPOGRAPHY_API_KEY` (also accepts `OPENTOPOGRAPHY_API_KEY`).
+- `dem_fetch` accepts any upstream XYZ-bearing artifacts (collars, point sets,
+  trajectories, meshes) as fit controls.
+- `dem_fetch` supports `node_ui.fit_mode`:
+  - `none` (provider DEM only)
+  - `vertical_bias` (default)
+  - `affine_xy_z` (bias + tilt)
+- `dem_fetch` now emits `confidence_grid` (`class_ids` + `scores`) for overlay
+  rendering in viewers.
 
 ### 4) Start web app
 

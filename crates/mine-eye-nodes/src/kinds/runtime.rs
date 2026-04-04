@@ -1,6 +1,6 @@
 use mine_eye_types::{
     ArtifactRef, CollarRecord, CrsRecord, IntervalSampleRecord, JobEnvelope, JobResult, JobStatus,
-    SurveyStationRecord, TrajectorySegment,
+    SurveyStationRecord,
 };
 use sha2::{Digest, Sha256};
 use tokio::fs;
@@ -9,7 +9,7 @@ use crate::crs_transform::transform_xy;
 use crate::executor::ExecutionContext;
 use crate::NodeError;
 
-fn collar_output_crs_mode(job: &JobEnvelope) -> &str {
+pub(crate) fn collar_output_crs_mode(job: &JobEnvelope) -> &str {
     job.output_spec
         .pointer("/node_ui/output_crs_mode")
         .and_then(|v| v.as_str())
@@ -17,7 +17,7 @@ fn collar_output_crs_mode(job: &JobEnvelope) -> &str {
 }
 
 /// Target CRS for written collar coordinates, or `None` when output should stay in source CRS.
-fn collar_output_target_crs(job: &JobEnvelope) -> Result<Option<CrsRecord>, NodeError> {
+pub(crate) fn collar_output_target_crs(job: &JobEnvelope) -> Result<Option<CrsRecord>, NodeError> {
     match collar_output_crs_mode(job) {
         "source" => Ok(None),
         "wgs84" => Ok(Some(CrsRecord::epsg(4326))),
@@ -43,7 +43,7 @@ fn hash_bytes(data: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-async fn write_artifact(
+pub(crate) async fn write_artifact(
     ctx: &ExecutionContext<'_>,
     relative_key: &str,
     bytes: &[u8],
@@ -62,7 +62,7 @@ async fn write_artifact(
     })
 }
 
-async fn read_json_artifact(
+pub(crate) async fn read_json_artifact(
     ctx: &ExecutionContext<'_>,
     key: &str,
 ) -> Result<serde_json::Value, NodeError> {
@@ -72,7 +72,7 @@ async fn read_json_artifact(
     Ok(v)
 }
 
-async fn collect_drillhole_inputs(
+pub(crate) async fn collect_drillhole_inputs(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<(Vec<CollarRecord>, Vec<SurveyStationRecord>, Vec<IntervalSampleRecord>), NodeError> {
@@ -103,291 +103,6 @@ async fn collect_drillhole_inputs(
 }
 
 /// Parses collars/surveys/assays from job config params JSON and writes canonical JSON artifact.
-pub async fn run_drillhole_ingest(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for ingest".into()))?;
-    let collars: Vec<CollarRecord> = serde_json::from_value(
-        payload
-            .pointer("/collars")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    )
-    .unwrap_or_default();
-    let surveys: Vec<SurveyStationRecord> = serde_json::from_value(
-        payload
-            .pointer("/surveys")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    )
-    .unwrap_or_default();
-    let assays: Vec<IntervalSampleRecord> = serde_json::from_value(
-        payload
-            .pointer("/assays")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    )
-    .unwrap_or_default();
-
-    let payload = serde_json::json!({
-        "collars": collars,
-        "surveys": surveys,
-        "assays": assays,
-    });
-    let bytes = serde_json::to_vec(&payload)?;
-    let key = format!("graphs/{}/nodes/{}/ingest.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-/// Single primitive: collars only ([V1SPEC §2](V1SPEC.md) — Collar).
-pub async fn run_collar_ingest(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for collar_ingest".into()))?;
-    let mut collars: Vec<CollarRecord> = serde_json::from_value(
-        payload
-            .pointer("/collars")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    )
-    .unwrap_or_default();
-
-    if let Some(target) = collar_output_target_crs(job)? {
-        let project_missing = collar_output_crs_mode(job) == "project" && job.project_crs.is_none();
-        for c in &mut collars {
-            if project_missing {
-                c.qa_flags
-                    .push("project_crs_missing_output_epsg_4326".into());
-            }
-            if c.crs == target {
-                continue;
-            }
-            let (nx, ny) = transform_xy(&c.crs, &target, c.x, c.y)?;
-            c.x = nx;
-            c.y = ny;
-            c.crs = target.clone();
-            c.qa_flags.push("reprojected_xy".into());
-        }
-    }
-
-    let out = serde_json::json!({ "collars": collars });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/collars.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-/// Single primitive: survey stations only ([V1SPEC §2](V1SPEC.md) — SurveyStation).
-pub async fn run_survey_ingest(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for survey_ingest".into()))?;
-    let surveys: Vec<SurveyStationRecord> = serde_json::from_value(
-        payload
-            .pointer("/surveys")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    )
-    .unwrap_or_default();
-    let out = serde_json::json!({ "surveys": surveys });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/surveys.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-/// Single primitive: interval assays only ([V1SPEC §2](V1SPEC.md) — IntervalSample).
-pub async fn run_assay_ingest(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for assay_ingest".into()))?;
-    let assays: Vec<IntervalSampleRecord> = serde_json::from_value(
-        payload
-            .pointer("/assays")
-            .cloned()
-            .unwrap_or(serde_json::json!([])),
-    )
-    .unwrap_or_default();
-    let out = serde_json::json!({ "assays": assays });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/assays.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-/// Single primitive: surface samples as point rows for plan-view and downstream interpolation.
-pub async fn run_surface_sample_ingest(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let payload = job.input_payload.as_ref().ok_or_else(|| {
-        NodeError::InvalidConfig("missing input_payload for surface_sample_ingest".into())
-    })?;
-    let mut points = payload
-        .pointer("/points")
-        .cloned()
-        .unwrap_or(serde_json::json!([]));
-    let mut terrain_grid_for_fill: Option<(
-        usize,
-        usize,
-        f64,
-        f64,
-        f64,
-        f64,
-        Vec<Option<f64>>,
-    )> = None;
-    for ar in &job.input_artifact_refs {
-        let v = read_json_artifact(ctx, &ar.key).await?;
-        let Some(g) = v.get("surface_grid").and_then(|x| x.as_object()) else {
-            continue;
-        };
-        let nx = g
-            .get("nx")
-            .and_then(|x| x.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(0);
-        let ny = g
-            .get("ny")
-            .and_then(|x| x.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(0);
-        let xmin = g.get("xmin").and_then(|x| x.as_f64());
-        let xmax = g.get("xmax").and_then(|x| x.as_f64());
-        let ymin = g.get("ymin").and_then(|x| x.as_f64());
-        let ymax = g.get("ymax").and_then(|x| x.as_f64());
-        let vals = g.get("values").and_then(|x| x.as_array());
-        let (Some(xmin), Some(xmax), Some(ymin), Some(ymax), Some(vals)) =
-            (xmin, xmax, ymin, ymax, vals)
-        else {
-            continue;
-        };
-        if nx < 2 || ny < 2 || vals.len() != nx * ny {
-            continue;
-        }
-        let values: Vec<Option<f64>> = vals.iter().map(|v| v.as_f64()).collect();
-        terrain_grid_for_fill = Some((nx, ny, xmin, xmax, ymin, ymax, values));
-        break;
-    }
-
-    if let Some(target) = collar_output_target_crs(job)? {
-        let project_missing = collar_output_crs_mode(job) == "project" && job.project_crs.is_none();
-        if let Some(arr) = points.as_array_mut() {
-            for p in arr.iter_mut() {
-                let Some(obj) = p.as_object_mut() else {
-                    continue;
-                };
-                let (Some(x), Some(y)) = (
-                    obj.get("x").and_then(|v| v.as_f64()),
-                    obj.get("y").and_then(|v| v.as_f64()),
-                ) else {
-                    continue;
-                };
-
-                let src_crs = obj
-                    .get("crs")
-                    .cloned()
-                    .and_then(|v| serde_json::from_value::<CrsRecord>(v).ok())
-                    .unwrap_or_else(|| target.clone());
-                let (nx, ny) = if src_crs == target {
-                    (x, y)
-                } else {
-                    transform_xy(&src_crs, &target, x, y)?
-                };
-                obj.insert("x".into(), serde_json::json!(nx));
-                obj.insert("y".into(), serde_json::json!(ny));
-                obj.insert("crs".into(), serde_json::to_value(&target)?);
-
-                let mut qa_vals: Vec<String> = obj
-                    .get("qa_flags")
-                    .and_then(|x| x.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if project_missing {
-                    qa_vals.push("project_crs_missing_output_epsg_4326".into());
-                }
-                if src_crs != target {
-                    qa_vals.push("reprojected_xy".into());
-                }
-
-                let has_z = obj.get("z").and_then(|v| v.as_f64()).is_some();
-                if !has_z {
-                    if let Some((gnx, gny, gxmin, gxmax, gymin, gymax, gvals)) =
-                        terrain_grid_for_fill.as_ref()
-                    {
-                        if let Some(zv) = bilinear_from_grid(
-                            *gnx, *gny, *gxmin, *gxmax, *gymin, *gymax, gvals, nx, ny,
-                        ) {
-                            obj.insert("z".into(), serde_json::json!(zv));
-                            qa_vals.push("z_from_terrain_grid".into());
-                        }
-                    }
-                }
-                obj.insert("qa_flags".into(), serde_json::json!(qa_vals));
-            }
-        }
-    }
-    let out = serde_json::json!({ "points": points });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!(
-        "graphs/{}/nodes/{}/surface_samples.json",
-        job.graph_id, job.node_id
-    );
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
 #[derive(Clone, Copy)]
 struct HeatPt {
     x: f64,
@@ -550,13 +265,13 @@ fn marching_segments(
 }
 
 #[derive(Clone, Copy)]
-struct XYZ {
+pub(crate) struct XYZ {
     x: f64,
     y: f64,
     z: f64,
 }
 
-fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
+pub(crate) fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
     let mut out = Vec::new();
     let push_row = |out: &mut Vec<XYZ>, row: &serde_json::Value| {
         let Some(obj) = row.as_object() else {
@@ -639,7 +354,7 @@ fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
     out
 }
 
-fn collect_xy_points(v: &serde_json::Value) -> Vec<(f64, f64)> {
+pub(crate) fn collect_xy_points(v: &serde_json::Value) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
     let collect_coords = |coords: &serde_json::Value, out: &mut Vec<(f64, f64)>| {
         fn walk(node: &serde_json::Value, out: &mut Vec<(f64, f64)>) {
@@ -770,7 +485,7 @@ fn collect_xy_points(v: &serde_json::Value) -> Vec<(f64, f64)> {
     out
 }
 
-fn infer_extent(points: &[XYZ], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
+pub(crate) fn infer_extent(points: &[XYZ], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
     if points.is_empty() {
         return None;
     }
@@ -791,7 +506,7 @@ fn infer_extent(points: &[XYZ], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
     Some((xmin - px, xmax + px, ymin - py, ymax + py))
 }
 
-fn infer_extent_xy(points: &[(f64, f64)], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
+pub(crate) fn infer_extent_xy(points: &[(f64, f64)], pad_pct: f64) -> Option<(f64, f64, f64, f64)> {
     if points.is_empty() {
         return None;
     }
@@ -814,7 +529,7 @@ fn infer_extent_xy(points: &[(f64, f64)], pad_pct: f64) -> Option<(f64, f64, f64
     Some((xmin - dx * pad, xmax + dx * pad, ymin - dy * pad, ymax + dy * pad))
 }
 
-fn merge_extents(
+pub(crate) fn merge_extents(
     a: Option<(f64, f64, f64, f64)>,
     b: Option<(f64, f64, f64, f64)>,
 ) -> Option<(f64, f64, f64, f64)> {
@@ -893,7 +608,7 @@ fn idw_surface_from_xyz(
     out
 }
 
-fn bilinear_from_grid(
+pub(crate) fn bilinear_from_grid(
     nx: usize,
     ny: usize,
     xmin: f64,
@@ -929,7 +644,7 @@ fn bilinear_from_grid(
 }
 
 /// Phase-2 heatmap node: configurable interpolation + contour and diagnostics artifacts.
-pub async fn run_assay_heatmap(
+pub(crate) async fn run_assay_heatmap_impl(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
@@ -1436,7 +1151,7 @@ pub async fn run_assay_heatmap(
 }
 
 /// Derive iso-contours from any upstream artifact containing `surface_grid`.
-pub async fn run_surface_iso_extract(
+pub(crate) async fn run_surface_iso_extract_impl(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
@@ -1582,7 +1297,7 @@ pub async fn run_surface_iso_extract(
 }
 
 /// Fit / nudge DEM-like `surface_grid` against control points with known XYZ.
-pub async fn run_terrain_adjust(
+pub(crate) async fn run_terrain_adjust_impl(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
@@ -1775,7 +1490,7 @@ pub async fn run_terrain_adjust(
 }
 
 /// Build a surface_grid from any upstream XYZ-style datasets (points/collars/segments/assay_points).
-pub async fn run_xyz_to_surface(
+pub(crate) async fn run_xyz_to_surface_impl(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
@@ -1879,11 +1594,17 @@ pub async fn run_xyz_to_surface(
     })
 }
 
-async fn fetch_open_meteo_elevations(lat_lon: &[(f64, f64)]) -> Vec<Option<f64>> {
+async fn fetch_open_meteo_elevations(
+    lat_lon: &[(f64, f64)],
+    timeout_ms: u64,
+) -> Vec<Option<f64>> {
     if lat_lon.is_empty() {
         return Vec::new();
     }
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms.max(1000)))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let mut out: Vec<Option<f64>> = Vec::with_capacity(lat_lon.len());
     let chunk = 100usize;
     for part in lat_lon.chunks(chunk) {
@@ -2016,6 +1737,7 @@ fn parse_aai_grid(text: &str) -> Option<(usize, usize, f64, f64, f64, f64, Vec<O
 async fn fetch_opentopography_elevations(
     lat_lon: &[(f64, f64)],
     api_key: &str,
+    timeout_ms: u64,
 ) -> Vec<Option<f64>> {
     if lat_lon.is_empty() || api_key.trim().is_empty() {
         return Vec::new();
@@ -2040,7 +1762,10 @@ async fn fetch_opentopography_elevations(
     let west = (west - pad_lon).max(-180.0);
     let east = (east + pad_lon).min(180.0);
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms.max(1000)))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let req = client
         .get("https://portal.opentopography.org/API/globaldem")
         .query(&[
@@ -2069,10 +1794,37 @@ async fn fetch_opentopography_elevations(
 }
 
 /// Fetch DEM elevations for inferred AOI using a public API; fallback to XYZ-IDW when network unavailable.
-pub async fn run_dem_fetch(
+pub(crate) async fn run_dem_fetch_impl(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
+    let fit_mode = job
+        .output_spec
+        .pointer("/node_ui/fit_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("vertical_bias");
+    let fit_min_points = job
+        .output_spec
+        .pointer("/node_ui/fit_min_points")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3) as usize;
+    let low_density_cells = job
+        .output_spec
+        .pointer("/node_ui/low_density_cells")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(8.0)
+        .max(1.0);
+    let anchor_cells = job
+        .output_spec
+        .pointer("/node_ui/anchor_cells")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.75)
+        .max(0.05);
+    let timeout_ms = job
+        .output_spec
+        .pointer("/node_ui/timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(7000);
     let resolution_hint = job
         .output_spec
         .pointer("/node_ui/resolution")
@@ -2238,26 +1990,31 @@ pub async fn run_dem_fetch(
         .unwrap_or_default();
     let mut provider_name = "open_meteo_elevation_api";
     let fetched = if !ot_key.trim().is_empty() {
-        let ot = fetch_opentopography_elevations(&request_pts, &ot_key).await;
+        let ot = fetch_opentopography_elevations(&request_pts, &ot_key, timeout_ms).await;
         let ok = ot.iter().filter(|v| v.is_some()).count();
         if ok > 0 {
             provider_name = "opentopography_globaldem_cop30";
             ot
         } else {
-            fetch_open_meteo_elevations(&request_pts).await
+            fetch_open_meteo_elevations(&request_pts, timeout_ms).await
         }
     } else {
-        fetch_open_meteo_elevations(&request_pts).await
+        fetch_open_meteo_elevations(&request_pts, timeout_ms).await
     };
     let mut fetch_iter = fetched.into_iter();
     let mut grid_values: Vec<Option<f64>> = Vec::with_capacity(nx * ny);
+    let mut provider_mask: Vec<bool> = Vec::with_capacity(nx * ny);
     for ok in &valid_mask {
         if *ok {
-            grid_values.push(fetch_iter.next().flatten());
+            let v = fetch_iter.next().flatten();
+            provider_mask.push(v.is_some());
+            grid_values.push(v);
         } else {
+            provider_mask.push(false);
             grid_values.push(None);
         }
     }
+    let mut filled_mask = vec![false; nx * ny];
 
     let mut source_used = provider_name;
     let fetch_success = grid_values.iter().filter(|v| v.is_some()).count();
@@ -2290,11 +2047,157 @@ pub async fn run_dem_fetch(
             for i in 0..grid_values.len() {
                 if grid_values[i].is_none() {
                     grid_values[i] = filled[i];
+                    filled_mask[i] = grid_values[i].is_some();
                 }
             }
             source_used = "open_meteo_elevation_api_filled";
         }
     }
+
+    // Optional DEM fitting stage: nudge provider DEM to upstream XYZ control points.
+    let mut fit_qc = serde_json::Value::Null;
+    let mut fit_applied = false;
+    if fit_mode != "none" && xyz_points.len() >= fit_min_points && source_used != "fallback_idw_from_xyz" {
+        let mut matched: Vec<(XYZ, f64)> = Vec::new();
+        for cp in &xyz_points {
+            if let Some(pred) = bilinear_from_grid(nx, ny, xmin, xmax, ymin, ymax, &grid_values, cp.x, cp.y) {
+                matched.push((*cp, pred));
+            }
+        }
+        if matched.len() >= fit_min_points {
+            let n = matched.len() as f64;
+            let cx = matched.iter().map(|m| m.0.x).sum::<f64>() / n;
+            let cy = matched.iter().map(|m| m.0.y).sum::<f64>() / n;
+            let mut sum_r = 0.0;
+            let mut sum_x = 0.0;
+            let mut sum_y = 0.0;
+            let mut sum_xx = 0.0;
+            let mut sum_yy = 0.0;
+            let mut sum_xy = 0.0;
+            let mut sum_xr = 0.0;
+            let mut sum_yr = 0.0;
+            let mut rmse_before_acc = 0.0;
+            for (cp, pred) in &matched {
+                let rx = cp.x - cx;
+                let ry = cp.y - cy;
+                let r = cp.z - *pred;
+                rmse_before_acc += r * r;
+                sum_r += r;
+                sum_x += rx;
+                sum_y += ry;
+                sum_xx += rx * rx;
+                sum_yy += ry * ry;
+                sum_xy += rx * ry;
+                sum_xr += rx * r;
+                sum_yr += ry * r;
+            }
+            let rmse_before = (rmse_before_acc / n).sqrt();
+            let mut dz = sum_r / n;
+            let mut ax = 0.0;
+            let mut ay = 0.0;
+            if fit_mode == "affine_xy_z" {
+                let det = sum_xx * sum_yy - sum_xy * sum_xy;
+                if det.abs() > 1e-9 {
+                    ax = (sum_xr * sum_yy - sum_yr * sum_xy) / det;
+                    ay = (sum_yr * sum_xx - sum_xr * sum_xy) / det;
+                }
+                dz = (sum_r - ax * sum_x - ay * sum_y) / n;
+            }
+
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let idx = iy * nx + ix;
+                    let Some(v0) = grid_values[idx] else {
+                        continue;
+                    };
+                    let x = xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
+                    let y = ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
+                    let corr = dz + ax * (x - cx) + ay * (y - cy);
+                    grid_values[idx] = Some(v0 + corr);
+                }
+            }
+
+            let mut rmse_after_acc = 0.0;
+            for (cp, pred) in &matched {
+                let corr = dz + ax * (cp.x - cx) + ay * (cp.y - cy);
+                let after = cp.z - (*pred + corr);
+                rmse_after_acc += after * after;
+            }
+            fit_applied = true;
+            fit_qc = serde_json::json!({
+                "mode": fit_mode,
+                "control_points_used": matched.len(),
+                "rmse_before": rmse_before,
+                "rmse_after": (rmse_after_acc / n).sqrt(),
+                "dz": dz,
+                "tilt_x": ax,
+                "tilt_y": ay,
+                "origin": [cx, cy]
+            });
+            source_used = if source_used.contains("opentopography") {
+                "opentopography_globaldem_cop30_fitted"
+            } else {
+                "open_meteo_elevation_api_fitted"
+            };
+        }
+    }
+
+    // Confidence classification for downstream overlays.
+    // 0: low_density_or_missing, 1: interpolated, 2: provider_raw, 3: provider_adjusted, 4: control_anchor, 5: xyz_fallback
+    let mut confidence_class: Vec<u8> = vec![0; nx * ny];
+    if source_used == "fallback_idw_from_xyz" {
+        confidence_class.fill(5);
+    } else {
+        for i in 0..confidence_class.len() {
+            confidence_class[i] = if provider_mask[i] {
+                if fit_applied { 3 } else { 2 }
+            } else if filled_mask[i] && grid_values[i].is_some() {
+                1
+            } else {
+                0
+            };
+        }
+    }
+    if !xyz_points.is_empty() {
+        let cell_size = ((xmax - xmin).abs() / nx.max(1) as f64)
+            .max((ymax - ymin).abs() / ny.max(1) as f64)
+            .max(1e-9);
+        let low_density_radius = low_density_cells * cell_size;
+        let anchor_radius = anchor_cells * cell_size;
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let idx = iy * nx + ix;
+                if grid_values[idx].is_none() {
+                    confidence_class[idx] = 0;
+                    continue;
+                }
+                let x = xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
+                let y = ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
+                let mut dmin = f64::INFINITY;
+                for cp in &xyz_points {
+                    let dx = cp.x - x;
+                    let dy = cp.y - y;
+                    dmin = dmin.min((dx * dx + dy * dy).sqrt());
+                }
+                if dmin <= anchor_radius {
+                    confidence_class[idx] = 4;
+                } else if dmin > low_density_radius && confidence_class[idx] != 5 {
+                    confidence_class[idx] = 0;
+                }
+            }
+        }
+    }
+    let confidence_score: Vec<f64> = confidence_class
+        .iter()
+        .map(|c| match c {
+            5 => 0.8,
+            4 => 1.0,
+            3 => 0.82,
+            2 => 0.62,
+            1 => 0.38,
+            _ => 0.12,
+        })
+        .collect();
 
     let finite_vals: Vec<f64> = grid_values.iter().copied().flatten().collect();
     let (zmin, zmax) = if finite_vals.is_empty() {
@@ -2326,15 +2229,36 @@ pub async fn run_dem_fetch(
             "fetch_success_cells": fetch_success,
             "total_cells": nx * ny,
             "z_min": zmin,
-            "z_max": zmax
+            "z_max": zmax,
+            "fit_applied": fit_applied
         },
         "meta":{
             "extent_source": extent_source,
             "inferred_from_points": xyz_points.len(),
             "inferred_from_xy_points": xy_points.len(),
+            "fit_mode": fit_mode,
+            "fit_qc": fit_qc,
             "input_artifact_keys": input_artifact_keys,
             "selected_input_bbox": input_bbox.map(|(x0,x1,y0,y1)| serde_json::json!({"xmin":x0,"xmax":x1,"ymin":y0,"ymax":y1})).unwrap_or(serde_json::Value::Null),
             "selected_aoi_bbox": aoi_bbox.map(|(x0,x1,y0,y1)| serde_json::json!({"xmin":x0,"xmax":x1,"ymin":y0,"ymax":y1})).unwrap_or(serde_json::Value::Null)
+        },
+        "confidence_grid":{
+            "nx":nx,
+            "ny":ny,
+            "xmin":xmin,
+            "xmax":xmax,
+            "ymin":ymin,
+            "ymax":ymax,
+            "class_ids": confidence_class,
+            "scores": confidence_score,
+            "legend":{
+                "0":"low_density_or_missing",
+                "1":"interpolated_or_extrapolated",
+                "2":"provider_raw",
+                "3":"provider_adjusted_to_control",
+                "4":"ground_truth_anchor",
+                "5":"xyz_idw_fallback"
+            }
         },
         "surface_grid":{
             "nx":nx,
@@ -2385,113 +2309,6 @@ fn bbox_from_geojson_like(geom: &serde_json::Value) -> Option<(f64, f64, f64, f6
     }
 }
 
-pub async fn run_aoi(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let mode = job
-        .output_spec
-        .pointer("/node_ui/mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("inferred");
-    let margin_raw = job
-        .output_spec
-        .pointer("/node_ui/margin_pct")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(25.0);
-    let margin_pct = if margin_raw > 1.0 { margin_raw / 100.0 } else { margin_raw }.max(0.0);
-    let bbox_cfg = job
-        .output_spec
-        .pointer("/node_ui/bbox")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let mut xyz_points: Vec<XYZ> = Vec::new();
-    let mut xy_points: Vec<(f64, f64)> = Vec::new();
-    for ar in &job.input_artifact_refs {
-        let v = read_json_artifact(ctx, &ar.key).await?;
-        xyz_points.extend(collect_xyz_points(&v));
-        xy_points.extend(collect_xy_points(&v));
-    }
-
-    let inferred_bbox = if bbox_cfg.len() >= 4 {
-        let x0 = bbox_cfg[0].as_f64().unwrap_or(0.0);
-        let y0 = bbox_cfg[1].as_f64().unwrap_or(0.0);
-        let x1 = bbox_cfg[2].as_f64().unwrap_or(1.0);
-        let y1 = bbox_cfg[3].as_f64().unwrap_or(1.0);
-        Some((x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1)))
-    } else {
-        merge_extents(
-            infer_extent(&xyz_points, margin_pct),
-            infer_extent_xy(&xy_points, margin_pct),
-        )
-    };
-    let (xmin, xmax, ymin, ymax) = inferred_bbox.unwrap_or((-0.5, 0.5, -0.5, 0.5));
-
-    let geometry = serde_json::json!({
-        "type":"Polygon",
-        "coordinates":[[
-            [xmin, ymin],
-            [xmax, ymin],
-            [xmax, ymax],
-            [xmin, ymax],
-            [xmin, ymin]
-        ]]
-    });
-    let out = serde_json::json!({
-        "schema_id":"spatial.aoi.v1",
-        "schema_version":1,
-        "crs": job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326)),
-        "geometry": geometry,
-        "bounds":{"xmin":xmin,"xmax":xmax,"ymin":ymin,"ymax":ymax},
-        "meta":{
-            "mode":mode,
-            "locked": job.output_spec.pointer("/node_ui/locked").and_then(|v| v.as_bool()).unwrap_or(false),
-            "margin_pct": margin_raw,
-            "inferred_from_points": xyz_points.len(),
-            "inferred_from_xy_points": xy_points.len(),
-            "warning": if inferred_bbox.is_none() { serde_json::Value::String("fallback default AOI used".into()) } else { serde_json::Value::Null }
-        },
-        "provenance":{
-            "node_kind":"aoi",
-            "node_id": job.node_id.to_string()
-        }
-    });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/aoi.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-pub async fn run_imagery_provider(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let out = build_imagery_like_contract(
-        ctx,
-        job,
-        "scene3d.imagery_drape.v1",
-        "imagery_provider",
-    )
-    .await?;
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/imagery_drape.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
 
 fn lonlat_to_web_mercator(lon_deg: f64, lat_deg: f64) -> (f64, f64) {
     let max_lat = 85.051_128_78_f64;
@@ -2611,7 +2428,7 @@ fn build_imagery_urls(
     Ok(urls)
 }
 
-async fn build_imagery_like_contract(
+pub(crate) async fn build_imagery_like_contract(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
     schema_id: &str,
@@ -2905,466 +2722,4 @@ async fn build_imagery_like_contract(
             "node_id": job.node_id.to_string()
         }
     }))
-}
-
-pub async fn run_tilebroker(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let out = build_imagery_like_contract(
-        ctx,
-        job,
-        "scene3d.tilebroker_response.v1",
-        "tilebroker",
-    )
-    .await?;
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/tilebroker_response.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-pub async fn run_scene3d_layer_stack(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let mut layers: Vec<serde_json::Value> = Vec::new();
-    let mut priority = 10i64;
-    for ar in &job.input_artifact_refs {
-        let v = read_json_artifact(ctx, &ar.key).await?;
-        let schema_id = v.get("schema_id").and_then(|x| x.as_str()).unwrap_or("");
-        let display_pointer = v
-            .pointer("/display_contract/display_pointer")
-            .and_then(|x| x.as_str())
-            .unwrap_or("scene3d.generic");
-        let kind = if schema_id == "scene3d.imagery_drape.v1"
-            || schema_id == "scene3d.tilebroker_response.v1"
-            || display_pointer == "scene3d.imagery_drape"
-        {
-            "imagery_drape"
-        } else if v.get("surface_grid").is_some() || display_pointer == "scene3d.terrain" {
-            "terrain"
-        } else if display_pointer == "scene3d.contour_lines" {
-            "contours"
-        } else if display_pointer == "scene3d.trace_polyline" {
-            "drill_segments"
-        } else if display_pointer == "scene3d.sample_points" {
-            "assay_points"
-        } else {
-            "mesh"
-        };
-        let ui_caps = match kind {
-            "imagery_drape" => serde_json::json!(["visible", "opacity", "provider"]),
-            "terrain" => serde_json::json!(["visible", "opacity"]),
-            "contours" => serde_json::json!(["visible", "opacity", "color", "width", "interval_step"]),
-            "drill_segments" => serde_json::json!(["visible", "opacity", "palette", "radius_scale", "measure"]),
-            "assay_points" => serde_json::json!(["visible", "opacity", "palette", "size_scale", "measure"]),
-            _ => serde_json::json!(["visible", "opacity"]),
-        };
-        layers.push(serde_json::json!({
-            "layer_id": format!("layer_{}", layers.len() + 1),
-            "kind": kind,
-            "source_artifact_ref": {
-                "key": ar.key,
-                "content_hash": ar.content_hash
-            },
-            "style_defaults": {
-                "opacity": 1.0
-            },
-            "ui_capabilities": ui_caps,
-            "priority": priority,
-            "visibility_default": true
-        }));
-        priority += 10;
-    }
-
-    let out = serde_json::json!({
-        "schema_id":"scene3d.layer_stack.v1",
-        "schema_version":1,
-        "layers":layers,
-        "provenance":{
-            "node_kind":"scene3d_layer_stack",
-            "node_id": job.node_id.to_string()
-        }
-    });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/scene3d_layer_stack.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-/// Merge collar / survey / assay JSON shards into one package for desurvey.
-pub async fn run_drillhole_merge(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let (collars, surveys, assays) = collect_drillhole_inputs(ctx, job).await?;
-
-    let merged = serde_json::json!({
-        "collars": collars,
-        "surveys": surveys,
-        "assays": assays,
-    });
-    let bytes = serde_json::to_vec(&merged)?;
-    let key = format!("graphs/{}/nodes/{}/ingest.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-/// Minimal straight-hole desurvey from collars + surveys; writes trajectory JSON.
-pub async fn run_desurvey_trajectory(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let (collars, surveys, _assays) = collect_drillhole_inputs(ctx, job).await?;
-    if collars.is_empty() {
-        return Err(NodeError::InvalidConfig(
-            "desurvey_trajectory requires collars input".into(),
-        ));
-    }
-    if surveys.is_empty() {
-        return Err(NodeError::InvalidConfig(
-            "desurvey_trajectory requires surveys input".into(),
-        ));
-    }
-
-    let mut segments = Vec::new();
-    for c in &collars {
-        let mut stations: Vec<&SurveyStationRecord> = surveys
-            .iter()
-            .filter(|s| s.hole_id == c.hole_id)
-            .collect();
-        stations.sort_by(|a, b| a.depth_m.partial_cmp(&b.depth_m).unwrap());
-        if stations.is_empty() {
-            segments.push(TrajectorySegment {
-                hole_id: c.hole_id.clone(),
-                depth_from_m: 0.0,
-                depth_to_m: 1.0,
-                x_from: c.x,
-                y_from: c.y,
-                z_from: c.z,
-                x_to: c.x,
-                y_to: c.y,
-                z_to: c.z - 1.0,
-                crs: c.crs.clone(),
-            });
-            continue;
-        }
-        let mut prev_d = 0.0f64;
-        let mut prev_x = c.x;
-        let mut prev_y = c.y;
-        let mut prev_z = c.z;
-        for st in stations {
-            let dz = st.depth_m - prev_d;
-            let dip_rad = st.dip_deg.to_radians();
-            let az_rad = st.azimuth_deg.to_radians();
-            let run = dz * dip_rad.cos();
-            let dx = run * az_rad.sin();
-            let dy = run * az_rad.cos();
-            let dz_vert = dz * dip_rad.sin();
-            let x_to = prev_x + dx;
-            let y_to = prev_y + dy;
-            let z_to = prev_z - dz_vert;
-            segments.push(TrajectorySegment {
-                hole_id: c.hole_id.clone(),
-                depth_from_m: prev_d,
-                depth_to_m: st.depth_m,
-                x_from: prev_x,
-                y_from: prev_y,
-                z_from: prev_z,
-                x_to,
-                y_to,
-                z_to,
-                crs: c.crs.clone(),
-            });
-            prev_d = st.depth_m;
-            prev_x = x_to;
-            prev_y = y_to;
-            prev_z = z_to;
-        }
-    }
-
-    let bytes = serde_json::to_vec(&segments)?;
-    let key = format!("graphs/{}/nodes/{}/trajectory.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-fn position_at_depth(segments: &[TrajectorySegment], depth_m: f64) -> Option<(f64, f64, f64)> {
-    for s in segments {
-        if depth_m < s.depth_from_m || depth_m > s.depth_to_m {
-            continue;
-        }
-        let len = (s.depth_to_m - s.depth_from_m).abs();
-        let t = if len <= f64::EPSILON {
-            0.0
-        } else {
-            (depth_m - s.depth_from_m) / (s.depth_to_m - s.depth_from_m)
-        };
-        let x = s.x_from + (s.x_to - s.x_from) * t;
-        let y = s.y_from + (s.y_to - s.y_from) * t;
-        let z = s.z_from + (s.z_to - s.z_from) * t;
-        return Some((x, y, z));
-    }
-    None
-}
-
-/// Build drillhole geometry payloads from trajectory + assays:
-/// - `drillhole_meshes.json`: segment-wise cylinders with assay overlap metadata
-/// - `assay_points.json`: midpoint assay points for later interpolation/kriging
-pub async fn run_drillhole_model(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let mut trajectory: Vec<TrajectorySegment> = Vec::new();
-    let mut assays: Vec<IntervalSampleRecord> = Vec::new();
-
-    for ar in &job.input_artifact_refs {
-        let v = read_json_artifact(ctx, &ar.key).await?;
-        if let Ok(mut segs) = serde_json::from_value::<Vec<TrajectorySegment>>(v.clone()) {
-            trajectory.append(&mut segs);
-        }
-        if let Some(a) = v.get("assays") {
-            if let Ok(mut part) = serde_json::from_value::<Vec<IntervalSampleRecord>>(a.clone()) {
-                assays.append(&mut part);
-            }
-        }
-    }
-
-    if trajectory.is_empty() {
-        return Err(NodeError::InvalidConfig(
-            "drillhole_model requires trajectory input".into(),
-        ));
-    }
-
-    let mut hole_segments: std::collections::HashMap<String, Vec<TrajectorySegment>> =
-        std::collections::HashMap::new();
-    for s in trajectory {
-        hole_segments
-            .entry(s.hole_id.clone())
-            .or_default()
-            .push(s);
-    }
-    for segs in hole_segments.values_mut() {
-        segs.sort_by(|a, b| a.depth_from_m.partial_cmp(&b.depth_from_m).unwrap());
-    }
-
-    let radius_m = job
-        .output_spec
-        .pointer("/node_ui/hole_radius_m")
-        .and_then(|v| v.as_f64())
-        .filter(|r| *r > 0.0)
-        .unwrap_or(0.6);
-
-    let mut mesh_segments: Vec<serde_json::Value> = Vec::new();
-    for (hole_id, segs) in &hole_segments {
-        for (idx, s) in segs.iter().enumerate() {
-            let overlapping_assays: Vec<serde_json::Value> = assays
-                .iter()
-                .filter(|a| {
-                    a.hole_id == *hole_id && a.to_m > s.depth_from_m && a.from_m < s.depth_to_m
-                })
-                .map(|a| {
-                    serde_json::json!({
-                        "from_m": a.from_m,
-                        "to_m": a.to_m,
-                        "attributes": a.attributes,
-                        "qa_flags": a.qa_flags,
-                    })
-                })
-                .collect();
-            mesh_segments.push(serde_json::json!({
-                "hole_id": hole_id,
-                "segment_index": idx,
-                "from_depth_m": s.depth_from_m,
-                "to_depth_m": s.depth_to_m,
-                "from_xyz": [s.x_from, s.y_from, s.z_from],
-                "to_xyz": [s.x_to, s.y_to, s.z_to],
-                "crs": s.crs.clone(),
-                "radius_m": radius_m,
-                "assays": overlapping_assays,
-            }));
-        }
-    }
-
-    let mut assay_points: Vec<serde_json::Value> = Vec::new();
-    for a in &assays {
-        let Some(segs) = hole_segments.get(&a.hole_id) else {
-            continue;
-        };
-        let mid = (a.from_m + a.to_m) * 0.5;
-        if let Some((x, y, z)) = position_at_depth(segs, mid) {
-            let crs = segs
-                .iter()
-                .find(|s| mid >= s.depth_from_m && mid <= s.depth_to_m)
-                .map(|s| s.crs.clone())
-                .or_else(|| segs.first().map(|s| s.crs.clone()));
-            assay_points.push(serde_json::json!({
-                "hole_id": a.hole_id,
-                "from_m": a.from_m,
-                "to_m": a.to_m,
-                "depth_m": mid,
-                "x": x,
-                "y": y,
-                "z": z,
-                "crs": crs,
-                "attributes": a.attributes,
-                "qa_flags": a.qa_flags,
-            }));
-        }
-    }
-
-    let mesh_payload = serde_json::json!({
-        "kind": "drillhole_cylinder_mesh_segments",
-        "crs": hole_segments
-            .values()
-            .next()
-            .and_then(|segs| segs.first().map(|s| s.crs.clone())),
-        "segments": mesh_segments,
-    });
-    let mesh_bytes = serde_json::to_vec(&mesh_payload)?;
-    let mesh_key = format!(
-        "graphs/{}/nodes/{}/drillhole_meshes.json",
-        job.graph_id, job.node_id
-    );
-    let mesh_ref = write_artifact(ctx, &mesh_key, &mesh_bytes, Some("application/json")).await?;
-
-    let points_payload = serde_json::json!({ "assay_points": assay_points });
-    let points_bytes = serde_json::to_vec(&points_payload)?;
-    let points_key = format!(
-        "graphs/{}/nodes/{}/assay_points.json",
-        job.graph_id, job.node_id
-    );
-    let points_ref =
-        write_artifact(ctx, &points_key, &points_bytes, Some("application/json")).await?;
-
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![mesh_ref.clone(), points_ref.clone()],
-        content_hashes: vec![mesh_ref.content_hash, points_ref.content_hash],
-        error_message: None,
-    })
-}
-
-pub async fn run_dem_integrate_stub(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let stub = serde_json::json!({ "dem": "stub", "graph": job.graph_id });
-    let bytes = serde_json::to_vec(&stub)?;
-    let key = format!("graphs/{}/nodes/{}/dem_stub.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-pub async fn run_block_model_stub(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let nx = 4u32;
-    let ny = 4u32;
-    let nz = 4u32;
-    let n = (nx * ny * nz) as usize;
-    let mut grid = vec![0f32; n];
-    for i in 0..n {
-        grid[i] = i as f32 * 0.1;
-    }
-    let meta = serde_json::json!({
-        "nx": nx, "ny": ny, "nz": nz,
-        "origin_x": 0.0, "origin_y": 0.0, "origin_z": 0.0,
-        "cell_x": 10.0, "cell_y": 10.0, "cell_z": 5.0,
-    });
-    let meta_bytes = serde_json::to_vec(&meta)?;
-    let meta_key = format!("graphs/{}/nodes/{}/block_model_meta.json", job.graph_id, job.node_id);
-    let meta_ref = write_artifact(ctx, &meta_key, &meta_bytes, Some("application/json")).await?;
-
-    let bin: Vec<u8> = grid.iter().flat_map(|f| f.to_le_bytes()).collect();
-    let bin_key = format!("graphs/{}/nodes/{}/block_model_f32.bin", job.graph_id, job.node_id);
-    let bin_ref = write_artifact(ctx, &bin_key, &bin, Some("application/octet-stream")).await?;
-
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![meta_ref.clone(), bin_ref.clone()],
-        content_hashes: vec![meta_ref.content_hash, bin_ref.content_hash],
-        error_message: None,
-    })
-}
-
-pub async fn run_plan_view_2d(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let out = serde_json::json!({
-        "viewer": "plan_view_2d",
-        "graph": job.graph_id,
-        "node": job.node_id,
-        "input_artifact_count": job.input_artifact_refs.len(),
-        "inputs": job.input_artifact_refs,
-    });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/plan_view.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
-}
-
-pub async fn run_plan_view_3d(
-    ctx: &ExecutionContext<'_>,
-    job: &JobEnvelope,
-) -> Result<JobResult, NodeError> {
-    let out = serde_json::json!({
-        "viewer": "plan_view_3d",
-        "graph": job.graph_id,
-        "node": job.node_id,
-        "input_artifact_count": job.input_artifact_refs.len(),
-        "inputs": job.input_artifact_refs,
-    });
-    let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/scene_view.json", job.graph_id, job.node_id);
-    let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
-    Ok(JobResult {
-        job_id: job.job_id,
-        status: JobStatus::Succeeded,
-        output_artifact_refs: vec![artifact.clone()],
-        content_hashes: vec![artifact.content_hash],
-        error_message: None,
-    })
 }

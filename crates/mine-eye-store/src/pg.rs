@@ -610,10 +610,6 @@ impl PgStore {
             .bind(graph_id)
             .execute(&mut *tx)
             .await?;
-        sqlx::query(r#"DELETE FROM nodes WHERE graph_id = $1"#)
-            .bind(graph_id)
-            .execute(&mut *tx)
-            .await?;
 
         for node in nodes {
             let policy = serde_json::to_value(&node.policy)?;
@@ -624,6 +620,18 @@ impl PgStore {
                 r#"
                 INSERT INTO nodes (id, graph_id, category, config, execution_state, cache_state, policy, ports, lineage, content_hash, last_error)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ON CONFLICT (id) DO UPDATE SET
+                    graph_id = EXCLUDED.graph_id,
+                    category = EXCLUDED.category,
+                    config = EXCLUDED.config,
+                    execution_state = EXCLUDED.execution_state,
+                    cache_state = EXCLUDED.cache_state,
+                    policy = EXCLUDED.policy,
+                    ports = EXCLUDED.ports,
+                    lineage = EXCLUDED.lineage,
+                    content_hash = EXCLUDED.content_hash,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = now()
                 "#,
             )
             .bind(node.id)
@@ -639,6 +647,22 @@ impl PgStore {
             .bind(&node.last_error)
             .execute(&mut *tx)
             .await?;
+        }
+
+        // Remove nodes no longer present in the replacement snapshot.
+        // This preserves artifacts for unchanged node IDs instead of dropping all artifacts on checkout.
+        let node_ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
+        if node_ids.is_empty() {
+            sqlx::query(r#"DELETE FROM nodes WHERE graph_id = $1"#)
+                .bind(graph_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            sqlx::query(r#"DELETE FROM nodes WHERE graph_id = $1 AND NOT (id = ANY($2))"#)
+                .bind(graph_id)
+                .bind(&node_ids)
+                .execute(&mut *tx)
+                .await?;
         }
 
         for edge in edges {
@@ -832,16 +856,33 @@ impl PgStore {
         node_id: Uuid,
         artifacts: &[(String, String, Option<String>)],
     ) -> Result<(), StoreError> {
-        sqlx::query(r#"DELETE FROM node_artifacts WHERE node_id = $1"#)
-            .bind(node_id)
-            .execute(&self.pool)
-            .await?;
         for (key, hash, media) in artifacts {
+            let prev: Option<(Uuid, String, Option<String>)> = sqlx::query_as(
+                r#"
+                SELECT id, content_hash, media_type
+                FROM node_artifacts
+                WHERE node_id = $1 AND artifact_key = $2
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                "#,
+            )
+            .bind(node_id)
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+            if let Some((_, prev_hash, prev_media)) = &prev {
+                if prev_hash == hash && prev_media == media {
+                    continue;
+                }
+            }
             let aid = Uuid::new_v4();
             sqlx::query(
                 r#"
-                INSERT INTO node_artifacts (id, node_id, artifact_key, content_hash, media_type)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO node_artifacts (
+                    id, node_id, artifact_key, content_hash, media_type,
+                    variant, payload_hash, supersedes_artifact_id
+                )
+                VALUES ($1, $2, $3, $4, $5, 'preview', $4, $6)
                 "#,
             )
             .bind(aid)
@@ -849,6 +890,30 @@ impl PgStore {
             .bind(key)
             .bind(hash)
             .bind(media)
+            .bind(prev.map(|(id, _, _)| id))
+            .execute(&self.pool)
+            .await?;
+
+            // Keep latest + penultimate per node/key for rollback.
+            sqlx::query(
+                r#"
+                DELETE FROM node_artifacts
+                WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY node_id, artifact_key
+                                   ORDER BY created_at DESC, id DESC
+                               ) AS rn
+                        FROM node_artifacts
+                        WHERE node_id = $1 AND artifact_key = $2
+                    ) z
+                    WHERE z.rn > 2
+                )
+                "#,
+            )
+            .bind(node_id)
+            .bind(key)
             .execute(&self.pool)
             .await?;
         }
@@ -860,7 +925,12 @@ impl PgStore {
         node_id: Uuid,
     ) -> Result<Vec<(String, String, Option<String>)>, StoreError> {
         let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            r#"SELECT artifact_key, content_hash, media_type FROM node_artifacts WHERE node_id = $1"#,
+            r#"
+            SELECT DISTINCT ON (artifact_key) artifact_key, content_hash, media_type
+            FROM node_artifacts
+            WHERE node_id = $1
+            ORDER BY artifact_key, created_at DESC, id DESC
+            "#,
         )
         .bind(node_id)
         .fetch_all(&self.pool)

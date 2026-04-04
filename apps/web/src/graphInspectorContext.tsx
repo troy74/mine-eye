@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 
 export type InspectorTab =
   | "summary"
+  | "preview"
   | "diagnostics"
   | "config"
   | "mapping"

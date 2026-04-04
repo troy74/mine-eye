@@ -9,11 +9,23 @@ export type RegistryNodeSpec = {
   category: string;
   label: string;
   role: string;
+  framework_group?: string;
+  submenu?: string;
+  plugin_source?: string;
   menu?: { enabled?: boolean; order?: number };
   policy?: Record<string, string>;
   ports?: {
     inputs?: RegistryPortSpec[];
     outputs?: RegistryPortSpec[];
+  };
+  interaction?: {
+    actions?: {
+      run?: { allowed?: boolean; tab?: string };
+      lock_toggle?: { allowed?: boolean; tab?: string };
+      edit?: { allowed?: boolean; tab?: string };
+      config?: { allowed?: boolean; tab?: string };
+      preview?: { allowed?: boolean; tab?: string };
+    };
   };
 };
 
@@ -74,6 +86,9 @@ export type AddNodePreset = {
   category: string;
   kind: string;
   label: string;
+  frameworkGroup: string;
+  submenu: string;
+  pluginSource: string;
   policy?: Record<string, string>;
 };
 
@@ -85,6 +100,9 @@ export function addNodePresetsFromRegistry(): AddNodePreset[] {
       category: n.category,
       kind: n.kind,
       label: n.label,
+      frameworkGroup: n.framework_group || n.category || "other",
+      submenu: n.submenu || "general",
+      pluginSource: n.plugin_source || "core",
       policy: n.policy,
     }));
 }

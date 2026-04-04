@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/spatial.aoi.v1.schema.json",
+  "title": "spatial.aoi.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "geometry",
+    "meta"
+  ],
+  "properties": {
+    "schema_id": { "const": "spatial.aoi.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "geometry": {
+      "description": "AOI polygon/quadrilateral in project CRS.",
+      "type": "object"
+    },
+    "meta": {
+      "type": "object",
+      "required": ["mode", "locked"],
+      "properties": {
+        "mode": { "enum": ["project_default", "inferred", "manual"] },
+        "locked": { "type": "boolean" },
+        "margin_pct": { "type": "number" },
+        "outlier_stats": { "type": "object" },
+        "auto_expand": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1099,6 +1099,7 @@ dependencies = [
  "hex",
  "mine-eye-types",
  "proj",
+ "reqwest",
  "serde_json",
  "sha2",
  "thiserror",
@@ -1113,6 +1114,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
+ "dotenvy",
  "futures-core",
  "mine-eye-graph",
  "mine-eye-scheduler",
@@ -1134,10 +1136,12 @@ dependencies = [
 name = "mine-eye-scheduler"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "mine-eye-graph",
  "mine-eye-types",
  "serde",
  "serde_json",
+ "sha2",
  "uuid",
 ]
 
@@ -1173,6 +1177,7 @@ name = "mine-eye-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dotenvy",
  "mine-eye-nodes",
  "mine-eye-store",
  "mine-eye-types",

@@ -13,6 +13,11 @@ import {
 } from "./pipelineSchema";
 import type { InspectorTab } from "./graphInspectorContext";
 import { ACQUISITION_EPSG_OPTIONS } from "./crsOptions";
+import type { RegistryNodeSpec } from "./nodeRegistry";
+import {
+  lockLabel,
+  resolveNodeInspectorCapabilities,
+} from "./nodeInspectorActions";
 
 const OUTPUT_CRS_OPTIONS: { value: string; label: string }[] = [
   { value: "project", label: "Project CRS (default)" },
@@ -20,6 +25,20 @@ const OUTPUT_CRS_OPTIONS: { value: string; label: string }[] = [
   { value: "source", label: "Same as source file CRS" },
   { value: "custom", label: "Custom EPSG…" },
 ];
+
+const DEFAULT_TILE_PROVIDER_CATALOG: Array<{ id: string; label: string }> = [
+  { id: "esri_world_imagery", label: "Esri World Imagery" },
+  { id: "esri_world_topo", label: "Esri World Topo" },
+  { id: "esri_natgeo", label: "Esri NatGeo World" },
+  { id: "usgs_imagery", label: "USGS Imagery" },
+];
+
+function providerLabel(providerId: string): string {
+  return (
+    DEFAULT_TILE_PROVIDER_CATALOG.find((p) => p.id === providerId)?.label ??
+    providerId
+  );
+}
 
 function getUiParams(node: ApiNode): Record<string, unknown> {
   const p = node.config.params;
@@ -36,11 +55,14 @@ type Props = {
   graphId: string;
   activeBranchId?: string | null;
   node: ApiNode;
+  nodeSpec?: RegistryNodeSpec;
   projectEpsg: number;
   workspaceUsedEpsgs?: number[];
   tab: InspectorTab;
   onTab: (t: InspectorTab) => void;
   onClose: () => void;
+  onOpenEditor?: () => void;
+  mode?: "sidebar" | "editor";
   onNodeUpdated: (n: ApiNode) => void;
   nodeArtifacts: ArtifactEntry[];
   onPipelineQueued?: () => void;
@@ -50,11 +72,14 @@ export function NodeInspector({
   graphId,
   activeBranchId,
   node,
+  nodeSpec,
   projectEpsg,
   workspaceUsedEpsgs = [],
   tab,
   onTab,
   onClose,
+  onOpenEditor,
+  mode = "sidebar",
   onNodeUpdated,
   nodeArtifacts,
   onPipelineQueued,
@@ -62,8 +87,16 @@ export function NodeInspector({
   const kind = node.config.kind;
   const csvCapable = isAcquisitionCsvKind(kind);
   const isHeatmapNode = kind === "assay_heatmap";
+  const isDataModelTransformNode = kind === "data_model_transform";
   const isTerrainAdjustNode = kind === "terrain_adjust";
+  const isDemFetchNode = kind === "dem_fetch";
   const isIsoExtractNode = kind === "surface_iso_extract";
+  const isTilebrokerNode = kind === "tilebroker";
+  const isAoiNode = kind === "aoi";
+  const hasConfigTab =
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode;
+  const hasMappingTab = csvCapable;
+  const hasCrsTab = csvCapable;
 
   const initialUi = useMemo(() => getUiParams(node), [node]);
 
@@ -222,6 +255,41 @@ export function NodeInspector({
     () =>
       typeof initialUi.manual_shift_y === "number" ? String(initialUi.manual_shift_y) : "0"
   );
+  const [dmSourceKey, setDmSourceKey] = useState<string>(
+    () => (typeof initialUi.source_key === "string" ? initialUi.source_key : "")
+  );
+  const [dmSelectColumns, setDmSelectColumns] = useState<string>(
+    () =>
+      Array.isArray(initialUi.select_columns)
+        ? (initialUi.select_columns as unknown[])
+            .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+            .join(", ")
+        : ""
+  );
+  const [dmRenameMap, setDmRenameMap] = useState<string>(
+    () =>
+      initialUi.rename_map && typeof initialUi.rename_map === "object" && !Array.isArray(initialUi.rename_map)
+        ? JSON.stringify(initialUi.rename_map)
+        : "{}"
+  );
+  const [dmDeriveConstants, setDmDeriveConstants] = useState<string>(
+    () =>
+      initialUi.derive_constants && typeof initialUi.derive_constants === "object" && !Array.isArray(initialUi.derive_constants)
+        ? JSON.stringify(initialUi.derive_constants)
+        : "{}"
+  );
+  const [demFitMode, setDemFitMode] = useState<string>(
+    () => (typeof initialUi.fit_mode === "string" ? initialUi.fit_mode : "vertical_bias")
+  );
+  const [demFitMinPoints, setDemFitMinPoints] = useState<string>(
+    () => (typeof initialUi.fit_min_points === "number" ? String(initialUi.fit_min_points) : "3")
+  );
+  const [demLowDensityCells, setDemLowDensityCells] = useState<string>(
+    () => (typeof initialUi.low_density_cells === "number" ? String(initialUi.low_density_cells) : "8")
+  );
+  const [demAnchorCells, setDemAnchorCells] = useState<string>(
+    () => (typeof initialUi.anchor_cells === "number" ? String(initialUi.anchor_cells) : "0.75")
+  );
   const [isoMode, setIsoMode] = useState<string>(
     () => (typeof initialUi.mode === "string" ? initialUi.mode : "fixed_interval")
   );
@@ -237,6 +305,90 @@ export function NodeInspector({
   const [isoZScale, setIsoZScale] = useState<string>(
     () => (typeof initialUi.z_scale === "number" ? String(initialUi.z_scale) : "1")
   );
+  const [aoiMode, setAoiMode] = useState<string>(
+    () => (typeof initialUi.mode === "string" ? initialUi.mode : "inferred")
+  );
+  const [aoiMarginPct, setAoiMarginPct] = useState<string>(
+    () =>
+      typeof initialUi.margin_pct === "number" && Number.isFinite(initialUi.margin_pct)
+        ? String(initialUi.margin_pct)
+        : "25"
+  );
+  const [aoiBbox, setAoiBbox] = useState<string>(
+    () =>
+      Array.isArray(initialUi.bbox)
+        ? (initialUi.bbox as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .slice(0, 4)
+            .join(", ")
+        : ""
+  );
+  const [aoiLocked, setAoiLocked] = useState<boolean>(() => Boolean(initialUi.locked));
+  const [tbProviderCatalog, setTbProviderCatalog] = useState<string[]>(() => {
+    const configuredCatalog = Array.isArray(initialUi.provider_catalog)
+      ? (initialUi.provider_catalog as unknown[]).filter(
+          (x): x is string => typeof x === "string" && x.trim().length > 0
+        )
+      : [];
+    if (configuredCatalog.length) return configuredCatalog;
+    return DEFAULT_TILE_PROVIDER_CATALOG.map((p) => p.id);
+  });
+  const [tbProviderPrecedence, setTbProviderPrecedence] = useState<string[]>(() => {
+    const configured = Array.isArray(initialUi.provider_precedence)
+      ? (initialUi.provider_precedence as unknown[]).filter(
+          (x): x is string => typeof x === "string" && x.trim().length > 0
+        )
+      : [];
+    if (configured.length) return configured;
+    if (typeof initialUi.provider_id === "string" && initialUi.provider_id.trim().length > 0) {
+      return [initialUi.provider_id.trim()];
+    }
+    return ["esri_world_imagery"];
+  });
+  const [tbProviderToAdd, setTbProviderToAdd] = useState<string>("");
+  const [tbCustomTileset, setTbCustomTileset] = useState<string>(
+    () => (typeof initialUi.custom_tileset === "string" ? initialUi.custom_tileset : "")
+  );
+  const [tbCrsPreference, setTbCrsPreference] = useState<string>(
+    () =>
+      Array.isArray(initialUi.crs_preference)
+        ? (initialUi.crs_preference as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .join(", ")
+        : "3857, 4326"
+  );
+  const [tbResolutionLadder, setTbResolutionLadder] = useState<string>(
+    () =>
+      Array.isArray(initialUi.resolution_ladder_px)
+        ? (initialUi.resolution_ladder_px as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .join(", ")
+        : "1024, 768, 512"
+  );
+  const [tbRetryLimit, setTbRetryLimit] = useState<string>(
+    () => (typeof initialUi.retry_limit === "number" ? String(initialUi.retry_limit) : "2")
+  );
+  const [tbTimeoutMs, setTbTimeoutMs] = useState<string>(
+    () => (typeof initialUi.timeout_ms === "number" ? String(initialUi.timeout_ms) : "8000")
+  );
+  const [tbMaxCandidates, setTbMaxCandidates] = useState<string>(
+    () => (typeof initialUi.max_candidates === "number" ? String(initialUi.max_candidates) : "16")
+  );
+  const [tbCacheScope, setTbCacheScope] = useState<string>(
+    () => (typeof initialUi.cache_scope === "string" ? initialUi.cache_scope : "project")
+  );
+  const [tbCacheTtl, setTbCacheTtl] = useState<string>(
+    () => (typeof initialUi.cache_ttl_s === "number" ? String(initialUi.cache_ttl_s) : "604800")
+  );
+  const [tbAllowStale, setTbAllowStale] = useState<boolean>(
+    () => (typeof initialUi.allow_stale_on_error === "boolean" ? initialUi.allow_stale_on_error : true)
+  );
+  const [tbDebounceProfile, setTbDebounceProfile] = useState<string>(
+    () => (typeof initialUi.debounce_profile === "string" ? initialUi.debounce_profile : "free_default")
+  );
+  const [tbLastWarnings, setTbLastWarnings] = useState<string[]>([]);
+  const [tbAoiSourceUsed, setTbAoiSourceUsed] = useState<string>("");
+  const [tbEffectiveConfigText, setTbEffectiveConfigText] = useState<string>("");
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -337,11 +489,87 @@ export function NodeInspector({
     setTerrainShiftY(
       typeof u.manual_shift_y === "number" ? String(u.manual_shift_y) : "0"
     );
+    setDmSourceKey(typeof u.source_key === "string" ? u.source_key : "");
+    setDmSelectColumns(
+      Array.isArray(u.select_columns)
+        ? (u.select_columns as unknown[])
+            .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+            .join(", ")
+        : ""
+    );
+    setDmRenameMap(
+      u.rename_map && typeof u.rename_map === "object" && !Array.isArray(u.rename_map)
+        ? JSON.stringify(u.rename_map)
+        : "{}"
+    );
+    setDmDeriveConstants(
+      u.derive_constants &&
+        typeof u.derive_constants === "object" &&
+        !Array.isArray(u.derive_constants)
+        ? JSON.stringify(u.derive_constants)
+        : "{}"
+    );
+    setDemFitMode(typeof u.fit_mode === "string" ? u.fit_mode : "vertical_bias");
+    setDemFitMinPoints(typeof u.fit_min_points === "number" ? String(u.fit_min_points) : "3");
+    setDemLowDensityCells(
+      typeof u.low_density_cells === "number" ? String(u.low_density_cells) : "8"
+    );
+    setDemAnchorCells(typeof u.anchor_cells === "number" ? String(u.anchor_cells) : "0.75");
     setIsoMode(typeof u.mode === "string" ? u.mode : "fixed_interval");
     setIsoInterval(typeof u.interval === "number" ? String(u.interval) : "1");
     setIsoLevels(typeof u.levels === "number" ? String(u.levels) : "10");
     setIsoZBase(typeof u.z_base === "number" ? String(u.z_base) : "0");
     setIsoZScale(typeof u.z_scale === "number" ? String(u.z_scale) : "1");
+    setAoiMode(typeof u.mode === "string" ? u.mode : "inferred");
+    setAoiMarginPct(
+      typeof u.margin_pct === "number" && Number.isFinite(u.margin_pct) ? String(u.margin_pct) : "25"
+    );
+    setAoiBbox(
+      Array.isArray(u.bbox)
+        ? (u.bbox as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .slice(0, 4)
+            .join(", ")
+        : ""
+    );
+    setAoiLocked(typeof u.locked === "boolean" ? u.locked : false);
+    const nextCatalog = Array.isArray(u.provider_catalog)
+      ? (u.provider_catalog as unknown[])
+          .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      : [];
+    setTbProviderCatalog(
+      nextCatalog.length ? nextCatalog : DEFAULT_TILE_PROVIDER_CATALOG.map((p) => p.id)
+    );
+    const nextPrecedence = Array.isArray(u.provider_precedence)
+      ? (u.provider_precedence as unknown[])
+          .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+      : typeof u.provider_id === "string" && u.provider_id.trim().length > 0
+        ? [u.provider_id.trim()]
+        : ["esri_world_imagery"];
+    setTbProviderPrecedence(nextPrecedence);
+    setTbProviderToAdd("");
+    setTbCustomTileset(typeof u.custom_tileset === "string" ? u.custom_tileset : "");
+    setTbCrsPreference(
+      Array.isArray(u.crs_preference)
+        ? (u.crs_preference as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .join(", ")
+        : "3857, 4326"
+    );
+    setTbResolutionLadder(
+      Array.isArray(u.resolution_ladder_px)
+        ? (u.resolution_ladder_px as unknown[])
+            .filter((x): x is number => typeof x === "number" && Number.isFinite(x))
+            .join(", ")
+        : "1024, 768, 512"
+    );
+    setTbRetryLimit(typeof u.retry_limit === "number" ? String(u.retry_limit) : "2");
+    setTbTimeoutMs(typeof u.timeout_ms === "number" ? String(u.timeout_ms) : "8000");
+    setTbMaxCandidates(typeof u.max_candidates === "number" ? String(u.max_candidates) : "16");
+    setTbCacheScope(typeof u.cache_scope === "string" ? u.cache_scope : "project");
+    setTbCacheTtl(typeof u.cache_ttl_s === "number" ? String(u.cache_ttl_s) : "604800");
+    setTbAllowStale(typeof u.allow_stale_on_error === "boolean" ? u.allow_stale_on_error : true);
+    setTbDebounceProfile(typeof u.debounce_profile === "string" ? u.debounce_profile : "free_default");
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -397,6 +625,48 @@ export function NodeInspector({
     };
   }, [isHeatmapNode, nodeArtifacts]);
 
+  useEffect(() => {
+    if (!isTilebrokerNode) {
+      setTbLastWarnings([]);
+      setTbAoiSourceUsed("");
+      setTbEffectiveConfigText("");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const hit =
+          nodeArtifacts.find((a) => a.key.endsWith("/tilebroker_response.json")) ??
+          nodeArtifacts.find((a) => a.key.endsWith("/imagery_drape.json")) ??
+          null;
+        if (!hit) return;
+        const r = await fetch(api(hit.url));
+        if (!r.ok) return;
+        const raw = (await r.json()) as Record<string, unknown>;
+        if (cancelled) return;
+        const warnings = Array.isArray(raw.warnings)
+          ? raw.warnings.filter((w): w is string => typeof w === "string")
+          : [];
+        setTbLastWarnings(warnings);
+        setTbAoiSourceUsed(typeof raw.aoi_source_used === "string" ? raw.aoi_source_used : "");
+        const eff =
+          raw.effective_config && typeof raw.effective_config === "object"
+            ? JSON.stringify(raw.effective_config, null, 2)
+            : "";
+        setTbEffectiveConfigText(eff);
+      } catch {
+        if (!cancelled) {
+          setTbLastWarnings([]);
+          setTbAoiSourceUsed("");
+          setTbEffectiveConfigText("");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isTilebrokerNode, nodeArtifacts]);
+
   const onPickFile = useCallback(
     (file: File | null) => {
       if (!file) return;
@@ -438,11 +708,11 @@ export function NodeInspector({
       csv_rows: csvRows,
       csv_preview_rows: csvRows.slice(0, 8),
     };
+    const n = (v: string, fallback: number) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? x : fallback;
+    };
     if (isHeatmapNode) {
-      const n = (v: string, fallback: number) => {
-        const x = Number(v);
-        return Number.isFinite(x) ? x : fallback;
-      };
       ui.measure = heatMeasure.trim();
       ui.method = heatMethod;
       ui.scale = heatScale;
@@ -480,12 +750,73 @@ export function NodeInspector({
       ui.fit_mode = terrainFitMode;
       ui.manual_shift_x = n(terrainShiftX, 0);
       ui.manual_shift_y = n(terrainShiftY, 0);
+    } else if (isDataModelTransformNode) {
+      ui.source_key = dmSourceKey.trim() || undefined;
+      ui.select_columns = dmSelectColumns
+        .split(",")
+        .map((x) => x.trim())
+        .filter((x) => x.length > 0);
+      try {
+        const parsed = JSON.parse(dmRenameMap);
+        ui.rename_map =
+          parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        ui.rename_map = {};
+      }
+      try {
+        const parsed = JSON.parse(dmDeriveConstants);
+        ui.derive_constants =
+          parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        ui.derive_constants = {};
+      }
+    } else if (isDemFetchNode) {
+      ui.fit_mode = demFitMode;
+      ui.fit_min_points = Math.max(3, Math.trunc(n(demFitMinPoints, 3)));
+      ui.low_density_cells = Math.max(1, n(demLowDensityCells, 8));
+      ui.anchor_cells = Math.max(0.05, n(demAnchorCells, 0.75));
     } else if (isIsoExtractNode) {
       ui.mode = isoMode;
       ui.interval = Math.max(0.000001, n(isoInterval, 1));
       ui.levels = Math.max(2, Math.trunc(n(isoLevels, 10)));
       ui.z_base = n(isoZBase, 0);
       ui.z_scale = n(isoZScale, 1);
+    } else if (isTilebrokerNode) {
+      const parseNumList = (raw: string): number[] =>
+        raw
+          .split(",")
+          .map((x) => Number(x.trim()))
+          .filter((x) => Number.isFinite(x))
+          .map((x) => Math.trunc(x));
+      const catalog = tbProviderCatalog
+        .map((x) => x.trim())
+        .filter((x) => x.length > 0);
+      const providers = tbProviderPrecedence
+        .map((x) => x.trim())
+        .filter((x) => x.length > 0 && (catalog.includes(x) || x.length > 0));
+      const defaultProvider = providers[0] ?? catalog[0] ?? "esri_world_imagery";
+      ui.provider_catalog = catalog;
+      ui.provider_precedence = providers.length ? providers : [defaultProvider];
+      ui.provider_id = defaultProvider;
+      ui.custom_tileset = tbCustomTileset.trim() || undefined;
+      ui.crs_preference = parseNumList(tbCrsPreference);
+      ui.resolution_ladder_px = parseNumList(tbResolutionLadder);
+      ui.retry_limit = Math.max(0, Math.trunc(n(tbRetryLimit, 2)));
+      ui.timeout_ms = Math.max(500, Math.trunc(n(tbTimeoutMs, 8000)));
+      ui.max_candidates = Math.max(1, Math.trunc(n(tbMaxCandidates, 16)));
+      ui.cache_scope = tbCacheScope;
+      ui.cache_ttl_s = Math.max(60, Math.trunc(n(tbCacheTtl, 604800)));
+      ui.allow_stale_on_error = tbAllowStale;
+      ui.debounce_profile = tbDebounceProfile;
+    } else if (isAoiNode) {
+      ui.mode = aoiMode;
+      ui.margin_pct = Math.max(0, n(aoiMarginPct, 25));
+      const vals = aoiBbox
+        .split(",")
+        .map((x) => Number(x.trim()))
+        .filter((x) => Number.isFinite(x));
+      ui.bbox = vals.length >= 4 ? vals.slice(0, 4) : undefined;
+      ui.locked = aoiLocked;
     }
     if (kind === "collar_ingest") {
       ui.output_crs_mode = outputCrsMode;
@@ -537,12 +868,40 @@ export function NodeInspector({
     terrainFitMode,
     terrainShiftX,
     terrainShiftY,
+    isDataModelTransformNode,
+    dmSourceKey,
+    dmSelectColumns,
+    dmRenameMap,
+    dmDeriveConstants,
+    isDemFetchNode,
+    demFitMode,
+    demFitMinPoints,
+    demLowDensityCells,
+    demAnchorCells,
     isIsoExtractNode,
     isoMode,
     isoInterval,
     isoLevels,
     isoZBase,
     isoZScale,
+    isAoiNode,
+    aoiMode,
+    aoiMarginPct,
+    aoiBbox,
+    aoiLocked,
+    isTilebrokerNode,
+    tbProviderPrecedence,
+    tbProviderCatalog,
+    tbCustomTileset,
+    tbCrsPreference,
+    tbResolutionLadder,
+    tbRetryLimit,
+    tbTimeoutMs,
+    tbMaxCandidates,
+    tbCacheScope,
+    tbCacheTtl,
+    tbAllowStale,
+    tbDebounceProfile,
     graphId,
     activeBranchId,
     node.id,
@@ -638,27 +997,108 @@ export function NodeInspector({
     </label>
   );
 
+  const isProviderEnabled = useCallback(
+    (providerId: string) => tbProviderPrecedence.includes(providerId),
+    [tbProviderPrecedence]
+  );
+
+  const toggleProvider = useCallback((providerId: string, enabled: boolean) => {
+    setTbProviderPrecedence((prev) => {
+      if (enabled) {
+        if (prev.includes(providerId)) return prev;
+        return [...prev, providerId];
+      }
+      return prev.filter((p) => p !== providerId);
+    });
+  }, []);
+
+  const moveProvider = useCallback((providerId: string, direction: -1 | 1) => {
+    setTbProviderPrecedence((prev) => {
+      const idx = prev.indexOf(providerId);
+      if (idx < 0) return prev;
+      const nextIdx = idx + direction;
+      if (nextIdx < 0 || nextIdx >= prev.length) return prev;
+      const next = [...prev];
+      const [item] = next.splice(idx, 1);
+      next.splice(nextIdx, 0, item);
+      return next;
+    });
+  }, []);
+
+  const addProviderToCatalog = useCallback(() => {
+    const providerId = tbProviderToAdd.trim();
+    if (!providerId.length) return;
+    setTbProviderCatalog((prev) => {
+      if (prev.includes(providerId)) return prev;
+      return [...prev, providerId];
+    });
+    setTbProviderPrecedence((prev) => (prev.includes(providerId) ? prev : [...prev, providerId]));
+    setTbProviderToAdd("");
+  }, [tbProviderToAdd]);
+
+  const removeProviderFromCatalog = useCallback((providerId: string) => {
+    setTbProviderCatalog((prev) => prev.filter((p) => p !== providerId));
+    setTbProviderPrecedence((prev) => prev.filter((p) => p !== providerId));
+  }, []);
+
+  const configTabLabel = useMemo(
+    () =>
+      isHeatmapNode
+        ? "Heatmap"
+        : isTerrainAdjustNode
+          ? "Terrain fit"
+          : isDataModelTransformNode
+            ? "Data transform"
+          : isDemFetchNode
+            ? "DEM fit"
+          : isIsoExtractNode
+            ? "Iso extract"
+            : isTilebrokerNode
+              ? "Tilebroker"
+              : isAoiNode
+                ? "AOI"
+              : "Config",
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode]
+  );
+
   const tabs = useMemo(() => {
-    const base: Array<readonly [InspectorTab, string]> = [
-      ["summary", "Summary"],
-      ["diagnostics", "Run"],
-    ];
-    if (isHeatmapNode || isTerrainAdjustNode || isIsoExtractNode) {
-      base.push([
-        "config",
-        isHeatmapNode ? "Heatmap" : isTerrainAdjustNode ? "Terrain fit" : "Iso extract",
-      ]);
+    const base: Array<readonly [InspectorTab, string]> = [];
+    if (mode === "editor") {
+      base.push(["summary", "Summary"]);
     }
-    if (csvCapable) {
+    if (hasConfigTab) {
+      base.push(["config", configTabLabel]);
+    }
+    if (hasMappingTab) {
       base.push(["mapping", "Mapping"], ["crs", "CRS"]);
     }
-    base.push(["output", "Output"]);
+    base.push(["output", "Output"], ["diagnostics", "Run"]);
+    if (mode === "editor") {
+      base.push(["preview", "View"]);
+    }
     return base;
-  }, [csvCapable, isHeatmapNode, isTerrainAdjustNode, isIsoExtractNode]);
+  }, [configTabLabel, hasConfigTab, hasMappingTab, mode]);
+
+  const actions = useMemo(
+    () =>
+      resolveNodeInspectorCapabilities(node, {
+        csvCapable,
+        hasConfigTab,
+        hasMappingTab,
+        hasCrsTab,
+        nodeSpec,
+      }),
+    [csvCapable, hasConfigTab, hasCrsTab, hasMappingTab, node, nodeSpec]
+  );
+
+  const configIconActive = tabs.some(([k]) => k === tab) && tab === actions.configTab;
+  const previewIconActive =
+    tabs.some(([k]) => k === tab) &&
+    (tab === actions.previewTab || (actions.previewTab === "preview" && tab === "output"));
 
   useEffect(() => {
     if (tabs.some(([k]) => k === tab)) return;
-    onTab("summary");
+    onTab((tabs[0]?.[0] ?? "output") as InspectorTab);
   }, [onTab, tab, tabs]);
 
   return (
@@ -684,12 +1124,133 @@ export function NodeInspector({
           gap: 8,
         }}
       >
-        <span style={{ fontWeight: 600, fontSize: 13 }}>Node</span>
+        <span style={{ fontWeight: 600, fontSize: 13 }}>
+          {mode === "editor" ? `${kind.replace(/_/g, " ")} editor` : kind.replace(/_/g, " ")}
+        </span>
         <button type="button" onClick={onClose} style={btnGhost}>
           Close
         </button>
       </div>
-      <div role="tablist" style={{ display: "flex", borderBottom: "1px solid #30363d" }}>
+      <div
+        style={{
+          padding: "8px 10px",
+          borderBottom: "1px solid #30363d",
+          display: "flex",
+          gap: 6,
+          flexWrap: "wrap",
+          background: "#121821",
+        }}
+      >
+        {actions.canRun && (
+          <button
+            type="button"
+            style={actionIconBtn}
+            title={runBusy ? "Queuing node run" : "Run node"}
+            aria-label="Run node"
+            onClick={() => void runThisNode()}
+            disabled={runBusy}
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden>
+              <polygon points="3,2 12,7 3,12" fill="currentColor" />
+            </svg>
+          </button>
+        )}
+        {actions.canLock && (
+          <button
+            type="button"
+            style={actionIconBtn}
+            title={lockLabel(node)}
+            aria-label={lockLabel(node)}
+            onClick={() =>
+              void setRecomputePolicy(node.policy.recompute === "manual" ? "auto" : "manual")
+            }
+            disabled={policyBusy}
+          >
+            {node.policy.recompute === "manual" ? (
+              <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden>
+                <rect x="3" y="6" width="8" height="6" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                <path d="M4.5 6V4.8a2.5 2.5 0 0 1 5 0V6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden>
+                <rect x="3" y="6" width="8" height="6" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                <path d="M8.5 4.3a2.4 2.4 0 0 0-4 .5V6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              </svg>
+            )}
+          </button>
+        )}
+        {actions.canEdit && (
+          <button
+            type="button"
+            style={actionIconBtn}
+            title="Edit node"
+            aria-label="Edit node"
+            onClick={() => {
+              if (onOpenEditor) onOpenEditor();
+              else
+                onTab(
+                  tabs.some(([k]) => k === actions.editTab)
+                    ? actions.editTab
+                    : (tabs[0]?.[0] ?? "output")
+                );
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden>
+              <path d="m10.8 2.2 1 1a1.2 1.2 0 0 1 0 1.7l-6.6 6.6-2.5.7.7-2.5 6.6-6.6a1.2 1.2 0 0 1 1.7 0Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            </svg>
+          </button>
+        )}
+        {actions.canConfig && (
+          <button
+            type="button"
+            style={{ ...actionIconBtn, ...(configIconActive ? actionIconActive : null) }}
+            title="Config panel"
+            aria-label="Config panel"
+            onClick={() =>
+              onTab(
+                tabs.some(([k]) => k === actions.configTab)
+                  ? actions.configTab
+                  : (tabs[0]?.[0] ?? "output")
+              )
+            }
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden>
+              <path d="M7 2.2a4.8 4.8 0 1 0 0 9.6 4.8 4.8 0 0 0 0-9.6Zm0 2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z" fill="currentColor" />
+            </svg>
+          </button>
+        )}
+        {actions.canPreview && (
+          <button
+            type="button"
+            style={{
+              ...actionIconBtn,
+              ...(previewIconActive ? actionIconPrimary : null),
+              ...(previewIconActive ? actionIconActive : null),
+            }}
+            title="Preview node output"
+            aria-label="Preview node output"
+            onClick={() =>
+              onTab(
+                tabs.some(([k]) => k === actions.previewTab) ? actions.previewTab : "output"
+              )
+            }
+          >
+            <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden>
+              <path d="M1.4 7s2.2-3.6 5.6-3.6S12.6 7 12.6 7s-2.2 3.6-5.6 3.6S1.4 7 1.4 7Z" fill="none" stroke="currentColor" strokeWidth="1.2" />
+              <circle cx="7" cy="7" r="1.8" fill="currentColor" />
+            </svg>
+          </button>
+        )}
+      </div>
+      <div
+        role="tablist"
+        style={{
+          display: "flex",
+          borderBottom: "1px solid #30363d",
+          overflowX: "auto",
+          background: "#111821",
+        }}
+      >
         {tabs.map(([k, lab]) => (
           <button
             key={k}
@@ -699,6 +1260,7 @@ export function NodeInspector({
             onClick={() => onTab(k)}
             style={{
               flex: 1,
+              minWidth: 76,
               padding: "8px 6px",
               fontSize: 12,
               border: "none",
@@ -738,10 +1300,30 @@ export function NodeInspector({
                 (collars or other ground-truth XYZ), with optional XY shift.
               </p>
             )}
+            {isDataModelTransformNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>Data transform</strong> to normalize tabular payloads across sources
+                (select, rename, and derive constants) before downstream modeling.
+              </p>
+            )}
+            {isDemFetchNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>DEM fit</strong> to fetch public elevation and optionally fit it to
+                upstream XYZ control points (collars, meshes, trajectories, samples), while
+                emitting a confidence overlay contract.
+              </p>
+            )}
             {isIsoExtractNode && (
               <p style={{ opacity: 0.75 }}>
                 Use <strong>Iso extract</strong> to generate contour lines from a surface grid,
                 including 3D Z projection controls for scene overlays.
+              </p>
+            )}
+            {isTilebrokerNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>Tilebroker</strong> to set provider precedence, CRS/size strategy, and
+                cache policy. Outputs include effective config + warnings for drift-resistant
+                rendering.
               </p>
             )}
             <p style={{ opacity: 0.7, marginTop: 14, fontSize: 11 }}>
@@ -1261,6 +1843,108 @@ export function NodeInspector({
           </div>
         )}
 
+        {tab === "config" && isDataModelTransformNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Normalize incoming tabular artifacts for downstream joins/modeling.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Source key (optional)</span>
+                <input
+                  type="text"
+                  value={dmSourceKey}
+                  onChange={(e) => setDmSourceKey(e.target.value)}
+                  placeholder="rows, assays, collars, ..."
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Select columns (comma separated)</span>
+                <input
+                  type="text"
+                  value={dmSelectColumns}
+                  onChange={(e) => setDmSelectColumns(e.target.value)}
+                  placeholder="hole_id, x, y, z, au_ppm"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Rename map (JSON object)</span>
+                <textarea
+                  value={dmRenameMap}
+                  onChange={(e) => setDmRenameMap(e.target.value)}
+                  rows={3}
+                  style={{ ...sel, fontFamily: "monospace", resize: "vertical" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Derive constants (JSON object)</span>
+                <textarea
+                  value={dmDeriveConstants}
+                  onChange={(e) => setDmDeriveConstants(e.target.value)}
+                  rows={3}
+                  style={{ ...sel, fontFamily: "monospace", resize: "vertical" }}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isDemFetchNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Fetch public DEM then optionally fit to any upstream XYZ controls (collars, points,
+              trajectory vertices, mesh vertices) inside AOI.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Fit mode</span>
+                <select value={demFitMode} onChange={(e) => setDemFitMode(e.target.value)} style={sel}>
+                  <option value="none">No fit (provider only)</option>
+                  <option value="vertical_bias">Vertical bias only</option>
+                  <option value="affine_xy_z">Affine XY + Z tilt</option>
+                </select>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Min control points</span>
+                  <input
+                    type="number"
+                    value={demFitMinPoints}
+                    onChange={(e) => setDemFitMinPoints(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Anchor radius (cells)</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={demAnchorCells}
+                    onChange={(e) => setDemAnchorCells(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <label style={lab}>
+                <span style={labSpan}>Low-density threshold (cells)</span>
+                <input
+                  type="number"
+                  step="0.5"
+                  value={demLowDensityCells}
+                  onChange={(e) => setDemLowDensityCells(e.target.value)}
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+            </div>
+            <p style={{ opacity: 0.65, fontSize: 11, marginTop: 10 }}>
+              Outputs include <code>confidence_grid</code> classes: raw provider, fitted provider,
+              interpolation, ground-truth anchor, and low-density/missing.
+            </p>
+          </div>
+        )}
+
         {tab === "config" && isIsoExtractNode && (
           <div>
             <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
@@ -1316,6 +2000,269 @@ export function NodeInspector({
                 </label>
               </div>
             </div>
+          </div>
+        )}
+
+        {tab === "config" && isAoiNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Define area-of-interest from connected georef inputs, with optional manual bbox
+              override.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Mode</span>
+                <select value={aoiMode} onChange={(e) => setAoiMode(e.target.value)} style={sel}>
+                  <option value="inferred">inferred (from inputs)</option>
+                  <option value="manual">manual bbox preferred</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Margin (%) around inferred extent</span>
+                <input
+                  type="number"
+                  value={aoiMarginPct}
+                  onChange={(e) => setAoiMarginPct(e.target.value)}
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Manual bbox (xmin, ymin, xmax, ymax)</span>
+                <input
+                  type="text"
+                  value={aoiBbox}
+                  onChange={(e) => setAoiBbox(e.target.value)}
+                  placeholder="5.9036, 6.0660, 5.9093, 6.0679"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={aoiLocked}
+                  onChange={(e) => setAoiLocked(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>Lock AOI extent</span>
+              </label>
+            </div>
+            <p style={{ opacity: 0.65, fontSize: 11, marginTop: 10 }}>
+              Tip: wire `collars`, `trajectory`, `assay_points`, or `terrain` bounds into AOI
+              inputs for automatic extent tracking.
+            </p>
+          </div>
+        )}
+
+        {tab === "config" && isTilebrokerNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Configure tilebroker provider precedence, fetch strategy, and cache policy.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Provider order (checked providers are used in sequence)</span>
+                <div
+                  style={{
+                    border: "1px solid #30363d",
+                    borderRadius: 8,
+                    background: "#0f1419",
+                    overflow: "hidden",
+                  }}
+                >
+                  {tbProviderCatalog.map((providerId, rowIndex) => {
+                    const idx = tbProviderPrecedence.indexOf(providerId);
+                    const enabled = idx >= 0;
+                    return (
+                      <div
+                        key={providerId}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "min-content 1fr min-content min-content min-content",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "7px 8px",
+                          borderTop: rowIndex > 0 ? "1px solid #21262d" : "none",
+                          opacity: enabled ? 1 : 0.78,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={enabled}
+                          onChange={(e) => toggleProvider(providerId, e.target.checked)}
+                        />
+                        <div style={{ lineHeight: 1.3 }}>
+                          <div>{providerLabel(providerId)}</div>
+                          <div style={{ opacity: 0.6, fontSize: 10 }}>{providerId}</div>
+                        </div>
+                        <button
+                          type="button"
+                          style={miniIconBtn}
+                          title="Move up"
+                          onClick={() => moveProvider(providerId, -1)}
+                          disabled={!enabled || idx <= 0}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          style={miniIconBtn}
+                          title="Move down"
+                          onClick={() => moveProvider(providerId, 1)}
+                          disabled={!enabled || idx < 0 || idx >= tbProviderPrecedence.length - 1}
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          style={miniIconBtn}
+                          title="Remove from catalog"
+                          onClick={() => removeProviderFromCatalog(providerId)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Add provider id to catalog</span>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6 }}>
+                  <input
+                    type="text"
+                    value={tbProviderToAdd}
+                    onChange={(e) => setTbProviderToAdd(e.target.value)}
+                    placeholder="my_provider_id"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                  <button type="button" onClick={addProviderToCatalog} style={btnGhost}>
+                    Add
+                  </button>
+                </div>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Custom tileset URL template (optional; overrides provider)</span>
+                <input
+                  type="text"
+                  value={tbCustomTileset}
+                  onChange={(e) => setTbCustomTileset(e.target.value)}
+                  placeholder="https://.../{z}/{x}/{y}.png"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>CRS preference order</span>
+                <input
+                  type="text"
+                  value={tbCrsPreference}
+                  onChange={(e) => setTbCrsPreference(e.target.value)}
+                  placeholder="3857, 4326"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Resolution ladder px</span>
+                <input
+                  type="text"
+                  value={tbResolutionLadder}
+                  onChange={(e) => setTbResolutionLadder(e.target.value)}
+                  placeholder="1024, 768, 512"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Retry limit</span>
+                  <input
+                    type="number"
+                    value={tbRetryLimit}
+                    onChange={(e) => setTbRetryLimit(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Timeout ms</span>
+                  <input
+                    type="number"
+                    value={tbTimeoutMs}
+                    onChange={(e) => setTbTimeoutMs(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Max candidates</span>
+                  <input
+                    type="number"
+                    value={tbMaxCandidates}
+                    onChange={(e) => setTbMaxCandidates(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Cache scope</span>
+                  <select value={tbCacheScope} onChange={(e) => setTbCacheScope(e.target.value)} style={sel}>
+                    <option value="project">project</option>
+                    <option value="workspace">workspace</option>
+                    <option value="session">session</option>
+                  </select>
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Cache TTL (seconds)</span>
+                  <input
+                    type="number"
+                    value={tbCacheTtl}
+                    onChange={(e) => setTbCacheTtl(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <label style={lab}>
+                <span style={labSpan}>Debounce profile</span>
+                <select
+                  value={tbDebounceProfile}
+                  onChange={(e) => setTbDebounceProfile(e.target.value)}
+                  style={sel}
+                >
+                  <option value="free_default">free_default</option>
+                  <option value="paid_conservative">paid_conservative</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={tbAllowStale}
+                  onChange={(e) => setTbAllowStale(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>Allow stale cache on fetch error</span>
+              </label>
+            </div>
+            {(tbAoiSourceUsed || tbLastWarnings.length > 0 || tbEffectiveConfigText) && (
+              <div
+                style={{
+                  marginTop: 12,
+                  border: "1px solid #30363d",
+                  borderRadius: 8,
+                  padding: 10,
+                  background: "#0f1419",
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 11, marginBottom: 6 }}>Last Run Diagnostics</div>
+                {tbAoiSourceUsed && (
+                  <div style={{ fontSize: 11, opacity: 0.85, marginBottom: 4 }}>
+                    AOI source used: <code>{tbAoiSourceUsed}</code>
+                  </div>
+                )}
+                {tbLastWarnings.length > 0 && (
+                  <div style={{ fontSize: 11, color: "#d29922", marginBottom: 6 }}>
+                    Warnings: {tbLastWarnings.join(", ")}
+                  </div>
+                )}
+                {tbEffectiveConfigText && (
+                  <pre style={{ ...preBox, marginTop: 0 }}>{tbEffectiveConfigText}</pre>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -1393,7 +2340,7 @@ export function NodeInspector({
           </div>
         )}
 
-        {tab === "output" && (
+        {(tab === "preview" || tab === "output") && (
           <NodeOutputPanel
             graphId={graphId}
             nodeId={node.id}
@@ -1463,4 +2410,47 @@ const btnPrimary: CSSProperties = {
   cursor: "pointer",
   fontSize: 13,
   fontWeight: 600,
+};
+const preBox: CSSProperties = {
+  margin: "8px 0 0",
+  background: "#0b1220",
+  border: "1px solid #30363d",
+  borderRadius: 6,
+  padding: 8,
+  fontSize: 10,
+  lineHeight: 1.4,
+  color: "#c9d1d9",
+  overflow: "auto",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+};
+const actionIconBtn: CSSProperties = {
+  background: "#0f1419",
+  border: "1px solid #30363d",
+  color: "#c9d1d9",
+  borderRadius: 7,
+  width: 32,
+  height: 32,
+  display: "grid",
+  placeItems: "center",
+  cursor: "pointer",
+};
+const actionIconPrimary: CSSProperties = {
+  background: "#1f6feb",
+  borderColor: "#1f6feb",
+  color: "#ffffff",
+};
+const actionIconActive: CSSProperties = {
+  boxShadow: "0 0 0 1px rgba(88,166,255,0.45) inset",
+};
+const miniIconBtn: CSSProperties = {
+  background: "#161b22",
+  border: "1px solid #30363d",
+  color: "#8b949e",
+  borderRadius: 6,
+  minWidth: 22,
+  height: 22,
+  cursor: "pointer",
+  fontSize: 11,
+  lineHeight: 1,
 };

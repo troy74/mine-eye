@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/project.settings.v1.schema.json",
+  "title": "project.settings.v1",
+  "type": "object",
+  "required": ["schema_id", "schema_version"],
+  "properties": {
+    "schema_id": { "const": "project.settings.v1" },
+    "schema_version": { "const": 1 },
+    "imagery": { "type": "object" },
+    "tilebroker": { "type": "object" },
+    "aoi": { "type": "object" },
+    "cache": { "type": "object" },
+    "cost": { "type": "object" }
+  }
+}

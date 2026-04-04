@@ -9,6 +9,10 @@ use sqlx::postgres::PgPoolOptions;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Local dev convenience: load .env.dev first, then .env if present.
+    let _ = dotenvy::from_filename(".env.dev");
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -39,7 +43,12 @@ async fn main() -> anyhow::Result<()> {
         };
         match jobs.claim_next().await {
             Ok(Some((row_id, mut envelope))) => {
-                tracing::info!(job_id = %envelope.job_id, node = %envelope.node_id, "running job");
+                tracing::info!(
+                    job_id = %envelope.job_id,
+                    run_id = %envelope.run_id,
+                    node = %envelope.node_id,
+                    "running job"
+                );
                 let _ = store
                     .update_node_execution(
                         envelope.node_id,

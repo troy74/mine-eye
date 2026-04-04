@@ -4,6 +4,7 @@ use mine_eye_graph::{hash_node_config, propagate_stale, GraphSnapshot};
 use mine_eye_types::{
     ArtifactRef, JobEnvelope, PropagationPolicy, RecomputePolicy,
 };
+use sha2::{Digest, Sha256};
 
 use uuid::Uuid;
 
@@ -34,6 +35,7 @@ impl Scheduler {
         dirty_nodes: &HashSet<Uuid>,
         run_roots: &HashSet<Uuid>,
         input_artifacts: &HashMap<Uuid, Vec<ArtifactRef>>,
+        run_id: Uuid,
         project_crs: Option<mine_eye_types::CrsRecord>,
         include_manual: bool,
     ) -> SchedulePlan {
@@ -64,6 +66,7 @@ impl Scheduler {
 
             let config_hash = hash_node_config(&node.config);
             let inputs = input_artifacts.get(&node_id).cloned().unwrap_or_default();
+            let input_fingerprint = hash_input_artifacts(&inputs);
             let node_ui = node
                 .config
                 .params
@@ -73,10 +76,12 @@ impl Scheduler {
             let job = JobEnvelope {
                 protocol_version: self.protocol_version,
                 job_id: Uuid::new_v4(),
+                run_id,
                 graph_id: snapshot.graph_id,
                 node_id,
                 node_kind: node.config.kind.clone(),
                 config_hash,
+                input_fingerprint,
                 project_crs: project_crs.clone(),
                 input_artifact_refs: inputs,
                 input_payload: None,
@@ -93,6 +98,30 @@ impl Scheduler {
             skipped_manual,
         }
     }
+}
+
+fn hash_input_artifacts(inputs: &[ArtifactRef]) -> String {
+    let mut rows: Vec<(String, String, String)> = inputs
+        .iter()
+        .map(|a| {
+            (
+                a.key.clone(),
+                a.content_hash.clone(),
+                a.media_type.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    rows.sort_unstable_by(|a, b| a.cmp(b));
+    let mut h = Sha256::new();
+    for (k, c, m) in rows {
+        h.update(k.as_bytes());
+        h.update([0x1f]);
+        h.update(c.as_bytes());
+        h.update([0x1f]);
+        h.update(m.as_bytes());
+        h.update([0x1e]);
+    }
+    hex::encode(h.finalize())
 }
 
 /// Expand dirty set using propagation policy (eager marks all downstream; debounce same BFS).

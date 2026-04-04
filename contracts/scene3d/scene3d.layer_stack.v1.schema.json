@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/scene3d.layer_stack.v1.schema.json",
+  "title": "scene3d.layer_stack.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "layers"
+  ],
+  "properties": {
+    "schema_id": { "const": "scene3d.layer_stack.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "layer_id",
+          "kind",
+          "source_artifact_ref",
+          "priority",
+          "visibility_default"
+        ],
+        "properties": {
+          "layer_id": { "type": "string" },
+          "kind": {
+            "enum": [
+              "imagery_drape",
+              "terrain",
+              "contours",
+              "drill_segments",
+              "assay_points",
+              "mesh",
+              "volume"
+            ]
+          },
+          "source_artifact_ref": { "type": "object" },
+          "style_defaults": { "type": "object" },
+          "ui_capabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "priority": { "type": "integer" },
+          "visibility_default": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

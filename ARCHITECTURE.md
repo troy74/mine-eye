@@ -51,6 +51,26 @@ Responsibilities:
 - node execution semantics and envelope behavior
 - shared contracts that every client depends on indirectly via API
 
+Node implementation structure (current):
+
+- `crates/mine-eye-nodes/src/kinds/mod.rs` is the taxonomy entrypoint.
+- Domain modules own public node execution APIs:
+  - `acquisition`
+  - `data_model`
+  - `spatial`
+  - `surface`
+  - `imagery_raster`
+  - `trajectory`
+  - `drillhole`
+  - `scene_contract`
+  - `visualization`
+  - `stubs`
+- `crates/mine-eye-nodes/src/kinds/runtime.rs` is internal helper/runtime logic and is not a domain API surface.
+
+Rule:
+
+- New node behavior should be implemented in the relevant domain module, not by adding new public `run_*` entrypoints in `runtime.rs`.
+
 Design constraints:
 
 - avoid “web-only” contract interpretation
@@ -251,6 +271,7 @@ Near-term evolution priorities:
 - move from mixed polling to more reactive event delivery where practical
 - strengthen port compatibility matrix and semantic contract validation
 - continue registry-driven node metadata and backend-owned viewer contracts
+- keep `kinds` domain modules small and focused; avoid re-accumulating a single monolithic node implementation file
 - introduce next-gen 3D renderer path (threejs/WGSL) as a new node/presentation contract without breaking current Cesium path
 
 ## 14. Non-Goals (Current Phase)

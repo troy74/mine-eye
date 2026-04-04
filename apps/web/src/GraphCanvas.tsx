@@ -49,7 +49,7 @@ import {
 } from "./portTypes";
 import { incomingPortIds, outgoingPortIds } from "./nodePortLayout";
 import { isAcquisitionCsvKind } from "./pipelineSchema";
-import { nodeRole, portSemantic } from "./nodeRegistry";
+import { nodeRole, nodeSpec, portSemantic } from "./nodeRegistry";
 
 const CAT_ACCENT: Record<string, string> = {
   input: "#238636",
@@ -98,7 +98,12 @@ function computeExecTone(
   const ex = node.execution;
   const cache = node.cache;
   const viewerVirtualOk =
-    (kind === "plan_view_2d" || kind === "plan_view_3d" || kind === "cesium_display_node") &&
+    (
+      kind === "plan_view_2d" ||
+      kind === "plan_view_3d" ||
+      kind === "cesium_display_node" ||
+      kind === "threejs_display_node"
+    ) &&
     hasUpstreamArtifact;
   const isFailed =
     !viewerVirtualOk && (ex === "failed" || (node.last_error ?? "").trim().length > 0);
@@ -616,6 +621,7 @@ type Props = {
   artifacts?: ArtifactEntry[];
   onPipelineQueued?: () => void;
   onOpenNodeViewer?: (nodeId: string) => void;
+  onOpenNodeEditor?: (nodeId: string) => void;
   onGraphChanged?: () => void;
 };
 
@@ -634,6 +640,7 @@ function FlowWorkspace({
   workspaceUsedEpsgs,
   onPipelineQueued,
   onOpenNodeViewer,
+  onOpenNodeEditor,
   onGraphChanged,
 }: {
   graphId: string;
@@ -644,6 +651,7 @@ function FlowWorkspace({
   workspaceUsedEpsgs: number[];
   onPipelineQueued?: () => void;
   onOpenNodeViewer?: (nodeId: string) => void;
+  onOpenNodeEditor?: (nodeId: string) => void;
   onGraphChanged?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PipelineData>>([]);
@@ -849,6 +857,28 @@ function FlowWorkspace({
     [apiNodes, selectedId]
   );
   const addNodePresets = getAddNodePresets();
+  const groupedAddNodePresets = useMemo(() => {
+    const byGroup = new Map<string, Map<string, AddNodePreset[]>>();
+    for (const p of addNodePresets) {
+      const group = p.frameworkGroup || "other";
+      const submenu = p.submenu || "general";
+      if (!byGroup.has(group)) byGroup.set(group, new Map());
+      const bySub = byGroup.get(group)!;
+      if (!bySub.has(submenu)) bySub.set(submenu, []);
+      bySub.get(submenu)!.push(p);
+    }
+    return Array.from(byGroup.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([group, subMap]) => ({
+        group,
+        submenus: Array.from(subMap.entries())
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([submenu, items]) => ({
+            submenu,
+            items: items.slice().sort((a, b) => a.label.localeCompare(b.label)),
+          })),
+      }));
+  }, [addNodePresets]);
 
   const artifactsForSelected = useMemo(
     () =>
@@ -980,21 +1010,36 @@ function FlowWorkspace({
                   >
                     Add node
                   </div>
-                  <div style={{ maxHeight: 280, overflowY: "auto" }}>
-                    {addNodePresets.map((p) => (
-                      <button
-                        key={p.kind}
-                        type="button"
-                        onClick={() =>
-                          void addNodeFromPreset(p, {
-                            x: ctxMenu.flowX,
-                            y: ctxMenu.flowY,
-                          })
-                        }
-                        style={menuBtn}
-                      >
-                        {p.label}
-                      </button>
+                  <div style={{ maxHeight: 320, overflowY: "auto" }}>
+                    {groupedAddNodePresets.map((g) => (
+                      <div key={g.group} style={{ marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, opacity: 0.72, textTransform: "uppercase", margin: "4px 4px" }}>
+                          {g.group.replace(/_/g, " ")}
+                        </div>
+                        {g.submenus.map((s) => (
+                          <div key={`${g.group}:${s.submenu}`} style={{ marginBottom: 4 }}>
+                            <div style={{ fontSize: 10, opacity: 0.6, margin: "2px 8px" }}>
+                              {s.submenu.replace(/_/g, " ")}
+                            </div>
+                            {s.items.map((p) => (
+                              <button
+                                key={p.kind}
+                                type="button"
+                                onClick={() =>
+                                  void addNodeFromPreset(p, {
+                                    x: ctxMenu.flowX,
+                                    y: ctxMenu.flowY,
+                                  })
+                                }
+                                style={menuBtn}
+                                title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
+                              >
+                                {p.label}
+                              </button>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
                     ))}
                   </div>
                 </>
@@ -1032,11 +1077,13 @@ function FlowWorkspace({
             graphId={graphId}
             activeBranchId={activeBranchId}
             node={selectedNode}
+            nodeSpec={nodeSpec(selectedNode.config.kind)}
             projectEpsg={workspaceEpsg}
             workspaceUsedEpsgs={workspaceUsedEpsgs}
             tab={inspectorTab}
             onTab={setInspectorTab}
             onClose={() => setSelectedId(null)}
+            onOpenEditor={() => onOpenNodeEditor?.(selectedNode.id)}
             onNodeUpdated={onNodeUpdated}
             nodeArtifacts={artifactsForSelected}
             onPipelineQueued={onPipelineQueued}
@@ -1056,6 +1103,7 @@ export function GraphCanvas({
   artifacts = [],
   onPipelineQueued,
   onOpenNodeViewer,
+  onOpenNodeEditor,
   onGraphChanged,
 }: Props) {
   if (!graphId) {
@@ -1094,6 +1142,7 @@ export function GraphCanvas({
         artifacts={artifacts}
         onPipelineQueued={onPipelineQueued}
         onOpenNodeViewer={onOpenNodeViewer}
+        onOpenNodeEditor={onOpenNodeEditor}
         onGraphChanged={onGraphChanged}
       />
     </ReactFlowProvider>

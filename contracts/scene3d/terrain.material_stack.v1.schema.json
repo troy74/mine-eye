@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/terrain.material_stack.v1.schema.json",
+  "title": "terrain.material_stack.v1",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "layers"],
+  "properties": {
+    "schema_id": { "const": "terrain.material_stack.v1" },
+    "schema_version": { "const": 1 },
+    "terrain_ref": { "type": ["object", "null"] },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "priority"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "priority": { "type": "number" },
+          "opacity": { "type": "number" },
+          "blend": { "type": "string" },
+          "time_tag": { "type": ["string", "null"] },
+          "depth_domain": { "type": "string" },
+          "source_ref": { "type": "object" }
+        }
+      }
+    },
+    "render_mode": { "type": "string" },
+    "fallback_mode": { "type": "string" }
+  }
+}

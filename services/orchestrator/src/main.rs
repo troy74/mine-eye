@@ -39,6 +39,10 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Local dev convenience: load .env.dev first, then .env if present.
+    let _ = dotenvy::from_filename(".env.dev");
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -167,6 +171,7 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "survey_ingest"
                     | "surface_sample_ingest"
                     | "assay_ingest"
+                    | "data_model_transform"
                     | "assay_heatmap"
                     | "terrain_adjust"
                     | "surface_iso_extract"
@@ -175,7 +180,7 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
             );
             let edit_tab = match kind {
                 "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" => "mapping",
-                "assay_heatmap" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
+                "data_model_transform" | "assay_heatmap" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
                 _ => "summary",
             };
             obj.insert(
@@ -1428,6 +1433,7 @@ async fn run_graph(
             &dirty,
             &root_set,
             &input_map,
+            Uuid::new_v4(),
             project_crs.clone(),
             body.include_manual.unwrap_or(false),
         );
@@ -1752,6 +1758,7 @@ async fn demo_seed(
             &dirty,
             &root_set,
             &input_map,
+            Uuid::new_v4(),
             Some(CrsRecord::epsg(4326)),
             false,
         );

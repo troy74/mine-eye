@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/scene3d.imagery_drape.v1.schema.json",
+  "title": "scene3d.imagery_drape.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "provider_id",
+    "provider_label",
+    "attribution",
+    "source_crs",
+    "target_crs",
+    "texture_mode",
+    "bounds",
+    "z_mode",
+    "fingerprint"
+  ],
+  "properties": {
+    "schema_id": { "const": "scene3d.imagery_drape.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "provider_id": { "type": "string" },
+    "provider_label": { "type": "string" },
+    "attribution": { "type": "string" },
+    "license_terms_url": { "type": "string" },
+    "source_crs": { "type": "object" },
+    "target_crs": { "type": "object" },
+    "coverage_polygon": { "type": "object" },
+    "texture_mode": { "enum": ["single_image", "tile_template"] },
+    "image_url": { "type": "string" },
+    "tile_url_template": { "type": "string" },
+    "bounds": {
+      "type": "object",
+      "required": ["xmin", "xmax", "ymin", "ymax"],
+      "properties": {
+        "xmin": { "type": "number" },
+        "xmax": { "type": "number" },
+        "ymin": { "type": "number" },
+        "ymax": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "resolution_m_est": { "type": "number" },
+    "pixel_size": {
+      "type": "object",
+      "properties": {
+        "width": { "type": "integer" },
+        "height": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "z_mode": { "enum": ["drape_on_surface", "flat"] },
+    "quality_flags": { "type": "array", "items": { "type": "string" } },
+    "fallback_chain_used": { "type": "array", "items": { "type": "string" } },
+    "fingerprint": { "type": "string" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

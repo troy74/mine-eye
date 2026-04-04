@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/scene3d.tilebroker_request.v1.schema.json",
+  "title": "scene3d.tilebroker_request.v1",
+  "type": "object",
+  "required": ["schema_id", "schema_version"],
+  "properties": {
+    "schema_id": { "const": "scene3d.tilebroker_request.v1" },
+    "schema_version": { "const": 1 },
+    "inherit_from_project": { "type": "boolean" },
+    "overrides": { "type": "object" },
+    "provider": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "style": { "type": "string" },
+        "auth_ref": { "type": ["string", "null"] }
+      }
+    },
+    "aoi": {
+      "type": "object",
+      "required": ["bounds"],
+      "properties": {
+        "crs": { "type": "object" },
+        "bounds": {
+          "type": "object",
+          "required": ["xmin", "xmax", "ymin", "ymax"],
+          "properties": {
+            "xmin": { "type": "number" },
+            "xmax": { "type": "number" },
+            "ymin": { "type": "number" },
+            "ymax": { "type": "number" }
+          }
+        }
+      }
+    },
+    "render_intent": { "type": "object" },
+    "policy": { "type": "object" },
+    "cache": { "type": "object" },
+    "aoi_source": { "type": "string" },
+    "aoi_fallback": { "type": "string" }
+  }
+}

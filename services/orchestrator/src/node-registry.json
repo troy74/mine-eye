@@ -6,43 +6,135 @@
       "category": "input",
       "label": "Collar ingest",
       "role": "Acquisition · collars (hole collars, CRS)",
-      "menu": { "enabled": true, "order": 10 },
+      "menu": {
+        "enabled": true,
+        "order": 10
+      },
       "ports": {
         "inputs": [],
-        "outputs": [{ "id": "collars", "label": "Collars", "semantic": "point_set" }]
-      }
+        "outputs": [
+          {
+            "id": "collars",
+            "label": "Collars",
+            "semantic": "point_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "collars",
+      "plugin_source": "core"
     },
     {
       "kind": "survey_ingest",
       "category": "input",
       "label": "Survey ingest",
       "role": "Acquisition · survey stations (az/dip/depth)",
-      "menu": { "enabled": true, "order": 20 },
+      "menu": {
+        "enabled": true,
+        "order": 20
+      },
       "ports": {
         "inputs": [],
-        "outputs": [{ "id": "surveys", "label": "Surveys", "semantic": "trajectory_set" }]
-      }
+        "outputs": [
+          {
+            "id": "surveys",
+            "label": "Surveys",
+            "semantic": "trajectory_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "surveys",
+      "plugin_source": "core"
     },
     {
       "kind": "surface_sample_ingest",
       "category": "input",
       "label": "Surface sample ingest",
       "role": "Acquisition · surface samples (XY/Z + optional measures)",
-      "menu": { "enabled": true, "order": 25 },
+      "menu": {
+        "enabled": true,
+        "order": 25
+      },
       "ports": {
         "inputs": [],
-        "outputs": [{ "id": "surface_samples", "label": "Surface samples", "semantic": "point_set" }]
-      }
+        "outputs": [
+          {
+            "id": "surface_samples",
+            "label": "Surface samples",
+            "semantic": "point_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "surface_samples",
+      "plugin_source": "core"
     },
     {
       "kind": "assay_ingest",
       "category": "input",
       "label": "Assay ingest",
       "role": "Acquisition · interval assays / geochem",
-      "menu": { "enabled": true, "order": 30 },
+      "menu": {
+        "enabled": true,
+        "order": 30
+      },
       "ports": {
         "inputs": [],
-        "outputs": [{ "id": "assays", "label": "Assays", "semantic": "interval_set" }]
+        "outputs": [
+          {
+            "id": "assays",
+            "label": "Assays",
+            "semantic": "interval_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "assays",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "data_model_transform",
+      "category": "transform",
+      "label": "Data model transform",
+      "role": "Transform · mutate/derive/select/rename tabular datasets",
+      "framework_group": "data_model",
+      "submenu": "tabular_transform",
+      "plugin_source": "core",
+      "menu": {
+        "enabled": true,
+        "order": 35
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "in",
+            "label": "Input table",
+            "semantic": "table"
+          },
+          {
+            "id": "in_2",
+            "label": "Input table 2",
+            "semantic": "table"
+          },
+          {
+            "id": "in_3",
+            "label": "Input point set",
+            "semantic": "point_set"
+          },
+          {
+            "id": "in_4",
+            "label": "Input intervals",
+            "semantic": "interval_set"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "out",
+            "label": "Transformed table",
+            "semantic": "table"
+          }
+        ]
       }
     },
     {
@@ -50,133 +142,686 @@
       "category": "transform",
       "label": "Desurvey trajectory",
       "role": "Transform · collars + surveys → 3D trajectory segments",
-      "menu": { "enabled": true, "order": 40 },
+      "menu": {
+        "enabled": true,
+        "order": 40
+      },
       "ports": {
         "inputs": [
-          { "id": "collars_in", "label": "Collars", "semantic": "point_set" },
-          { "id": "surveys_in", "label": "Surveys", "semantic": "trajectory_set" }
+          {
+            "id": "collars_in",
+            "label": "Collars",
+            "semantic": "point_set"
+          },
+          {
+            "id": "surveys_in",
+            "label": "Surveys",
+            "semantic": "trajectory_set"
+          }
         ],
-        "outputs": [{ "id": "trajectory", "label": "Trajectory", "semantic": "trajectory_set" }]
-      }
+        "outputs": [
+          {
+            "id": "trajectory",
+            "label": "Trajectory",
+            "semantic": "trajectory_set"
+          }
+        ]
+      },
+      "framework_group": "trajectory",
+      "submenu": "desurvey",
+      "plugin_source": "core"
     },
     {
       "kind": "drillhole_model",
       "category": "model",
       "label": "Drillhole model",
       "role": "Model · trajectory + assays → cylinder mesh + assay points",
-      "menu": { "enabled": true, "order": 50 },
+      "menu": {
+        "enabled": true,
+        "order": 50
+      },
       "ports": {
         "inputs": [
-          { "id": "trajectory_in", "label": "Trajectory", "semantic": "trajectory_set" },
-          { "id": "assays_in", "label": "Assays", "semantic": "interval_set" }
+          {
+            "id": "trajectory_in",
+            "label": "Trajectory",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "assays_in",
+            "label": "Assays",
+            "semantic": "interval_set"
+          }
         ],
         "outputs": [
-          { "id": "drillhole_meshes", "label": "Drillhole meshes", "semantic": "mesh" },
-          { "id": "assay_points", "label": "Assay points", "semantic": "table" }
+          {
+            "id": "drillhole_meshes",
+            "label": "Drillhole meshes",
+            "semantic": "mesh"
+          },
+          {
+            "id": "assay_points",
+            "label": "Assay points",
+            "semantic": "table"
+          }
         ]
-      }
+      },
+      "framework_group": "mesh_solid",
+      "submenu": "drillhole",
+      "plugin_source": "core"
     },
     {
       "kind": "assay_heatmap",
       "category": "transform",
       "label": "Assay heatmap",
       "role": "Transform · point measures → heatmap-ready surface",
-      "menu": { "enabled": true, "order": 80 },
+      "menu": {
+        "enabled": true,
+        "order": 80
+      },
       "ports": {
-        "inputs": [{ "id": "in", "label": "Input points", "semantic": "table" }],
-        "outputs": [{ "id": "heatmap", "label": "Heatmap", "semantic": "surface" }]
-      }
+        "inputs": [
+          {
+            "id": "in",
+            "label": "Input points",
+            "semantic": "table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "heatmap",
+            "label": "Heatmap",
+            "semantic": "surface"
+          }
+        ]
+      },
+      "framework_group": "analytics",
+      "submenu": "surface_interpolation",
+      "plugin_source": "core"
     },
     {
       "kind": "surface_iso_extract",
       "category": "transform",
       "label": "Surface iso extract",
       "role": "Transform · surface grid → contour/iso artifacts",
-      "menu": { "enabled": true, "order": 82 },
+      "menu": {
+        "enabled": true,
+        "order": 82
+      },
       "ports": {
-        "inputs": [{ "id": "surface_in", "label": "Surface", "semantic": "surface" }],
+        "inputs": [
+          {
+            "id": "surface_in",
+            "label": "Surface",
+            "semantic": "surface"
+          }
+        ],
         "outputs": [
-          { "id": "contours", "label": "Contours", "semantic": "table" },
-          { "id": "meta", "label": "Iso meta", "semantic": "table" }
+          {
+            "id": "contours",
+            "label": "Contours",
+            "semantic": "table"
+          },
+          {
+            "id": "meta",
+            "label": "Iso meta",
+            "semantic": "table"
+          }
         ]
-      }
+      },
+      "framework_group": "surface",
+      "submenu": "contours",
+      "plugin_source": "core"
     },
     {
       "kind": "terrain_adjust",
       "category": "transform",
       "label": "Terrain adjust",
       "role": "Transform · DEM fit/nudge with control points",
-      "menu": { "enabled": true, "order": 84 },
+      "menu": {
+        "enabled": true,
+        "order": 84
+      },
       "ports": {
         "inputs": [
-          { "id": "terrain_in", "label": "Terrain", "semantic": "surface" },
-          { "id": "control_points", "label": "Control points", "semantic": "point_set" }
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          },
+          {
+            "id": "control_points",
+            "label": "Control points",
+            "semantic": "point_set"
+          }
         ],
-        "outputs": [{ "id": "terrain_out", "label": "Adjusted terrain", "semantic": "surface" }]
-      }
+        "outputs": [
+          {
+            "id": "terrain_out",
+            "label": "Adjusted terrain",
+            "semantic": "surface"
+          }
+        ]
+      },
+      "framework_group": "surface",
+      "submenu": "fitting",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "xyz_to_surface",
+      "category": "transform",
+      "label": "XYZ to surface",
+      "role": "Transform · interpolate XYZ points/segments into surface grid",
+      "menu": {
+        "enabled": true,
+        "order": 85
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "xyz_in",
+            "label": "XYZ input",
+            "semantic": "table"
+          },
+          {
+            "id": "xyz_in_2",
+            "label": "XYZ input 2",
+            "semantic": "point_set"
+          },
+          {
+            "id": "xyz_in_3",
+            "label": "XYZ input 3",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "xyz_in_4",
+            "label": "XYZ input 4",
+            "semantic": "mesh"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "surface_out",
+            "label": "Surface",
+            "semantic": "surface"
+          }
+        ]
+      },
+      "framework_group": "surface",
+      "submenu": "interpolation",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "dem_fetch",
+      "category": "transform",
+      "label": "DEM fetch",
+      "role": "Transform · public DEM sample fetch for inferred AOI",
+      "menu": {
+        "enabled": true,
+        "order": 86
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "aoi_in",
+            "label": "AOI/seed geometry",
+            "semantic": "table"
+          },
+          {
+            "id": "aoi_in_2",
+            "label": "AOI/seed geometry 2",
+            "semantic": "point_set"
+          },
+          {
+            "id": "aoi_in_3",
+            "label": "AOI/seed geometry 3",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "aoi_in_4",
+            "label": "AOI/seed geometry 4",
+            "semantic": "mesh"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "terrain_out",
+            "label": "Terrain DEM",
+            "semantic": "surface"
+          }
+        ]
+      },
+      "framework_group": "surface",
+      "submenu": "dem",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "aoi",
+      "category": "transform",
+      "label": "AOI",
+      "role": "Transform · canonical area-of-interest (manual or inferred)",
+      "menu": {
+        "enabled": true,
+        "order": 87
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "seed_in",
+            "label": "Seed geometry",
+            "semantic": "table"
+          },
+          {
+            "id": "seed_in_2",
+            "label": "Seed geometry 2",
+            "semantic": "point_set"
+          },
+          {
+            "id": "seed_in_3",
+            "label": "Seed geometry 3",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "seed_in_4",
+            "label": "Seed geometry 4",
+            "semantic": "mesh"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "aoi_out",
+            "label": "AOI contract",
+            "semantic": "table"
+          }
+        ]
+      },
+      "framework_group": "spatial",
+      "submenu": "aoi",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "imagery_provider",
+      "category": "transform",
+      "label": "Imagery provider",
+      "role": "Transform · provider-resolved imagery drape contract",
+      "menu": {
+        "enabled": true,
+        "order": 88
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "aoi_in",
+            "label": "AOI",
+            "semantic": "table"
+          },
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "imagery_out",
+            "label": "Imagery drape contract",
+            "semantic": "table"
+          }
+        ]
+      },
+      "framework_group": "imagery_raster",
+      "submenu": "provider",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "tilebroker",
+      "category": "transform",
+      "label": "Tilebroker",
+      "role": "Transform · normalized imagery contract + provider strategy/caching metadata",
+      "menu": {
+        "enabled": true,
+        "order": 88
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "aoi_in",
+            "label": "AOI",
+            "semantic": "table"
+          },
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "imagery_out",
+            "label": "Tilebroker imagery contract",
+            "semantic": "table"
+          }
+        ]
+      },
+      "framework_group": "imagery_raster",
+      "submenu": "broker",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "scene3d_layer_stack",
+      "category": "transform",
+      "label": "3D layer stack",
+      "role": "Transform · compose ordered scene3d layers + UI capabilities",
+      "menu": {
+        "enabled": true,
+        "order": 89
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "imagery_in",
+            "label": "Imagery drape",
+            "semantic": "table"
+          },
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          },
+          {
+            "id": "traces_in",
+            "label": "Traces",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "segments_in",
+            "label": "Segments",
+            "semantic": "mesh"
+          },
+          {
+            "id": "samples_in",
+            "label": "Samples",
+            "semantic": "table"
+          },
+          {
+            "id": "contours_in",
+            "label": "Contours",
+            "semantic": "table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "layer_stack_out",
+            "label": "Scene3D layer stack",
+            "semantic": "table"
+          }
+        ]
+      },
+      "framework_group": "scene_contract",
+      "submenu": "layer_stack",
+      "plugin_source": "core"
     },
     {
       "kind": "plan_view_2d",
       "category": "visualisation",
       "label": "2D plan map",
       "role": "Visualisation · 2D plan map (inputs only; Esri basemap)",
-      "menu": { "enabled": true, "order": 90 },
-      "policy": { "recompute": "manual", "propagation": "hold", "quality": "preview" },
+      "menu": {
+        "enabled": true,
+        "order": 90
+      },
+      "policy": {
+        "recompute": "manual",
+        "propagation": "hold",
+        "quality": "preview"
+      },
       "ports": {
         "inputs": [
-          { "id": "in", "label": "In 1", "semantic": "table" },
-          { "id": "in_2", "label": "In 2", "semantic": "table" },
-          { "id": "in_3", "label": "In 3", "semantic": "table" },
-          { "id": "in_4", "label": "In 4", "semantic": "table" },
-          { "id": "in_5", "label": "In 5", "semantic": "table" },
-          { "id": "in_6", "label": "In 6", "semantic": "table" },
-          { "id": "in_7", "label": "In 7", "semantic": "table" },
-          { "id": "in_8", "label": "In 8", "semantic": "table" }
+          {
+            "id": "in",
+            "label": "In 1",
+            "semantic": "table"
+          },
+          {
+            "id": "in_2",
+            "label": "In 2",
+            "semantic": "table"
+          },
+          {
+            "id": "in_3",
+            "label": "In 3",
+            "semantic": "table"
+          },
+          {
+            "id": "in_4",
+            "label": "In 4",
+            "semantic": "table"
+          },
+          {
+            "id": "in_5",
+            "label": "In 5",
+            "semantic": "table"
+          },
+          {
+            "id": "in_6",
+            "label": "In 6",
+            "semantic": "table"
+          },
+          {
+            "id": "in_7",
+            "label": "In 7",
+            "semantic": "table"
+          },
+          {
+            "id": "in_8",
+            "label": "In 8",
+            "semantic": "table"
+          }
         ],
         "outputs": []
-      }
+      },
+      "framework_group": "visualization",
+      "submenu": "2d",
+      "plugin_source": "core"
     },
     {
       "kind": "plan_view_3d",
       "category": "visualisation",
       "label": "Cesium display (legacy)",
       "role": "Visualisation · Cesium terrain + drill traces/segments",
-      "menu": { "enabled": true, "order": 95 },
-      "policy": { "recompute": "manual", "propagation": "hold", "quality": "preview" },
+      "menu": {
+        "enabled": true,
+        "order": 95
+      },
+      "policy": {
+        "recompute": "manual",
+        "propagation": "hold",
+        "quality": "preview"
+      },
       "ports": {
         "inputs": [
-          { "id": "terrain_in", "label": "Terrain", "semantic": "surface" },
-          { "id": "traces_in", "label": "Traces", "semantic": "trajectory_set" },
-          { "id": "segments_in", "label": "Segments", "semantic": "mesh" },
-          { "id": "samples_in", "label": "Samples", "semantic": "table" },
-          { "id": "in_5", "label": "In 5", "semantic": "table" },
-          { "id": "in_6", "label": "In 6", "semantic": "table" },
-          { "id": "in_7", "label": "In 7", "semantic": "table" },
-          { "id": "in_8", "label": "In 8", "semantic": "table" }
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          },
+          {
+            "id": "traces_in",
+            "label": "Traces",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "segments_in",
+            "label": "Segments",
+            "semantic": "mesh"
+          },
+          {
+            "id": "samples_in",
+            "label": "Samples",
+            "semantic": "table"
+          },
+          {
+            "id": "in_5",
+            "label": "In 5",
+            "semantic": "table"
+          },
+          {
+            "id": "in_6",
+            "label": "In 6",
+            "semantic": "table"
+          },
+          {
+            "id": "in_7",
+            "label": "In 7",
+            "semantic": "table"
+          },
+          {
+            "id": "in_8",
+            "label": "In 8",
+            "semantic": "table"
+          }
         ],
         "outputs": []
-      }
+      },
+      "framework_group": "visualization",
+      "submenu": "3d_legacy",
+      "plugin_source": "core"
     },
     {
       "kind": "cesium_display_node",
       "category": "visualisation",
       "label": "Cesium display node",
       "role": "Visualisation · Cesium terrain + drill traces/segments",
-      "menu": { "enabled": true, "order": 96 },
-      "policy": { "recompute": "manual", "propagation": "hold", "quality": "preview" },
+      "menu": {
+        "enabled": true,
+        "order": 96
+      },
+      "policy": {
+        "recompute": "manual",
+        "propagation": "hold",
+        "quality": "preview"
+      },
       "ports": {
         "inputs": [
-          { "id": "terrain_in", "label": "Terrain", "semantic": "surface" },
-          { "id": "traces_in", "label": "Traces", "semantic": "trajectory_set" },
-          { "id": "segments_in", "label": "Segments", "semantic": "mesh" },
-          { "id": "samples_in", "label": "Samples", "semantic": "table" },
-          { "id": "in_5", "label": "In 5", "semantic": "table" },
-          { "id": "in_6", "label": "In 6", "semantic": "table" },
-          { "id": "in_7", "label": "In 7", "semantic": "table" },
-          { "id": "in_8", "label": "In 8", "semantic": "table" }
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          },
+          {
+            "id": "traces_in",
+            "label": "Traces",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "segments_in",
+            "label": "Segments",
+            "semantic": "mesh"
+          },
+          {
+            "id": "samples_in",
+            "label": "Samples",
+            "semantic": "table"
+          },
+          {
+            "id": "in_5",
+            "label": "In 5",
+            "semantic": "table"
+          },
+          {
+            "id": "in_6",
+            "label": "In 6",
+            "semantic": "table"
+          },
+          {
+            "id": "in_7",
+            "label": "In 7",
+            "semantic": "table"
+          },
+          {
+            "id": "in_8",
+            "label": "In 8",
+            "semantic": "table"
+          }
         ],
         "outputs": []
-      }
+      },
+      "framework_group": "visualization",
+      "submenu": "3d_legacy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "threejs_display_node",
+      "category": "visualisation",
+      "label": "Three.js display node",
+      "role": "Visualisation · JS scene (contract-first layers + drape + drill data)",
+      "menu": {
+        "enabled": true,
+        "order": 97
+      },
+      "policy": {
+        "recompute": "manual",
+        "propagation": "hold",
+        "quality": "preview"
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "layer_stack_in",
+            "label": "Layer stack",
+            "semantic": "table"
+          },
+          {
+            "id": "imagery_in",
+            "label": "Imagery drape",
+            "semantic": "table"
+          },
+          {
+            "id": "terrain_in",
+            "label": "Terrain",
+            "semantic": "surface"
+          },
+          {
+            "id": "traces_in",
+            "label": "Traces",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "segments_in",
+            "label": "Segments",
+            "semantic": "mesh"
+          },
+          {
+            "id": "samples_in",
+            "label": "Samples",
+            "semantic": "table"
+          },
+          {
+            "id": "in_5",
+            "label": "In 5",
+            "semantic": "table"
+          },
+          {
+            "id": "in_6",
+            "label": "In 6",
+            "semantic": "table"
+          },
+          {
+            "id": "in_7",
+            "label": "In 7",
+            "semantic": "table"
+          },
+          {
+            "id": "in_8",
+            "label": "In 8",
+            "semantic": "table"
+          }
+        ],
+        "outputs": []
+      },
+      "framework_group": "visualization",
+      "submenu": "3d",
+      "plugin_source": "core"
     }
   ]
 }

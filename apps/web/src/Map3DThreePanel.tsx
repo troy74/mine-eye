@@ -217,7 +217,7 @@ const DEFAULT_UI: SceneUiState = {
   balloonOpacity: 0.42,
   layerOrder: [...LAYER_KEYS],
   layerOrderMode: "contract",
-  invertDepth: true,
+  invertDepth: false,
   panelCollapsed: false,
 };
 
@@ -296,6 +296,7 @@ function parseSceneJson(
 
   const lowerKey = manifestLayer?.artifact_key.toLowerCase() ?? "";
   const sourceKind = manifestLayer?.source_node_kind ?? "";
+  const sourceKindLower = sourceKind.toLowerCase();
   const displayPointer =
     manifestLayer?.presentation &&
     typeof manifestLayer.presentation === "object" &&
@@ -303,6 +304,15 @@ function parseSceneJson(
     typeof manifestLayer.presentation.display_pointer === "string"
       ? manifestLayer.presentation.display_pointer.toLowerCase()
       : "";
+  const treatSurfaceGridAsTerrain =
+    displayPointer === "scene3d.terrain" ||
+    sourceKindLower === "dem_fetch" ||
+    sourceKindLower === "terrain_adjust" ||
+    sourceKindLower === "dem_integrate" ||
+    sourceKindLower === "xyz_to_surface" ||
+    lowerKey.endsWith("/dem_surface.json") ||
+    lowerKey.endsWith("/terrain_adjusted.json") ||
+    lowerKey.endsWith("/xyz_surface.json");
   let artifactEpsg: number | undefined;
 
   if (!Array.isArray(root) && root && typeof root === "object") {
@@ -440,7 +450,7 @@ function parseSceneJson(
     }
 
     const sg = obj.surface_grid;
-    if (sg && typeof sg === "object" && !Array.isArray(sg)) {
+    if (treatSurfaceGridAsTerrain && sg && typeof sg === "object" && !Array.isArray(sg)) {
       const sgo = sg as Record<string, unknown>;
       const nx = n(sgo.nx);
       const ny = n(sgo.ny);
@@ -920,6 +930,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   });
   const savedRef = useRef<string>("");
   const saveTidRef = useRef<number | null>(null);
+  const autoRefitSigRef = useRef<string>("");
 
   const inputLinks = useMemo(() => (viewerNodeId ? upstreamSourcesForViewer(edges, viewerNodeId) : []), [edges, viewerNodeId]);
 
@@ -1020,7 +1031,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             uiRaw.layer_order_mode === "override" || uiRaw.layer_order_mode === "contract"
               ? (uiRaw.layer_order_mode as "contract" | "override")
               : DEFAULT_UI.layerOrderMode,
-          invertDepth: uiRaw.invert_depth !== false,
+          // Use a new explicit key so legacy persisted `invert_depth=true`
+          // cannot silently keep scenes upside-down after orientation fixes.
+          invertDepth: uiRaw.invert_vertical_axis === true,
           panelCollapsed: uiRaw.panel_collapsed === true,
         });
       } catch {
@@ -1073,6 +1086,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             balloon_opacity: ui.balloonOpacity,
             layer_order: ui.layerOrder,
             layer_order_mode: ui.layerOrderMode,
+            // Persist both during transition; loader reads invert_vertical_axis only.
+            invert_vertical_axis: ui.invertDepth,
             invert_depth: ui.invertDepth,
             panel_collapsed: ui.panelCollapsed,
           },
@@ -1574,6 +1589,35 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     return geom;
   }, [sceneData.terrainGrid, sceneScale, toLocal]);
 
+  const autoRefitSig = useMemo(() => {
+    const g = sceneData.terrainGrid;
+    return JSON.stringify({
+      viewerNodeId,
+      totalArtifacts: sceneData.totalArtifacts,
+      traces: sceneData.traces.length,
+      segments: sceneData.drillSegments.length,
+      points: sceneData.assayPoints.length + sceneData.terrainPoints.length,
+      grid: g
+        ? {
+            nx: g.nx,
+            ny: g.ny,
+            xmin: g.xmin,
+            xmax: g.xmax,
+            ymin: g.ymin,
+            ymax: g.ymax,
+          }
+        : null,
+    });
+  }, [sceneData, viewerNodeId]);
+
+  useEffect(() => {
+    if (!active) return;
+    if (sceneData.totalArtifacts <= 0) return;
+    if (autoRefitSigRef.current === autoRefitSig) return;
+    autoRefitSigRef.current = autoRefitSig;
+    setCameraResetToken((v) => v + 1);
+  }, [active, autoRefitSig, sceneData.totalArtifacts]);
+
   const orderedLayerIds = useMemo(() => {
     const userOrder = normalizeLayerOrder(ui.layerOrder);
     if (ui.layerOrderMode !== "contract") return userOrder;
@@ -1651,7 +1695,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             <Canvas
               key={`${viewerNodeId ?? "none"}:${cameraResetToken}`}
               camera={{
-                position: [sceneScale * 0.95, sceneScale * 0.75, sceneScale * 0.95],
+                position: [sceneScale * 0.85, sceneScale * 1.15, sceneScale * 1.05],
                 fov: 50,
                 near: 0.01,
                 far: Math.max(5000, sceneScale * 500),
@@ -1865,6 +1909,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
               <TrackballControls
                 makeDefault
+                target={[0, 0, 0]}
                 rotateSpeed={2.4}
                 zoomSpeed={1.4}
                 panSpeed={1.0}
@@ -2227,7 +2272,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 <details open>
                   <summary style={{ fontWeight: 700, cursor: "pointer" }}>View</summary>
                   <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-                    <label><input type="checkbox" checked={ui.invertDepth} onChange={(e) => setUi((p) => ({ ...p, invertDepth: e.target.checked }))} /> Depth positive down</label>
+                    <div style={{ opacity: 0.7, fontSize: 11 }}>
+                      Axis map: X=easting, Y=elevation (up), Z=northing.
+                    </div>
+                    <label><input type="checkbox" checked={ui.invertDepth} onChange={(e) => setUi((p) => ({ ...p, invertDepth: e.target.checked }))} /> Invert vertical axis (depth-down view)</label>
                     <label>Radius scale<input type="range" min={0.25} max={4} step={0.05} value={ui.radiusScale} onChange={(e) => setUi((p) => ({ ...p, radiusScale: Number(e.target.value) || 1 }))} /></label>
                   </div>
                 </details>
