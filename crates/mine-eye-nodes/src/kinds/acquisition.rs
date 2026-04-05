@@ -57,7 +57,7 @@ pub async fn run_drillhole_ingest(
     })
 }
 
-/// Single primitive: collars only ([V1SPEC §2](V1SPEC.md) — Collar).
+/// Single primitive: collars only.
 pub async fn run_collar_ingest(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
@@ -107,7 +107,7 @@ pub async fn run_collar_ingest(
     })
 }
 
-/// Single primitive: survey stations only ([V1SPEC §2](V1SPEC.md) — SurveyStation).
+/// Single primitive: survey stations only.
 pub async fn run_survey_ingest(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
@@ -137,7 +137,7 @@ pub async fn run_survey_ingest(
     })
 }
 
-/// Single primitive: interval assays only ([V1SPEC §2](V1SPEC.md) — IntervalSample).
+/// Single primitive: interval assays only.
 pub async fn run_assay_ingest(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,

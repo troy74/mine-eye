@@ -7,6 +7,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Background,
   Controls,
@@ -427,14 +428,18 @@ const menuBtn: CSSProperties = {
   display: "block",
   width: "100%",
   textAlign: "left",
-  padding: "8px 10px",
-  marginBottom: 4,
+  padding: "5px 8px",
+  marginBottom: 2,
   border: "none",
   borderRadius: 6,
   background: "#21262d",
   color: "#e6edf3",
   cursor: "pointer",
-  fontSize: 12,
+  fontSize: 10.5,
+  lineHeight: 1.15,
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
 };
 
 const nodeTypes = { pipeline: PipelineNode };
@@ -659,6 +664,15 @@ function FlowWorkspace({
   const [apiNodes, setApiNodes] = useState<ApiNode[]>([]);
   const [workspaceEpsg, setWorkspaceEpsg] = useState(projectEpsg);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu>({ kind: "none" });
+  const [menuClassKey, setMenuClassKey] = useState<string | null>(null);
+  const [menuGroupKey, setMenuGroupKey] = useState<string | null>(null);
+  const [menuClassTop, setMenuClassTop] = useState<number | null>(null);
+  const [menuGroupTop, setMenuGroupTop] = useState<number | null>(null);
+  const ctxMenuRef = useRef<HTMLDivElement | null>(null);
+  const [viewport, setViewport] = useState<{ w: number; h: number }>(() => ({
+    w: typeof window !== "undefined" ? window.innerWidth : 1280,
+    h: typeof window !== "undefined" ? window.innerHeight : 800,
+  }));
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("summary");
@@ -743,15 +757,37 @@ function FlowWorkspace({
 
   useEffect(() => {
     if (ctxMenu.kind === "none") return;
-    const close = () => setCtxMenu({ kind: "none" });
-    const tid = window.setTimeout(() => {
-      window.addEventListener("click", close);
-    }, 0);
+    const closeOnOutsidePointer = (ev: PointerEvent) => {
+      const root = ctxMenuRef.current;
+      const t = ev.target as Node | null;
+      if (!root || !t) return;
+      if (root.contains(t)) return;
+      setCtxMenu({ kind: "none" });
+    };
+    window.addEventListener("pointerdown", closeOnOutsidePointer, true);
     return () => {
-      window.clearTimeout(tid);
-      window.removeEventListener("click", close);
+      window.removeEventListener("pointerdown", closeOnOutsidePointer, true);
     };
   }, [ctxMenu]);
+
+  useEffect(() => {
+    if (ctxMenu.kind === "none") {
+      setMenuClassKey(null);
+      setMenuGroupKey(null);
+      setMenuClassTop(null);
+      setMenuGroupTop(null);
+    }
+  }, [ctxMenu.kind]);
+
+  useEffect(() => {
+    const onResize = () =>
+      setViewport({
+        w: window.innerWidth,
+        h: window.innerHeight,
+      });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const persistDeleteNodes = useCallback(
     async (ids: string[]) => {
@@ -792,9 +828,25 @@ function FlowWorkspace({
     async (c: Connection) => {
       if (!c.source || !c.target || c.source === c.target) return;
       const from_port = c.sourceHandle ?? "out";
-      const to_port = c.targetHandle ?? "in";
+      let to_port = c.targetHandle ?? "in";
       const sourceNode = apiNodes.find((n) => n.id === c.source);
       const sourceKind = sourceNode?.config.kind ?? "";
+      const targetNode = apiNodes.find((n) => n.id === c.target);
+      const targetKind = targetNode?.config.kind ?? "";
+      if (targetKind === "threejs_display_node") {
+        const m = /^in_(\d+)$/.exec(to_port);
+        if (m) {
+          const used = new Set<number>();
+          for (const e of edges) {
+            if (e.to !== c.target) continue;
+            const mm = /^in_(\d+)$/.exec(String(e.targetHandle ?? "in"));
+            if (mm) used.add(Math.max(1, Number(mm[1])));
+          }
+          let idx = 1;
+          while (used.has(idx)) idx += 1;
+          to_port = `in_${idx}`;
+        }
+      }
       const semantic_type = portSemantic(sourceKind, "out", from_port) ?? "table";
       try {
         await createGraphEdge(graphId, {
@@ -833,6 +885,23 @@ function FlowWorkspace({
       }
     },
     [activeBranchId, graphId, load, onGraphChanged]
+  );
+
+  const focusNode = useCallback(
+    (nodeId: string) => {
+      setSelectedId(nodeId);
+      setInspectorTab("summary");
+      try {
+        rfRef.current?.fitView({
+          padding: 0.2,
+          nodes: [{ id: nodeId }],
+          duration: 180,
+        });
+      } catch {
+        // ignore focus animation failures
+      }
+    },
+    []
   );
 
   useEffect(() => {
@@ -879,6 +948,117 @@ function FlowWorkspace({
           })),
       }));
   }, [addNodePresets]);
+  const classFlyoutMenus = useMemo(() => {
+    return groupedAddNodePresets.map((g) => {
+      const directItems: AddNodePreset[] = [];
+      const groupedItems: Array<{
+        key: string;
+        label: string;
+        items: AddNodePreset[];
+      }> = [];
+      for (const s of g.submenus) {
+        if (s.items.length <= 1) {
+          const only = s.items[0];
+          if (only) directItems.push(only);
+          continue;
+        }
+        groupedItems.push({
+          key: s.submenu,
+          label: s.submenu.replace(/_/g, " "),
+          items: s.items,
+        });
+      }
+      directItems.sort((a, b) => a.label.localeCompare(b.label));
+      groupedItems.sort((a, b) => a.label.localeCompare(b.label));
+      return {
+        key: g.group,
+        label: g.group.replace(/_/g, " "),
+        directItems,
+        groupedItems,
+      };
+    });
+  }, [groupedAddNodePresets]);
+  const menuLayout = useMemo(() => {
+    const rootW = 170;
+    const preferredLevel2W = 188;
+    const preferredLevel3W = 196;
+    const pad = 16;
+    const maxRootH = Math.max(180, Math.min(400, viewport.h - 40));
+    const baseLeft =
+      ctxMenu.kind === "none"
+        ? 0
+        : Math.max(pad, Math.min(ctxMenu.x, viewport.w - rootW - pad));
+    const baseTop =
+      ctxMenu.kind === "none"
+        ? 0
+        : Math.max(pad, Math.min(ctxMenu.y, viewport.h - maxRootH - pad));
+
+    const spaceRight = Math.max(0, viewport.w - (baseLeft + rootW) - pad);
+    const spaceLeft = Math.max(0, baseLeft - pad);
+    const level2Right = spaceRight >= 170 || spaceRight >= spaceLeft;
+    const level2W = Math.max(
+      120,
+      Math.min(preferredLevel2W, level2Right ? spaceRight : spaceLeft)
+    );
+    const level2Left = level2Right
+      ? baseLeft + rootW - 2
+      : baseLeft - level2W + 2;
+
+    const canThirdRight = level2Right
+      ? spaceRight - level2W >= 170
+      : spaceRight >= 170;
+    const level3Right = level2Right && canThirdRight;
+    const level3BaseSpace = level3Right ? spaceRight - level2W : spaceLeft;
+    const level3W = Math.max(120, Math.min(preferredLevel3W, level3BaseSpace));
+    const level3Left = level3Right
+      ? level2Left + level2W - 2
+      : level2Left - level3W + 2;
+
+    return {
+      rootW,
+      level2W,
+      level3W,
+      maxRootH,
+      baseLeft,
+      baseTop,
+      level2Left,
+      level3Left,
+      pad,
+      flyTop: baseTop,
+      flyMaxH: Math.max(160, Math.min(340, viewport.h - 30)),
+    };
+  }, [ctxMenu, viewport.h, viewport.w]);
+
+  const activeClassMenu = useMemo(
+    () => classFlyoutMenus.find((c) => c.key === menuClassKey) ?? null,
+    [classFlyoutMenus, menuClassKey]
+  );
+  const activeGroupMenu = useMemo(() => {
+    if (!activeClassMenu) return null;
+    return (
+      activeClassMenu.groupedItems.find(
+        (g) => `${activeClassMenu.key}:${g.key}` === menuGroupKey
+      ) ?? null
+    );
+  }, [activeClassMenu, menuGroupKey]);
+  const level2Top = useMemo(() => {
+    const desired = menuClassTop ?? menuLayout.flyTop;
+    const minTop = menuLayout.pad;
+    const maxTop = Math.max(
+      minTop,
+      viewport.h - menuLayout.flyMaxH - menuLayout.pad
+    );
+    return Math.max(minTop, Math.min(desired, maxTop));
+  }, [menuClassTop, menuLayout.flyTop, menuLayout.flyMaxH, menuLayout.pad, viewport.h]);
+  const level3Top = useMemo(() => {
+    const desired = menuGroupTop ?? level2Top;
+    const minTop = menuLayout.pad;
+    const maxTop = Math.max(
+      minTop,
+      viewport.h - menuLayout.flyMaxH - menuLayout.pad
+    );
+    return Math.max(minTop, Math.min(desired, maxTop));
+  }, [level2Top, menuGroupTop, menuLayout.flyMaxH, menuLayout.pad, viewport.h]);
 
   const artifactsForSelected = useMemo(
     () =>
@@ -937,6 +1117,10 @@ function FlowWorkspace({
                   x: e.clientX,
                   y: e.clientY,
                 }) ?? { x: 0, y: 0 };
+              setMenuClassKey(null);
+              setMenuGroupKey(null);
+              setMenuClassTop(null);
+              setMenuGroupTop(null);
               setCtxMenu({
                 kind: "pane",
                 x: e.clientX,
@@ -979,98 +1163,258 @@ function FlowWorkspace({
               style={{ background: "#161b22" }}
             />
           </ReactFlow>
-          {ctxMenu.kind !== "none" && (
-            <div
-              role="menu"
-              style={{
-                position: "fixed",
-                left: Math.min(ctxMenu.x, window.innerWidth - 224),
-                top: Math.min(ctxMenu.y, window.innerHeight - 160),
-                zIndex: 10000,
-                background: "#161b22",
-                border: "1px solid #30363d",
-                borderRadius: 8,
-                padding: 8,
-                minWidth: 200,
-                maxWidth: 280,
-                boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-              }}
-              onClick={(e) => e.stopPropagation()}
-              onContextMenu={(e) => e.preventDefault()}
-            >
-              {ctxMenu.kind === "pane" && (
-                <>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      marginBottom: 6,
-                      color: "#e6edf3",
-                    }}
-                  >
-                    Add node
-                  </div>
-                  <div style={{ maxHeight: 320, overflowY: "auto" }}>
-                    {groupedAddNodePresets.map((g) => (
-                      <div key={g.group} style={{ marginBottom: 8 }}>
-                        <div style={{ fontSize: 10, opacity: 0.72, textTransform: "uppercase", margin: "4px 4px" }}>
-                          {g.group.replace(/_/g, " ")}
-                        </div>
-                        {g.submenus.map((s) => (
-                          <div key={`${g.group}:${s.submenu}`} style={{ marginBottom: 4 }}>
-                            <div style={{ fontSize: 10, opacity: 0.6, margin: "2px 8px" }}>
-                              {s.submenu.replace(/_/g, " ")}
-                            </div>
-                            {s.items.map((p) => (
-                              <button
-                                key={p.kind}
-                                type="button"
-                                onClick={() =>
-                                  void addNodeFromPreset(p, {
-                                    x: ctxMenu.flowX,
-                                    y: ctxMenu.flowY,
-                                  })
-                                }
-                                style={menuBtn}
-                                title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
-                              >
-                                {p.label}
-                              </button>
-                            ))}
-                          </div>
-                        ))}
+          {ctxMenu.kind !== "none" &&
+            createPortal(
+              <div
+                ref={ctxMenuRef}
+                style={{ position: "fixed", inset: 0, zIndex: 10000, pointerEvents: "none" }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                <div
+                  role="menu"
+                  style={{
+                    position: "fixed",
+                    left: menuLayout.baseLeft,
+                    top: menuLayout.baseTop,
+                    zIndex: 10000,
+                    background: "#161b22",
+                    border: "1px solid #30363d",
+                    borderRadius: 8,
+                    padding: 5,
+                    minWidth: menuLayout.rootW - 10,
+                    maxWidth: menuLayout.rootW,
+                    maxHeight: menuLayout.maxRootH,
+                    overflow: "auto",
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                    pointerEvents: "auto",
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {ctxMenu.kind === "pane" ? (
+                    <>
+                      <div
+                        style={{
+                          fontSize: 10.5,
+                          fontWeight: 600,
+                          marginBottom: 2,
+                          padding: "2px 6px",
+                          color: "#e6edf3",
+                        }}
+                      >
+                        Add node
                       </div>
+                      {classFlyoutMenus.map((c) => (
+                        <button
+                          key={c.key}
+                          type="button"
+                          onMouseEnter={(e) => {
+                            setMenuClassKey(c.key);
+                            setMenuGroupKey(null);
+                            setMenuGroupTop(null);
+                            setMenuClassTop(e.currentTarget.getBoundingClientRect().top - 2);
+                          }}
+                          onFocus={(e) => {
+                            setMenuClassKey(c.key);
+                            setMenuGroupKey(null);
+                            setMenuGroupTop(null);
+                            setMenuClassTop(e.currentTarget.getBoundingClientRect().top - 2);
+                          }}
+                          onClick={(e) => {
+                            setMenuClassKey(c.key);
+                            setMenuGroupKey(null);
+                            setMenuGroupTop(null);
+                            setMenuClassTop(e.currentTarget.getBoundingClientRect().top - 2);
+                          }}
+                          style={{
+                            ...menuBtn,
+                            background:
+                              menuClassKey === c.key ? "#1f2a37" : menuBtn.background,
+                            marginBottom: 1,
+                            border:
+                              menuClassKey === c.key
+                                ? "1px solid #3b82f6"
+                                : "1px solid transparent",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "inline-block",
+                              maxWidth: 122,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {c.label}
+                          </span>
+                          <span style={{ float: "right", opacity: 0.7 }}>›</span>
+                        </button>
+                      ))}
+                    </>
+                  ) : ctxMenu.kind === "node" ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const id = ctxMenu.nodeId;
+                          setCtxMenu({ kind: "none" });
+                          focusNode(id);
+                        }}
+                        style={menuBtn}
+                      >
+                        Focus node
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCtxMenu({ kind: "none" });
+                          void persistDeleteNodes([ctxMenu.nodeId]);
+                        }}
+                        style={{ ...menuBtn, color: "#f85149" }}
+                      >
+                        Delete node
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = ctxMenu.edgeId;
+                        setCtxMenu({ kind: "none" });
+                        void persistDeleteEdgeIds([id]);
+                      }}
+                      style={{ ...menuBtn, color: "#f85149" }}
+                    >
+                      Delete connection
+                    </button>
+                  )}
+                </div>
+
+                {ctxMenu.kind === "pane" && activeClassMenu ? (
+                  <div
+                    role="menu"
+                    style={{
+                      position: "fixed",
+                      left: menuLayout.level2Left,
+                      top: level2Top,
+                      zIndex: 10001,
+                      background: "#161b22",
+                      border: "1px solid #30363d",
+                      borderRadius: 8,
+                      padding: 5,
+                      minWidth: menuLayout.level2W - 10,
+                      maxWidth: menuLayout.level2W,
+                      maxHeight: menuLayout.flyMaxH,
+                      overflowY: "auto",
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                      pointerEvents: "auto",
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {activeClassMenu.directItems.map((p) => (
+                      <button
+                        key={`${activeClassMenu.key}:${p.kind}`}
+                        type="button"
+                        onClick={() =>
+                          void addNodeFromPreset(p, {
+                            x: ctxMenu.flowX,
+                            y: ctxMenu.flowY,
+                          })
+                        }
+                        style={{ ...menuBtn, marginBottom: 1 }}
+                        title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                    {activeClassMenu.groupedItems.map((g) => {
+                      const gk = `${activeClassMenu.key}:${g.key}`;
+                      return (
+                        <button
+                          key={gk}
+                          type="button"
+                          onMouseEnter={(e) => {
+                            setMenuGroupKey(gk);
+                            setMenuGroupTop(e.currentTarget.getBoundingClientRect().top - 2);
+                          }}
+                          onFocus={(e) => {
+                            setMenuGroupKey(gk);
+                            setMenuGroupTop(e.currentTarget.getBoundingClientRect().top - 2);
+                          }}
+                          onClick={(e) => {
+                            setMenuGroupKey(gk);
+                            setMenuGroupTop(e.currentTarget.getBoundingClientRect().top - 2);
+                          }}
+                          style={{
+                            ...menuBtn,
+                            marginBottom: 1,
+                            background: menuGroupKey === gk ? "#1f2a37" : menuBtn.background,
+                            border:
+                              menuGroupKey === gk
+                                ? "1px solid #3b82f6"
+                                : "1px solid transparent",
+                          }}
+                        >
+                          <span
+                            style={{
+                              display: "inline-block",
+                              maxWidth: 132,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {g.label}
+                          </span>
+                          <span style={{ float: "right", opacity: 0.7 }}>›</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                {ctxMenu.kind === "pane" && activeClassMenu && activeGroupMenu ? (
+                  <div
+                    role="menu"
+                    style={{
+                      position: "fixed",
+                      left: menuLayout.level3Left,
+                      top: level3Top,
+                      zIndex: 10002,
+                      background: "#161b22",
+                      border: "1px solid #30363d",
+                      borderRadius: 8,
+                      padding: 5,
+                      minWidth: menuLayout.level3W - 10,
+                      maxWidth: menuLayout.level3W,
+                      maxHeight: menuLayout.flyMaxH,
+                      overflowY: "auto",
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                      pointerEvents: "auto",
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {activeGroupMenu.items.map((p) => (
+                      <button
+                        key={`${activeClassMenu.key}:${activeGroupMenu.key}:${p.kind}`}
+                        type="button"
+                        onClick={() =>
+                          void addNodeFromPreset(p, {
+                            x: ctxMenu.flowX,
+                            y: ctxMenu.flowY,
+                          })
+                        }
+                        style={{ ...menuBtn, marginBottom: 1 }}
+                        title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
+                      >
+                        {p.label}
+                      </button>
                     ))}
                   </div>
-                </>
-              )}
-              {ctxMenu.kind === "node" && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCtxMenu({ kind: "none" });
-                    void persistDeleteNodes([ctxMenu.nodeId]);
-                  }}
-                  style={{ ...menuBtn, color: "#f85149" }}
-                >
-                  Delete node
-                </button>
-              )}
-              {ctxMenu.kind === "edge" && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const id = ctxMenu.edgeId;
-                    setCtxMenu({ kind: "none" });
-                    void persistDeleteEdgeIds([id]);
-                  }}
-                  style={{ ...menuBtn, color: "#f85149" }}
-                >
-                  Delete connection
-                </button>
-              )}
-            </div>
-          )}
+                ) : null}
+              </div>,
+              document.body
+            )}
         </div>
         {selectedNode && (
           <NodeInspector

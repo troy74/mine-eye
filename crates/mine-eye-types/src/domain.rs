@@ -1,4 +1,4 @@
-//! Canonical acquisition and derived primitives ([V1SPEC §2](V1SPEC.md)).
+//! Canonical acquisition and derived primitives (see architecture and README docs).
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

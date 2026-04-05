@@ -23,6 +23,7 @@ export type SemanticPortKey =
 
 /** Stroke colour for edges (and handle accents) by semantic type. */
 export const SEMANTIC_EDGE_COLORS: Record<string, string> = {
+  any: "#e6edf3",
   point_set: "#38bdf8",
   interval_set: "#f97316",
   trajectory_set: "#a78bfa",

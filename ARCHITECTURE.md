@@ -131,6 +131,24 @@ Role:
 
 - deterministic runtime executor isolated from UI concerns
 
+### 5.3 Componentized Middleware Brokers (Design Pointer)
+
+The preferred architecture is a brokered middleware chain that keeps frontend logic small:
+
+- **Graph broker**: graph CRUD, branch/revision state, run intent.
+- **Execution broker**: dirty propagation, queue scheduling, lock-aware execution ordering.
+- **Scene broker**: viewer manifest + `scene_contract` layer composition from connected artifacts.
+- **Spatial broker**: AOI contracts, CRS normalization, bounds provenance, and project CRS policy.
+- **Terrain/imagery broker**: DEM provider/fitting, tilebroker/provider fallback ladders, quality flags.
+- **Artifact broker**: immutable artifact lineage/content hashes and schema/variant metadata.
+
+Efficiency constraints:
+
+- push expensive inference/provider logic into middleware and emit compact render-ready contracts
+- make cache keys content+lineage based (never timestamp-only)
+- keep UI overrides scoped to explicitly permitted `ui_capabilities` in contracts
+- avoid duplicate “guessing” logic across web/iOS/desktop
+
 ## 6. Presentation Layer (Web First, Multi-Client Ready)
 
 Current client:
@@ -162,8 +180,9 @@ Viewer nodes are graph-native visualization nodes, not global singleton panels.
 Current viewer node kinds:
 
 - `plan_view_2d`
-- `cesium_display_node` (active Cesium-backed 3D display node)
-- `plan_view_3d` remains as a compatibility alias path
+- `threejs_display_node` (active 3D scene workflow)
+- `cesium_display_node` (supported legacy/parallel 3D path)
+- `plan_view_3d` may still appear as compatibility alias in older graphs
 
 A viewer renders only connected upstream artifacts by edge semantics.
 
@@ -272,7 +291,7 @@ Near-term evolution priorities:
 - strengthen port compatibility matrix and semantic contract validation
 - continue registry-driven node metadata and backend-owned viewer contracts
 - keep `kinds` domain modules small and focused; avoid re-accumulating a single monolithic node implementation file
-- introduce next-gen 3D renderer path (threejs/WGSL) as a new node/presentation contract without breaking current Cesium path
+- continue hardening the Three.js path through scene contracts while preserving legacy Cesium compatibility where required
 
 ## 14. Non-Goals (Current Phase)
 

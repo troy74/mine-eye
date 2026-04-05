@@ -184,7 +184,8 @@ function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): s
 }
 
 type PointShape = "circle" | "square" | "diamond";
-type ChannelMode = "fixed" | "measure";
+type ChannelMode = "fixed" | "measure" | "categorical";
+type ValueTransform = "linear" | "log10" | "ln";
 
 type SourceLayerConfig = {
   id: string;
@@ -199,15 +200,20 @@ type SourceLayerConfig = {
     colorMode: ChannelMode;
     color: string;
     colorMeasure: string;
+    colorTransform: ValueTransform;
+    colorPalette: string;
     sizeMode: ChannelMode;
     sizePx: number;
     sizeMeasure: string;
+    sizeTransform: ValueTransform;
     sizeMinPx: number;
     sizeMaxPx: number;
   };
   heatmap: {
     enabled: boolean;
     measure: string;
+    transform: ValueTransform;
+    palette: string;
     opacity: number;
     smoothness: number;
     power: number;
@@ -296,15 +302,20 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
       colorMode: "fixed",
       color: "#38bdf8",
       colorMeasure: hintMeasure,
+      colorTransform: "linear",
+      colorPalette: "turbo",
       sizeMode: "fixed",
       sizePx: 6,
       sizeMeasure: hintMeasure,
+      sizeTransform: "linear",
       sizeMinPx: 4,
       sizeMaxPx: 12,
     },
     heatmap: {
       enabled: lockedRenderer ? true : hintMeasure.length > 0,
       measure: hintMeasure,
+      transform: "linear",
+      palette: hint.palette ?? "rainbow",
       opacity: defaultOpacity,
       smoothness: defaultSmoothness,
       power: defaultPower,
@@ -322,10 +333,20 @@ function norm(v: number, min: number, max: number): number {
   return Math.max(0, Math.min(1, (v - min) / (max - min)));
 }
 
-function rainbowColor(tRaw: number): string {
-  const t = Math.max(0, Math.min(1, tRaw));
-  const hue = (1 - t) * 240;
-  return `hsl(${hue}, 95%, 50%)`;
+function applyTransform(v: number, transform: ValueTransform): number | null {
+  if (!Number.isFinite(v)) return null;
+  if (transform === "linear") return v;
+  if (v <= 0) return null;
+  if (transform === "log10") return Math.log10(v);
+  return Math.log(v);
+}
+
+function categoricalColor(value: number, palette: string): string {
+  const bucket = Math.round(value * 1000) / 1000;
+  const x = Math.abs(Math.floor(bucket * 104729));
+  const t = (x % 997) / 996;
+  const { r, g, b } = paletteRgb(palette, t);
+  return `rgb(${r},${g},${b})`;
 }
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
@@ -440,13 +461,13 @@ export function Map2DPanel({
     if (!activeLayer) return null;
     const s = sourceById.get(activeLayer.sourceId);
     if (!s) return null;
-    const palette = s.heatmapHint?.palette ?? "rainbow";
+    const palette = activeLayer.heatmap.palette || s.heatmapHint?.palette || "rainbow";
     let min = 0;
     let max = 1;
     if (s.surfaceGrid) {
-      const vals = s.surfaceGrid.values.filter(
-        (v): v is number => typeof v === "number" && Number.isFinite(v)
-      );
+      const vals = s.surfaceGrid.values
+        .map((v) => (typeof v === "number" ? applyTransform(v, activeLayer.heatmap.transform) : null))
+        .filter((v): v is number => v !== null && Number.isFinite(v));
       const mm = valueMinMax(vals);
       if (mm) {
         min = mm.min;
@@ -455,7 +476,8 @@ export function Map2DPanel({
     } else {
       const vals = s.points
         .map((p) => p.measures[activeLayer.heatmap.measure])
-        .filter((v): v is number => Number.isFinite(v));
+        .map((v) => (typeof v === "number" ? applyTransform(v, activeLayer.heatmap.transform) : null))
+        .filter((v): v is number => v !== null && Number.isFinite(v));
       const mm = valueMinMax(vals);
       if (mm) {
         min = mm.min;
@@ -1040,6 +1062,22 @@ export function Map2DPanel({
           sourceHintSig: nextHintSig,
           points: {
             ...(lockedRenderer ? defaultFromSource.points : ex.points),
+            colorTransform:
+              (lockedRenderer
+                ? defaultFromSource.points.colorTransform
+                : ex.points.colorTransform) === "log10" ||
+              (lockedRenderer
+                ? defaultFromSource.points.colorTransform
+                : ex.points.colorTransform) === "ln"
+                ? ((lockedRenderer
+                    ? defaultFromSource.points.colorTransform
+                    : ex.points.colorTransform) as ValueTransform)
+                : "linear",
+            colorPalette:
+              typeof (lockedRenderer ? defaultFromSource.points.colorPalette : ex.points.colorPalette) ===
+              "string"
+                ? String(lockedRenderer ? defaultFromSource.points.colorPalette : ex.points.colorPalette)
+                : "turbo",
             colorMeasure:
               (lockedRenderer ? defaultFromSource.points.colorMeasure : ex.points.colorMeasure) &&
               s.measureNames.includes(
@@ -1058,6 +1096,17 @@ export function Map2DPanel({
                     ? defaultFromSource.points.sizeMeasure
                     : ex.points.sizeMeasure)
                 : s.measureNames[0] ?? "",
+            sizeTransform:
+              (lockedRenderer
+                ? defaultFromSource.points.sizeTransform
+                : ex.points.sizeTransform) === "log10" ||
+              (lockedRenderer
+                ? defaultFromSource.points.sizeTransform
+                : ex.points.sizeTransform) === "ln"
+                ? ((lockedRenderer
+                    ? defaultFromSource.points.sizeTransform
+                    : ex.points.sizeTransform) as ValueTransform)
+                : "linear",
           },
           heatmap: {
             ...(lockedRenderer ? defaultFromSource.heatmap : ex.heatmap),
@@ -1071,6 +1120,21 @@ export function Map2DPanel({
                     : ex.heatmap.measure)
                 : s.measureNames[0] ?? "",
             enabled: s.measureNames.length > 0 ? (lockedRenderer ? true : ex.heatmap.enabled) : false,
+            transform:
+              (lockedRenderer
+                ? defaultFromSource.heatmap.transform
+                : ex.heatmap.transform) === "log10" ||
+              (lockedRenderer
+                ? defaultFromSource.heatmap.transform
+                : ex.heatmap.transform) === "ln"
+                ? ((lockedRenderer
+                    ? defaultFromSource.heatmap.transform
+                    : ex.heatmap.transform) as ValueTransform)
+                : "linear",
+            palette:
+              typeof (lockedRenderer ? defaultFromSource.heatmap.palette : ex.heatmap.palette) === "string"
+                ? String(lockedRenderer ? defaultFromSource.heatmap.palette : ex.heatmap.palette)
+                : "rainbow",
           },
         };
       });
@@ -1120,12 +1184,14 @@ export function Map2DPanel({
 
       if (layer.heatmap.enabled && layer.heatmap.measure) {
         const lockedRenderer = src.displayContract?.renderer === "heat_surface";
-        const palette = src.heatmapHint?.palette ?? "rainbow";
+        const palette = layer.heatmap.palette || src.heatmapHint?.palette || "rainbow";
         const clipMin = src.heatmapHint?.minVisibleRender;
         const clipMax = src.heatmapHint?.maxVisibleRender;
         if (lockedRenderer && src.surfaceGrid) {
           const g = src.surfaceGrid;
-          const vals = g.values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+          const vals = g.values
+            .map((v) => (typeof v === "number" ? applyTransform(v, layer.heatmap.transform) : null))
+            .filter((v): v is number => v !== null && Number.isFinite(v));
           const mm = valueMinMax(vals);
           if (mm) {
             const canvas = document.createElement("canvas");
@@ -1152,7 +1218,12 @@ export function Map2DPanel({
                     img.data[idx + 3] = 0;
                     continue;
                   }
-                  const t = norm(v, mm.min, mm.max);
+                  const tv = applyTransform(v, layer.heatmap.transform);
+                  if (tv === null) {
+                    img.data[idx + 3] = 0;
+                    continue;
+                  }
+                  const t = norm(tv, mm.min, mm.max);
                   const { r, g: gg, b } = paletteRgb(palette, t);
                   img.data[idx] = r;
                   img.data[idx + 1] = gg;
@@ -1179,7 +1250,8 @@ export function Map2DPanel({
           const samples = src.points
             .map((p) => {
               const v = p.measures[layer.heatmap.measure];
-              return Number.isFinite(v) ? { ...p, value: v as number } : null;
+              const tv = Number.isFinite(v) ? applyTransform(v as number, layer.heatmap.transform) : null;
+              return tv !== null ? { ...p, value: tv } : null;
             })
             .filter((v): v is RenderPoint & { value: number } => v !== null);
           if (samples.length >= 3) {
@@ -1279,31 +1351,55 @@ export function Map2DPanel({
         layer.points.colorMode === "measure" && layer.points.colorMeasure
           ? src.points
               .map((p) => p.measures[layer.points.colorMeasure])
-              .filter((v): v is number => Number.isFinite(v))
+              .map((v) => (typeof v === "number" ? applyTransform(v, layer.points.colorTransform) : null))
+              .filter((v): v is number => v !== null && Number.isFinite(v))
           : [];
       const sizeVals =
         layer.points.sizeMode === "measure" && layer.points.sizeMeasure
           ? src.points
               .map((p) => p.measures[layer.points.sizeMeasure])
-              .filter((v): v is number => Number.isFinite(v))
+              .map((v) => (typeof v === "number" ? applyTransform(v, layer.points.sizeTransform) : null))
+              .filter((v): v is number => v !== null && Number.isFinite(v))
           : [];
       const cmm = valueMinMax(colorVals);
       const smm = valueMinMax(sizeVals);
 
       src.points.forEach((pt) => {
+        const rawColorValue = pt.measures[layer.points.colorMeasure];
+        const colorValue =
+          typeof rawColorValue === "number"
+            ? applyTransform(rawColorValue, layer.points.colorTransform)
+            : null;
         const color =
           layer.points.colorMode === "measure" &&
           cmm &&
-          Number.isFinite(pt.measures[layer.points.colorMeasure])
-            ? rainbowColor(norm(pt.measures[layer.points.colorMeasure], cmm.min, cmm.max))
-            : layer.points.color;
+          colorValue !== null &&
+          Number.isFinite(colorValue)
+            ? (() => {
+                const { r, g, b } = paletteRgb(
+                  layer.points.colorPalette || "turbo",
+                  norm(colorValue, cmm.min, cmm.max)
+                );
+                return `rgb(${r},${g},${b})`;
+              })()
+            : layer.points.colorMode === "categorical" &&
+                typeof rawColorValue === "number" &&
+                Number.isFinite(rawColorValue)
+              ? categoricalColor(rawColorValue, layer.points.colorPalette)
+              : layer.points.color;
+        const rawSizeValue = pt.measures[layer.points.sizeMeasure];
+        const sizeValue =
+          typeof rawSizeValue === "number"
+            ? applyTransform(rawSizeValue, layer.points.sizeTransform)
+            : null;
         const size =
           layer.points.sizeMode === "measure" &&
           smm &&
-          Number.isFinite(pt.measures[layer.points.sizeMeasure])
+          sizeValue !== null &&
+          Number.isFinite(sizeValue)
             ? layer.points.sizeMinPx +
               (layer.points.sizeMaxPx - layer.points.sizeMinPx) *
-                norm(pt.measures[layer.points.sizeMeasure], smm.min, smm.max)
+                norm(sizeValue, smm.min, smm.max)
             : layer.points.sizePx;
 
         if (layer.points.shape === "circle") {
@@ -1466,17 +1562,23 @@ export function Map2DPanel({
                 return (
                   <div
                     key={layer.id}
-                    draggable={canDragLayers}
-                    onDragStart={() => {
-                      if (!canDragLayers) return;
-                      setDraggingId(layer.id);
-                    }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={() => onDropLayer(layer.id)}
                     style={card}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ opacity: canDragLayers ? 0.55 : 0.28, cursor: canDragLayers ? "grab" : "not-allowed" }}>⋮⋮</span>
+                      <span
+                        style={{ opacity: canDragLayers ? 0.55 : 0.28, cursor: canDragLayers ? "grab" : "not-allowed" }}
+                        draggable={canDragLayers}
+                        onDragStart={(e) => {
+                          if (!canDragLayers) return;
+                          e.stopPropagation();
+                          setDraggingId(layer.id);
+                        }}
+                        onDragEnd={() => setDraggingId(null)}
+                      >
+                        ⋮⋮
+                      </span>
                       <input
                         type="checkbox"
                         checked={layer.visible}
@@ -1606,6 +1708,7 @@ export function Map2DPanel({
                             >
                               <option value="fixed">Fixed</option>
                               <option value="measure">Measure</option>
+                              <option value="categorical">Categorical</option>
                             </select>
                           </label>
                           {layer.points.colorMode === "fixed" ? (
@@ -1652,6 +1755,64 @@ export function Map2DPanel({
                             </label>
                           )}
                         </div>
+                        {layer.points.colorMode !== "fixed" && (
+                          <div style={row2}>
+                            {layer.points.colorMode === "measure" ? (
+                              <label style={fieldInline}>
+                                <span>Transform</span>
+                                <select
+                                  value={layer.points.colorTransform}
+                                  disabled={lockedRenderer}
+                                  onChange={(e) =>
+                                    setLayers((prev) =>
+                                      prev.map((l) =>
+                                        l.id === layer.id
+                                          ? {
+                                              ...l,
+                                              points: {
+                                                ...l.points,
+                                                colorTransform: e.target.value as ValueTransform,
+                                              },
+                                            }
+                                          : l
+                                      )
+                                    )
+                                  }
+                                  style={select}
+                                >
+                                  <option value="linear">Linear</option>
+                                  <option value="log10">Log10</option>
+                                  <option value="ln">Natural log</option>
+                                </select>
+                              </label>
+                            ) : null}
+                            <label style={fieldInline}>
+                              <span>Palette</span>
+                              <select
+                                value={layer.points.colorPalette}
+                                disabled={lockedRenderer}
+                                onChange={(e) =>
+                                  setLayers((prev) =>
+                                    prev.map((l) =>
+                                      l.id === layer.id
+                                        ? {
+                                            ...l,
+                                            points: { ...l.points, colorPalette: e.target.value },
+                                          }
+                                        : l
+                                    )
+                                  )
+                                }
+                                style={select}
+                              >
+                                <option value="turbo">Turbo</option>
+                                <option value="inferno">Inferno</option>
+                                <option value="viridis">Viridis</option>
+                                <option value="rainbow">Rainbow</option>
+                              </select>
+                            </label>
+                          </div>
+                        )}
 
                         <div style={row2}>
                           <label style={fieldInline}>
@@ -1720,6 +1881,35 @@ export function Map2DPanel({
                             </label>
                           )}
                         </div>
+                        {layer.points.sizeMode === "measure" && (
+                          <label style={field}>
+                            <span>Size transform</span>
+                            <select
+                              value={layer.points.sizeTransform}
+                              disabled={lockedRenderer}
+                              onChange={(e) =>
+                                setLayers((prev) =>
+                                  prev.map((l) =>
+                                    l.id === layer.id
+                                      ? {
+                                          ...l,
+                                          points: {
+                                            ...l.points,
+                                            sizeTransform: e.target.value as ValueTransform,
+                                          },
+                                        }
+                                      : l
+                                  )
+                                )
+                              }
+                              style={select}
+                            >
+                              <option value="linear">Linear</option>
+                              <option value="log10">Log10</option>
+                              <option value="ln">Natural log</option>
+                            </select>
+                          </label>
+                        )}
                         {layer.points.sizeMode === "measure" && (
                           <label style={field}>
                             <span>
@@ -1821,6 +2011,60 @@ export function Map2DPanel({
                                 ))}
                               </select>
                             </label>
+                            {!lockedRenderer && (
+                              <div style={row2}>
+                                <label style={fieldInline}>
+                                  <span>Transform</span>
+                                  <select
+                                    value={layer.heatmap.transform}
+                                    onChange={(e) =>
+                                      setLayers((prev) =>
+                                        prev.map((l) =>
+                                          l.id === layer.id
+                                            ? {
+                                                ...l,
+                                                heatmap: {
+                                                  ...l.heatmap,
+                                                  transform: e.target.value as ValueTransform,
+                                                },
+                                              }
+                                            : l
+                                        )
+                                      )
+                                    }
+                                    style={select}
+                                  >
+                                    <option value="linear">Linear</option>
+                                    <option value="log10">Log10</option>
+                                    <option value="ln">Natural log</option>
+                                  </select>
+                                </label>
+                                <label style={fieldInline}>
+                                  <span>Palette</span>
+                                  <select
+                                    value={layer.heatmap.palette}
+                                    onChange={(e) =>
+                                      setLayers((prev) =>
+                                        prev.map((l) =>
+                                          l.id === layer.id
+                                            ? {
+                                                ...l,
+                                                heatmap: { ...l.heatmap, palette: e.target.value },
+                                              }
+                                            : l
+                                        )
+                                      )
+                                    }
+                                    style={select}
+                                  >
+                                    <option value="rainbow">Rainbow</option>
+                                    <option value="turbo">Turbo</option>
+                                    <option value="inferno">Inferno</option>
+                                    <option value="viridis">Viridis</option>
+                                  </select>
+                                </label>
+                              </div>
+                            )}
                             <label style={field}>
                               <span>Heat opacity</span>
                               <input

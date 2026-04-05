@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Semantic types for node ports ([V1SPEC §1](V1SPEC.md)).
+/// Semantic types for node ports (see architecture and README docs).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticPortType {

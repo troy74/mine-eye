@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { TrackballControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -30,7 +30,7 @@ type Point3D = {
   z: number;
   hasExplicitZ?: boolean;
   epsg?: number;
-  measures?: Record<string, number>;
+  measures?: Record<string, number | string>;
 };
 
 type Segment3D = {
@@ -38,7 +38,7 @@ type Segment3D = {
   to: [number, number, number];
   epsg?: number;
   radiusM?: number;
-  measures?: Record<string, number>;
+  measures?: Record<string, number | string>;
   hasExplicitZ?: boolean;
   contourLevel?: number;
 };
@@ -73,7 +73,15 @@ type SceneData = {
   contourSegments: Segment3D[];
   assayPoints: Point3D[];
   terrainPoints: TerrainPoint[];
+  terrainGrids: Array<{
+    id: string;
+    label: string;
+    rank: number;
+    portOrder: number;
+    grid: TerrainGrid;
+  }>;
   terrainGrid: TerrainGrid | null;
+  aoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null;
   measureCandidates: string[];
   totalArtifacts: number;
 };
@@ -114,6 +122,12 @@ type SceneUiState = {
   imageryProvider: ImageryProviderId;
   selectedMeasure: string;
   palette: "inferno" | "viridis" | "turbo" | "red_blue";
+  measureColorMode: "continuous" | "categorical";
+  measureTransform: "linear" | "log10" | "ln";
+  categoricalColorMap: string;
+  groundSurfaceKey: string;
+  pointShape: "sphere" | "box" | "diamond";
+  layerStyles: Record<string, LayerVizStyle>;
   clampLowPct: number;
   clampHighPct: number;
   radiusScale: number;
@@ -134,6 +148,17 @@ type SceneUiState = {
   layerOrderMode: "contract" | "override";
   invertDepth: boolean;
   panelCollapsed: boolean;
+};
+
+type LayerVizStyle = {
+  attributeKey: string;
+  palette: SceneUiState["palette"];
+  colorMode: SceneUiState["measureColorMode"];
+  transform: SceneUiState["measureTransform"];
+  clampLowPct: number;
+  clampHighPct: number;
+  categoricalColorMap: string;
+  pointShape: "sphere" | "box" | "diamond";
 };
 
 const LAYER_KEYS = [
@@ -199,6 +224,12 @@ const DEFAULT_UI: SceneUiState = {
   imageryProvider: "esri_world_imagery",
   selectedMeasure: "",
   palette: "inferno",
+  measureColorMode: "continuous",
+  measureTransform: "linear",
+  categoricalColorMap: "{}",
+  groundSurfaceKey: "",
+  pointShape: "sphere",
+  layerStyles: {},
   clampLowPct: 2,
   clampHighPct: 98,
   radiusScale: 1.35,
@@ -221,6 +252,17 @@ const DEFAULT_UI: SceneUiState = {
   panelCollapsed: false,
 };
 
+const DEFAULT_LAYER_STYLE: LayerVizStyle = {
+  attributeKey: "",
+  palette: "inferno",
+  colorMode: "continuous",
+  transform: "linear",
+  clampLowPct: 2,
+  clampHighPct: 98,
+  categoricalColorMap: "{}",
+  pointShape: "sphere",
+};
+
 function n(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "") {
@@ -236,33 +278,62 @@ function upstreamSourcesForViewer(edges: ApiEdge[], viewerId: string): string[] 
     .map((e) => e.from_node);
 }
 
-function parseAssayMeasures(raw: unknown): Record<string, number> {
+function parseAssayAttributes(raw: unknown): Record<string, number | string> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const out: Record<string, number> = {};
+  const out: Record<string, number | string> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     const x = n(v);
-    if (x !== null) out[k] = x;
+    if (x !== null) {
+      out[k] = x;
+      continue;
+    }
+    if (typeof v === "string" && v.trim().length > 0) {
+      out[k] = v.trim();
+      continue;
+    }
+    if (typeof v === "boolean") {
+      out[k] = v ? "true" : "false";
+    }
   }
   return out;
 }
 
-function parseSegmentMeasuresFromAssays(raw: unknown): Record<string, number> {
+function parseSegmentMeasuresFromAssays(raw: unknown): Record<string, number | string> {
   if (!Array.isArray(raw)) return {};
   const sums = new Map<string, { sum: number; count: number }>();
+  const cats = new Map<string, Map<string, number>>();
   for (const row of raw) {
     if (!row || typeof row !== "object" || Array.isArray(row)) continue;
     const attrs = (row as Record<string, unknown>).attributes;
-    const parsed = parseAssayMeasures(attrs);
+    const parsed = parseAssayAttributes(attrs);
     for (const [k, v] of Object.entries(parsed)) {
-      const cur = sums.get(k) ?? { sum: 0, count: 0 };
-      cur.sum += v;
-      cur.count += 1;
-      sums.set(k, cur);
+      if (typeof v === "number") {
+        const cur = sums.get(k) ?? { sum: 0, count: 0 };
+        cur.sum += v;
+        cur.count += 1;
+        sums.set(k, cur);
+      } else {
+        const byVal = cats.get(k) ?? new Map<string, number>();
+        byVal.set(v, (byVal.get(v) ?? 0) + 1);
+        cats.set(k, byVal);
+      }
     }
   }
-  const out: Record<string, number> = {};
+  const out: Record<string, number | string> = {};
   for (const [k, v] of sums.entries()) {
     if (v.count > 0) out[k] = v.sum / v.count;
+  }
+  for (const [k, byVal] of cats.entries()) {
+    if (out[k] !== undefined) continue;
+    let best: string | null = null;
+    let bestCount = -1;
+    for (const [val, c] of byVal.entries()) {
+      if (c > bestCount) {
+        best = val;
+        bestCount = c;
+      }
+    }
+    if (best !== null) out[k] = best;
   }
   return out;
 }
@@ -281,7 +352,9 @@ function parseSceneJson(
       contourSegments: [],
       assayPoints: [],
       terrainPoints: [],
+      terrainGrids: [],
       terrainGrid: null,
+      aoiBounds: null,
       measureCandidates: [],
     };
   }
@@ -291,7 +364,15 @@ function parseSceneJson(
   const contourSegments: Segment3D[] = [];
   const assayPoints: Point3D[] = [];
   const terrainPoints: TerrainPoint[] = [];
+  const terrainGrids: Array<{
+    id: string;
+    label: string;
+    rank: number;
+    portOrder: number;
+    grid: TerrainGrid;
+  }> = [];
   let terrainGrid: TerrainGrid | null = null;
+  let aoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null = null;
   const measures = new Set<string>();
 
   const lowerKey = manifestLayer?.artifact_key.toLowerCase() ?? "";
@@ -316,6 +397,26 @@ function parseSceneJson(
   let artifactEpsg: number | undefined;
 
   if (!Array.isArray(root) && root && typeof root === "object") {
+    const schemaId = (root as Record<string, unknown>).schema_id;
+    if (schemaId === "spatial.aoi.v1") {
+      const b = (root as Record<string, unknown>).bounds;
+      if (b && typeof b === "object" && !Array.isArray(b)) {
+        const xmin = n((b as Record<string, unknown>).xmin);
+        const xmax = n((b as Record<string, unknown>).xmax);
+        const ymin = n((b as Record<string, unknown>).ymin);
+        const ymax = n((b as Record<string, unknown>).ymax);
+        if (
+          xmin !== null &&
+          xmax !== null &&
+          ymin !== null &&
+          ymax !== null &&
+          xmin < xmax &&
+          ymin < ymax
+        ) {
+          aoiBounds = { xmin, xmax, ymin, ymax };
+        }
+      }
+    }
     const crs = (root as Record<string, unknown>).crs;
     if (crs && typeof crs === "object" && !Array.isArray(crs)) {
       const e = n((crs as Record<string, unknown>).epsg);
@@ -337,10 +438,12 @@ function parseSceneJson(
   ) => {
     const x0 = n(xf);
     const y0 = n(yf);
-    const z0 = n(zf) ?? 0;
+    const z0Raw = n(zf);
+    const z0 = z0Raw ?? 0;
     const x1 = n(xt);
     const y1 = n(yt);
-    const z1 = n(zt) ?? 0;
+    const z1Raw = n(zt);
+    const z1 = z1Raw ?? 0;
     if (x0 === null || y0 === null || x1 === null || y1 === null) return;
     target.push({
       from: [x0, y0, z0],
@@ -348,6 +451,7 @@ function parseSceneJson(
       epsg,
       radiusM,
       measures: segMeasures,
+      hasExplicitZ: z0Raw !== null && z1Raw !== null,
     });
     if (segMeasures) {
       for (const k of Object.keys(segMeasures)) measures.add(k);
@@ -366,7 +470,7 @@ function parseSceneJson(
     const zRaw = n(zv);
     const z = zRaw ?? 0;
     if (x === null || y === null) return;
-    const parsedMeasures = parseAssayMeasures(rawMeasures);
+    const parsedMeasures = parseAssayAttributes(rawMeasures);
     for (const k of Object.keys(parsedMeasures)) measures.add(k);
     assayPoints.push({
       x,
@@ -559,7 +663,9 @@ function parseSceneJson(
     contourSegments,
     assayPoints,
     terrainPoints,
+    terrainGrids,
     terrainGrid,
+    aoiBounds,
     measureCandidates: [...measures].sort(),
   };
 }
@@ -586,6 +692,14 @@ function terrainGridRank(manifestLayer: ViewerManifestLayer | undefined, artifac
   if (key.endsWith("/xyz_surface.json")) rank += 350;
   if (key.endsWith("/surface_samples.json")) rank -= 200;
   return rank;
+}
+
+function portOrderFromToPort(toPort: string | undefined): number {
+  if (!toPort) return Number.MAX_SAFE_INTEGER;
+  const m = /^in_(\d+)$/.exec(String(toPort).trim());
+  if (!m) return Number.MAX_SAFE_INTEGER;
+  const v = Number(m[1]);
+  return Number.isFinite(v) ? Math.max(1, Math.trunc(v)) : Number.MAX_SAFE_INTEGER;
 }
 
 function percentile(sorted: number[], pct: number): number {
@@ -757,6 +871,46 @@ function paletteColor(value: number | null, lo: number, hi: number, palette: Sce
   return `rgb(${r},${g},${bb})`;
 }
 
+function applyMeasureTransform(
+  value: number,
+  mode: SceneUiState["measureTransform"]
+): number | null {
+  if (!Number.isFinite(value)) return null;
+  if (mode === "linear") return value;
+  if (value <= 0) return null;
+  if (mode === "log10") return Math.log10(value);
+  return Math.log(value);
+}
+
+function categoricalMeasureColor(
+  rawValue: number | null,
+  palette: SceneUiState["palette"]
+): string {
+  if (rawValue === null || !Number.isFinite(rawValue)) return "#58a6ff";
+  const bucket = Math.round(rawValue * 1000) / 1000;
+  const x = Math.abs(Math.floor(bucket * 104729));
+  const t = (x % 997) / 996;
+  return paletteColor(t, 0, 1, palette);
+}
+
+function parseCategoricalColorMap(raw: string): Record<string, string> {
+  if (!raw || raw.trim().length === 0) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof k !== "string") continue;
+      if (typeof v === "string" && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v.trim())) {
+        out[k] = v.trim();
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 function SegmentTube({
   from,
   to,
@@ -906,7 +1060,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     contourSegments: [],
     assayPoints: [],
     terrainPoints: [],
+    terrainGrids: [],
     terrainGrid: null,
+    aoiBounds: null,
     measureCandidates: [],
     totalArtifacts: 0,
   });
@@ -1000,6 +1156,32 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               : DEFAULT_UI.imageryProvider,
           selectedMeasure: typeof uiRaw.selected_measure === "string" ? uiRaw.selected_measure : "",
           palette: uiRaw.palette === "viridis" || uiRaw.palette === "turbo" || uiRaw.palette === "red_blue" || uiRaw.palette === "inferno" ? uiRaw.palette : "inferno",
+          measureColorMode:
+            uiRaw.measure_color_mode === "categorical" || uiRaw.measure_color_mode === "continuous"
+              ? uiRaw.measure_color_mode
+              : DEFAULT_UI.measureColorMode,
+          measureTransform:
+            uiRaw.measure_transform === "log10" || uiRaw.measure_transform === "ln" || uiRaw.measure_transform === "linear"
+              ? uiRaw.measure_transform
+              : DEFAULT_UI.measureTransform,
+          categoricalColorMap:
+            typeof uiRaw.categorical_color_map === "string"
+              ? uiRaw.categorical_color_map
+              : DEFAULT_UI.categoricalColorMap,
+          groundSurfaceKey:
+            typeof uiRaw.ground_surface_key === "string"
+              ? uiRaw.ground_surface_key
+              : DEFAULT_UI.groundSurfaceKey,
+          pointShape:
+            uiRaw.point_shape === "box" || uiRaw.point_shape === "diamond" || uiRaw.point_shape === "sphere"
+              ? uiRaw.point_shape
+              : DEFAULT_UI.pointShape,
+          layerStyles:
+            uiRaw.layer_styles &&
+            typeof uiRaw.layer_styles === "object" &&
+            !Array.isArray(uiRaw.layer_styles)
+              ? (uiRaw.layer_styles as Record<string, LayerVizStyle>)
+              : {},
           clampLowPct: typeof uiRaw.clamp_low_pct === "number" ? uiRaw.clamp_low_pct : DEFAULT_UI.clampLowPct,
           clampHighPct: typeof uiRaw.clamp_high_pct === "number" ? uiRaw.clamp_high_pct : DEFAULT_UI.clampHighPct,
           radiusScale: typeof uiRaw.radius_scale === "number" ? uiRaw.radius_scale : DEFAULT_UI.radiusScale,
@@ -1068,6 +1250,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             imagery_provider: ui.imageryProvider,
             selected_measure: ui.selectedMeasure,
             palette: ui.palette,
+            measure_color_mode: ui.measureColorMode,
+            measure_transform: ui.measureTransform,
+            categorical_color_map: ui.categoricalColorMap,
+            ground_surface_key: ui.groundSurfaceKey,
+            point_shape: ui.pointShape,
+            layer_styles: ui.layerStyles,
             clamp_low_pct: ui.clampLowPct,
             clamp_high_pct: ui.clampHighPct,
             radius_scale: ui.radiusScale,
@@ -1121,7 +1309,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           contourSegments: [],
           assayPoints: [],
           terrainPoints: [],
+          terrainGrids: [],
           terrainGrid: null,
+          aoiBounds: null,
           measureCandidates: [],
           totalArtifacts: 0,
         });
@@ -1137,8 +1327,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const allContours: Segment3D[] = [];
       const allPoints: Point3D[] = [];
       const allTerrain: TerrainPoint[] = [];
+      const terrainCandidates: Array<{
+        id: string;
+        label: string;
+        rank: number;
+        portOrder: number;
+        grid: TerrainGrid;
+      }> = [];
       let bestTerrainGrid: TerrainGrid | null = null;
       let bestTerrainPick: TerrainGridPick | null = null;
+      let mergedAoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null = null;
       let imageryContract: ImageryDrapeContract | null = null;
       let layerStackContract: LayerStackContract | null = null;
       const allMeasures = new Set<string>();
@@ -1165,11 +1363,30 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           allContours.push(...parsed.contourSegments);
           allPoints.push(...parsed.assayPoints);
           allTerrain.push(...parsed.terrainPoints);
+          if (parsed.aoiBounds) {
+            if (!mergedAoiBounds) {
+              mergedAoiBounds = { ...parsed.aoiBounds };
+            } else {
+              mergedAoiBounds = {
+                xmin: Math.min(mergedAoiBounds.xmin, parsed.aoiBounds.xmin),
+                xmax: Math.max(mergedAoiBounds.xmax, parsed.aoiBounds.xmax),
+                ymin: Math.min(mergedAoiBounds.ymin, parsed.aoiBounds.ymin),
+                ymax: Math.max(mergedAoiBounds.ymax, parsed.aoiBounds.ymax),
+              };
+            }
+          }
           if (parsed.terrainGrid) {
             const ml = manifestByArtifact.get(`${art.key}:${art.content_hash}`);
             const curCells = parsed.terrainGrid.nx * parsed.terrainGrid.ny;
             const curRank = terrainGridRank(ml, art.key);
             const cur: TerrainGridPick = { grid: parsed.terrainGrid, rank: curRank, cells: curCells };
+            terrainCandidates.push({
+              id: `${art.key}:${art.content_hash}`,
+              label: art.key.split("/").slice(-1)[0] ?? art.key,
+              rank: curRank,
+              portOrder: portOrderFromToPort(ml?.to_port),
+              grid: parsed.terrainGrid,
+            });
             if (!bestTerrainPick) {
               bestTerrainPick = cur;
               bestTerrainGrid = cur.grid;
@@ -1189,13 +1406,22 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       if (cancelled) return;
       setContractImagery(imageryContract);
       setContractLayerStack(layerStackContract);
+      const orderedTerrain = terrainCandidates
+        .slice()
+        .sort((a, b) => a.portOrder - b.portOrder || b.rank - a.rank || a.label.localeCompare(b.label));
+      const preferredTerrain =
+        orderedTerrain.find((t) => t.id === ui.groundSurfaceKey)?.grid ??
+        orderedTerrain[0]?.grid ??
+        bestTerrainGrid;
       setSceneData({
         traces: allTraces,
         drillSegments: allSegs,
         contourSegments: allContours,
         assayPoints: allPoints,
         terrainPoints: allTerrain,
-        terrainGrid: bestTerrainGrid,
+        terrainGrids: orderedTerrain,
+        terrainGrid: preferredTerrain,
+        aoiBounds: mergedAoiBounds,
         measureCandidates: [...allMeasures].sort(),
         totalArtifacts: loaded,
       });
@@ -1207,10 +1433,52 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   }, [artifacts, graphId, inputLinks, manifestArtifacts, manifestLayers, viewerNodeId]);
 
   useEffect(() => {
-    if (!ui.selectedMeasure && sceneData.measureCandidates.length) {
-      setUi((p) => ({ ...p, selectedMeasure: sceneData.measureCandidates[0] }));
+    if (sceneData.measureCandidates.length === 0) return;
+    const firstMeasure = sceneData.measureCandidates[0];
+    setUi((p) => {
+      const hasAnyLayerAttr = Object.values(p.layerStyles).some(
+        (s) => typeof s?.attributeKey === "string" && s.attributeKey.trim().length > 0
+      );
+      if (hasAnyLayerAttr) return p;
+      return {
+        ...p,
+        layerStyles: {
+          ...p.layerStyles,
+          assay_points: {
+            ...(p.layerStyles.assay_points ?? DEFAULT_LAYER_STYLE),
+            attributeKey: firstMeasure,
+          },
+          grade_segments: {
+            ...(p.layerStyles.grade_segments ?? DEFAULT_LAYER_STYLE),
+            attributeKey: firstMeasure,
+          },
+          high_grade_balloons: {
+            ...(p.layerStyles.high_grade_balloons ?? DEFAULT_LAYER_STYLE),
+            attributeKey: firstMeasure,
+          },
+        },
+      };
+    });
+  }, [sceneData.measureCandidates]);
+
+  useEffect(() => {
+    if (sceneData.terrainGrids.length === 0) return;
+    if (ui.groundSurfaceKey && sceneData.terrainGrids.some((t) => t.id === ui.groundSurfaceKey)) return;
+    setUi((p) => ({
+      ...p,
+      groundSurfaceKey: sceneData.terrainGrids[0]?.id ?? "",
+    }));
+  }, [sceneData.terrainGrids, ui.groundSurfaceKey]);
+
+  const groundTerrainGrid = useMemo(() => {
+    if (sceneData.terrainGrids.length > 0) {
+      return (
+        sceneData.terrainGrids.find((t) => t.id === ui.groundSurfaceKey)?.grid ??
+        sceneData.terrainGrids[0].grid
+      );
     }
-  }, [sceneData.measureCandidates, ui.selectedMeasure]);
+    return sceneData.terrainGrid;
+  }, [sceneData.terrainGrid, sceneData.terrainGrids, ui.groundSurfaceKey]);
 
   const world = useMemo(() => {
     const pts: Array<[number, number, number]> = [];
@@ -1218,12 +1486,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     for (const s of sceneData.drillSegments) pts.push(s.from, s.to);
     for (const s of sceneData.contourSegments) pts.push(s.from, s.to);
     for (const p of sceneData.assayPoints) {
-      const z = resolvePointZ(p, sceneData.terrainGrid);
+      const z = resolvePointZ(p, groundTerrainGrid);
       if (typeof z === "number" && Number.isFinite(z)) pts.push([p.x, p.y, z]);
     }
     for (const p of sceneData.terrainPoints) pts.push([p.x, p.y, p.z]);
-    if (sceneData.terrainGrid && sceneData.terrainGrid.values.length > 0) {
-      const g = sceneData.terrainGrid;
+    if (groundTerrainGrid && groundTerrainGrid.values.length > 0) {
+      const g = groundTerrainGrid;
       let gzMin = Number.POSITIVE_INFINITY;
       let gzMax = Number.NEGATIVE_INFINITY;
       for (const z of g.values) {
@@ -1237,6 +1505,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       } else {
         pts.push([g.xmin, g.ymin, 0], [g.xmax, g.ymax, 0]);
       }
+    }
+    if (sceneData.aoiBounds) {
+      pts.push(
+        [sceneData.aoiBounds.xmin, sceneData.aoiBounds.ymin, 0],
+        [sceneData.aoiBounds.xmax, sceneData.aoiBounds.ymax, 0]
+      );
     }
     if (pts.length === 0) {
       return { center: [0, 0, 0] as [number, number, number], bounds: { xmin: 0, xmax: 1, ymin: 0, ymax: 1, zmin: 0, zmax: 1 } };
@@ -1256,7 +1530,82 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       zmax = Math.max(zmax, z);
     }
     return { center: [(xmin + xmax) / 2, (ymin + ymax) / 2, (zmin + zmax) / 2] as [number, number, number], bounds: { xmin, xmax, ymin, ymax, zmin, zmax } };
-  }, [sceneData]);
+  }, [groundTerrainGrid, sceneData]);
+
+  const dataWarnings = useMemo(() => {
+    const warnings: string[] = [];
+    const baseBounds = groundTerrainGrid
+      ? {
+          xmin: groundTerrainGrid.xmin,
+          xmax: groundTerrainGrid.xmax,
+          ymin: groundTerrainGrid.ymin,
+          ymax: groundTerrainGrid.ymax,
+        }
+      : sceneData.aoiBounds;
+    if (baseBounds) {
+      const outsidePointCount = sceneData.assayPoints.filter(
+        (p) =>
+          p.x < baseBounds.xmin ||
+          p.x > baseBounds.xmax ||
+          p.y < baseBounds.ymin ||
+          p.y > baseBounds.ymax
+      ).length;
+      let outsideSegmentEndCount = 0;
+      const allSegs = [
+        ...sceneData.traces,
+        ...sceneData.drillSegments,
+        ...sceneData.contourSegments,
+      ];
+      for (const s of allSegs) {
+        if (
+          s.from[0] < baseBounds.xmin ||
+          s.from[0] > baseBounds.xmax ||
+          s.from[1] < baseBounds.ymin ||
+          s.from[1] > baseBounds.ymax
+        ) {
+          outsideSegmentEndCount += 1;
+        }
+        if (
+          s.to[0] < baseBounds.xmin ||
+          s.to[0] > baseBounds.xmax ||
+          s.to[1] < baseBounds.ymin ||
+          s.to[1] > baseBounds.ymax
+        ) {
+          outsideSegmentEndCount += 1;
+        }
+      }
+      const outsideTotal = outsidePointCount + outsideSegmentEndCount;
+      if (outsideTotal > 0) {
+        warnings.push(
+          `${outsideTotal} feature endpoint(s) outside AOI/terrain extent (check CRS or AOI).`
+        );
+      }
+    }
+
+    const crsSamples: number[] = [];
+    for (const p of sceneData.assayPoints) if (typeof p.epsg === "number") crsSamples.push(p.epsg);
+    for (const p of sceneData.terrainPoints) if (typeof p.epsg === "number") crsSamples.push(p.epsg);
+    for (const s of [...sceneData.traces, ...sceneData.drillSegments, ...sceneData.contourSegments]) {
+      if (typeof s.epsg === "number") crsSamples.push(s.epsg);
+    }
+    const crsMismatch = crsSamples.filter((e) => e !== projectEpsg).length;
+    if (crsMismatch > 0) {
+      warnings.push(
+        `${crsMismatch} geometry item(s) carry EPSG different from project EPSG:${projectEpsg}.`
+      );
+    }
+
+    const missingPointZ = sceneData.assayPoints.filter((p) => p.hasExplicitZ === false).length;
+    const missingSegZ =
+      sceneData.traces.filter((s) => s.hasExplicitZ === false).length +
+      sceneData.drillSegments.filter((s) => s.hasExplicitZ === false).length;
+    if (!groundTerrainGrid && (missingPointZ > 0 || missingSegZ > 0)) {
+      warnings.push(
+        `${missingPointZ + missingSegZ} XY-only feature(s) cannot be terrain-draped because no terrain layer is present.`
+      );
+    }
+    return warnings;
+  }, [groundTerrainGrid, projectEpsg, sceneData]);
 
   const sceneScale = useMemo(() => {
     const dx = Math.max(1e-9, world.bounds.xmax - world.bounds.xmin);
@@ -1271,33 +1620,92 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       new THREE.Vector3(x - cx, ui.invertDepth ? -(z - cz) : z - cz, y - cy);
   }, [ui.invertDepth, world.center]);
 
-  const measureDomain = useMemo(() => {
-    const key = ui.selectedMeasure.trim();
+  const layerStyle = useCallback(
+    (layerId: LayerKey): LayerVizStyle => {
+      const s = ui.layerStyles[layerId];
+      return {
+        ...DEFAULT_LAYER_STYLE,
+        ...(s ?? {}),
+      };
+    },
+    [ui.layerStyles]
+  );
+
+  const setLayerStyle = useCallback(
+    (layerId: LayerKey, patch: Partial<LayerVizStyle>) => {
+      setUi((p) => {
+        const prev = p.layerStyles[layerId] ?? {
+          ...DEFAULT_LAYER_STYLE,
+        };
+        return {
+          ...p,
+          layerStyles: {
+            ...p.layerStyles,
+            [layerId]: { ...prev, ...patch },
+          },
+        };
+      });
+    },
+    []
+  );
+
+  const domainFor = useCallback((key: string, transform: SceneUiState["measureTransform"], lowPct: number, highPct: number) => {
     if (!key) return { lo: 0, hi: 1 };
     const vals: number[] = [];
     for (const s of sceneData.drillSegments) {
       const v = s.measures?.[key];
-      if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+      if (typeof v === "number" && Number.isFinite(v)) {
+        const tv = applyMeasureTransform(v, transform);
+        if (tv !== null && Number.isFinite(tv)) vals.push(tv);
+      }
     }
     for (const p of sceneData.assayPoints) {
       const v = p.measures?.[key];
-      if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+      if (typeof v === "number" && Number.isFinite(v)) {
+        const tv = applyMeasureTransform(v, transform);
+        if (tv !== null && Number.isFinite(tv)) vals.push(tv);
+      }
     }
     vals.sort((a, b) => a - b);
-    return { lo: vals.length ? percentile(vals, ui.clampLowPct) : 0, hi: vals.length ? percentile(vals, ui.clampHighPct) : 1 };
-  }, [sceneData.assayPoints, sceneData.drillSegments, ui.clampHighPct, ui.clampLowPct, ui.selectedMeasure]);
+    return {
+      lo: vals.length ? percentile(vals, lowPct) : 0,
+      hi: vals.length ? percentile(vals, highPct) : 1,
+    };
+  }, [sceneData.assayPoints, sceneData.drillSegments]);
+
+  const assayStyle = useMemo(() => layerStyle("assay_points"), [layerStyle]);
+  const segmentStyle = useMemo(() => layerStyle("grade_segments"), [layerStyle]);
+  const traceStyle = useMemo(() => layerStyle("trajectories"), [layerStyle]);
+  const balloonStyle = useMemo(() => layerStyle("high_grade_balloons"), [layerStyle]);
+  const assayDomain = useMemo(
+    () => domainFor(assayStyle.attributeKey, assayStyle.transform, assayStyle.clampLowPct, assayStyle.clampHighPct),
+    [assayStyle, domainFor]
+  );
+  const segmentDomain = useMemo(
+    () => domainFor(segmentStyle.attributeKey, segmentStyle.transform, segmentStyle.clampLowPct, segmentStyle.clampHighPct),
+    [domainFor, segmentStyle]
+  );
+  const traceDomain = useMemo(
+    () => domainFor(traceStyle.attributeKey, traceStyle.transform, traceStyle.clampLowPct, traceStyle.clampHighPct),
+    [domainFor, traceStyle]
+  );
+  const balloonDomain = useMemo(
+    () => domainFor(balloonStyle.attributeKey, balloonStyle.transform, balloonStyle.clampLowPct, balloonStyle.clampHighPct),
+    [balloonStyle, domainFor]
+  );
 
   const drapeBounds = useMemo(() => {
-    if (sceneData.terrainGrid) {
+    if (groundTerrainGrid) {
       return {
-        xmin: sceneData.terrainGrid.xmin,
-        xmax: sceneData.terrainGrid.xmax,
-        ymin: sceneData.terrainGrid.ymin,
-        ymax: sceneData.terrainGrid.ymax,
+        xmin: groundTerrainGrid.xmin,
+        xmax: groundTerrainGrid.xmax,
+        ymin: groundTerrainGrid.ymin,
+        ymax: groundTerrainGrid.ymax,
       };
     }
+    if (sceneData.aoiBounds) return sceneData.aoiBounds;
     return world.bounds;
-  }, [sceneData.terrainGrid, world.bounds]);
+  }, [groundTerrainGrid, sceneData.aoiBounds, world.bounds]);
   const currentImageryProvider = IMAGERY_PROVIDERS[ui.imageryProvider] ?? IMAGERY_PROVIDERS.esri_world_imagery;
 
   useEffect(() => {
@@ -1316,12 +1724,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const quality = Array.isArray(contractImagery?.quality_flags)
         ? contractImagery?.quality_flags?.join(", ")
         : "";
-      const terrainBoundsForCheck = sceneData.terrainGrid
+      const terrainBoundsForCheck = groundTerrainGrid
         ? {
-            xmin: sceneData.terrainGrid.xmin,
-            xmax: sceneData.terrainGrid.xmax,
-            ymin: sceneData.terrainGrid.ymin,
-            ymax: sceneData.terrainGrid.ymax,
+            xmin: groundTerrainGrid.xmin,
+            xmax: groundTerrainGrid.xmax,
+            ymin: groundTerrainGrid.ymin,
+            ymax: groundTerrainGrid.ymax,
           }
         : drapeBounds;
       const badContractBounds = boundsMismatchContractVsTerrain(
@@ -1350,7 +1758,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         "Contract imagery bounds mismatch terrain; using runtime provider extent instead."
       );
     }
-    if (!sceneData.terrainGrid) {
+    if (!groundTerrainGrid) {
       setDrapeUrls([]);
       setDrapeStatus("Imagery drape flat fallback only (no terrain DEM input wired).");
       setDrapeLoadError(null);
@@ -1486,7 +1894,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       cancelled = true;
       window.clearTimeout(tid);
     };
-  }, [contractImagery, currentImageryProvider, drapeBounds, projectEpsg, sceneData.terrainGrid, ui.imageryProvider, ui.showDrape]);
+  }, [contractImagery, currentImageryProvider, drapeBounds, groundTerrainGrid, projectEpsg, ui.imageryProvider, ui.showDrape]);
 
   const filteredContourSegments = useMemo(() => {
     if (sceneData.contourSegments.length === 0) return [] as Segment3D[];
@@ -1507,7 +1915,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   }, [sceneData.contourSegments, ui.contourIntervalStep]);
 
   const balloonThresholdValue = useMemo(() => {
-    const key = ui.selectedMeasure.trim();
+    const key = balloonStyle.attributeKey.trim();
     if (!key) return null;
     const vals = sceneData.assayPoints
       .map((p) => p.measures?.[key])
@@ -1515,10 +1923,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       .sort((a, b) => a - b);
     if (vals.length === 0) return null;
     return percentile(vals, Math.max(0, Math.min(100, ui.balloonThresholdPct)));
-  }, [sceneData.assayPoints, ui.balloonThresholdPct, ui.selectedMeasure]);
+  }, [balloonStyle.attributeKey, sceneData.assayPoints, ui.balloonThresholdPct]);
 
   const balloonPoints = useMemo(() => {
-    const key = ui.selectedMeasure.trim();
+    const key = balloonStyle.attributeKey.trim();
     if (!key || balloonThresholdValue === null) return [] as Array<{ point: Point3D; value: number }>;
     return sceneData.assayPoints
       .map((p) => {
@@ -1526,7 +1934,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         return typeof v === "number" && Number.isFinite(v) ? { point: p, value: v } : null;
       })
       .filter((x): x is { point: Point3D; value: number } => x !== null && x.value >= balloonThresholdValue);
-  }, [balloonThresholdValue, sceneData.assayPoints, ui.selectedMeasure]);
+  }, [balloonStyle.attributeKey, balloonThresholdValue, sceneData.assayPoints]);
 
   const localDrillSegments = useMemo(
     () =>
@@ -1538,8 +1946,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   );
 
   const drapeTerrainGeom = useMemo(() => {
-    if (!sceneData.terrainGrid) return null;
-    const g = sceneData.terrainGrid;
+    if (!groundTerrainGrid) return null;
+    const g = groundTerrainGrid;
     if (g.nx < 2 || g.ny < 2 || g.values.length !== g.nx * g.ny) return null;
 
     const positions = new Float32Array(g.nx * g.ny * 3);
@@ -1587,10 +1995,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     geom.setIndex(new THREE.BufferAttribute(indices, 1));
     geom.computeVertexNormals();
     return geom;
-  }, [sceneData.terrainGrid, sceneScale, toLocal]);
+  }, [groundTerrainGrid, sceneScale, toLocal]);
 
   const autoRefitSig = useMemo(() => {
-    const g = sceneData.terrainGrid;
+    const g = groundTerrainGrid;
     return JSON.stringify({
       viewerNodeId,
       totalArtifacts: sceneData.totalArtifacts,
@@ -1608,7 +2016,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           }
         : null,
     });
-  }, [sceneData, viewerNodeId]);
+  }, [groundTerrainGrid, sceneData, viewerNodeId]);
 
   useEffect(() => {
     if (!active) return;
@@ -1658,6 +2066,50 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     assay_points: "Assay points",
     high_grade_balloons: "High-grade balloons",
   };
+  const styleableLayers = new Set<LayerKey>([
+    "trajectories",
+    "grade_segments",
+    "assay_points",
+    "high_grade_balloons",
+  ]);
+
+  const paletteOptions: Array<{ value: SceneUiState["palette"]; label: string }> = [
+    { value: "inferno", label: "Inferno" },
+    { value: "viridis", label: "Viridis" },
+    { value: "turbo", label: "Turbo" },
+    { value: "red_blue", label: "Red ↔ Blue" },
+  ];
+
+  const layerLift = useCallback(
+    (layerId: LayerKey) => {
+      const idx = Math.max(0, orderedLayerIds.indexOf(layerId));
+      return sceneScale * 0.00015 * (idx + 1);
+    },
+    [orderedLayerIds, sceneScale]
+  );
+
+  const colorFromLayerStyle = useCallback(
+    (
+      style: LayerVizStyle,
+      raw: number | string | null,
+      domain: { lo: number; hi: number }
+    ): string => {
+      if (style.colorMode === "categorical") {
+        const custom = parseCategoricalColorMap(style.categoricalColorMap);
+        const key = raw === null ? "" : String(raw);
+        const customColor = custom[key];
+        if (customColor) return customColor;
+        if (typeof raw === "number" && Number.isFinite(raw)) {
+          return categoricalMeasureColor(raw, style.palette);
+        }
+        return categoricalMeasureColor(key.length, style.palette);
+      }
+      if (typeof raw !== "number" || !Number.isFinite(raw)) return "#58a6ff";
+      const tv = applyMeasureTransform(raw, style.transform);
+      return paletteColor(tv, domain.lo, domain.hi, style.palette);
+    },
+    []
+  );
 
   useEffect(() => {
     return () => {
@@ -1680,6 +2132,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         </div>
         <div style={{ padding: "6px 10px", fontSize: 12, opacity: 0.85, borderBottom: "1px solid #30363d" }}>
           {status}{" · "}{drapeLoadError ? `${drapeStatus} (${drapeLoadError})` : drapeStatus}
+          {dataWarnings.length > 0 ? (
+            <div style={{ fontSize: 10, color: "#f7b955", marginTop: 2 }}>
+              Warning: {dataWarnings.join(" · ")}
+            </div>
+          ) : null}
           <div style={{ fontSize: 10, opacity: 0.72, marginTop: 2 }}>
             Imagery attribution: {contractImagery?.attribution || currentImageryProvider.attribution}
           </div>
@@ -1745,27 +2202,45 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 }
                 if (layerId === "trajectories") {
                   if (!ui.showTraces) return null;
+                  const lift = layerLift(layerId);
                   return (
                     <group key="layer-traces">
                       {sceneData.traces.map((s, i) => {
-                        const a = toLocal(s.from[0], s.from[1], s.from[2]);
-                        const b = toLocal(s.to[0], s.to[1], s.to[2]);
+                        const az = s.hasExplicitZ === false
+                          ? sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2]
+                          : s.from[2];
+                        const bz = s.hasExplicitZ === false
+                          ? sampleTerrainZ(groundTerrainGrid, s.to[0], s.to[1]) ?? s.to[2]
+                          : s.to[2];
+                        const a = toLocal(s.from[0], s.from[1], az + lift);
+                        const b = toLocal(s.to[0], s.to[1], bz + lift);
+                        const raw = traceStyle.attributeKey.trim() ? (s.measures?.[traceStyle.attributeKey.trim()] ?? null) : null;
+                        const color = traceStyle.attributeKey.trim()
+                          ? colorFromLayerStyle(traceStyle, raw, traceDomain)
+                          : ui.traceColor;
                         const r = Math.max(0.06, sceneScale * 0.0006 * ui.radiusScale * (ui.traceWidth / 2));
-                        return <SegmentTube key={`trace-${i}`} from={a} to={b} radius={r} color={ui.traceColor} />;
+                        return <SegmentTube key={`trace-${i}`} from={a} to={b} radius={r} color={color} />;
                       })}
                     </group>
                   );
                 }
                 if (layerId === "grade_segments") {
                   if (!ui.showSegments) return null;
+                  const lift = layerLift(layerId);
                   return (
                     <group key="layer-segments">
                       {sceneData.drillSegments.map((s, i) => {
-                        const a = toLocal(s.from[0], s.from[1], s.from[2]);
-                        const b = toLocal(s.to[0], s.to[1], s.to[2]);
-                        const key = ui.selectedMeasure.trim();
-                        const mv = key && s.measures && typeof s.measures[key] === "number" ? (s.measures[key] as number) : null;
-                        const color = paletteColor(mv, measureDomain.lo, measureDomain.hi, ui.palette);
+                        const az = s.hasExplicitZ === false
+                          ? sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2]
+                          : s.from[2];
+                        const bz = s.hasExplicitZ === false
+                          ? sampleTerrainZ(groundTerrainGrid, s.to[0], s.to[1]) ?? s.to[2]
+                          : s.to[2];
+                        const a = toLocal(s.from[0], s.from[1], az + lift);
+                        const b = toLocal(s.to[0], s.to[1], bz + lift);
+                        const key = segmentStyle.attributeKey.trim();
+                        const mv = key && s.measures ? (s.measures[key] ?? null) : null;
+                        const color = colorFromLayerStyle(segmentStyle, mv, segmentDomain);
                         const rFromData = projectEpsg !== 4326 && typeof s.radiusM === "number" ? s.radiusM : 0;
                         const r = Math.max(0.08, sceneScale * 0.0012 * ui.radiusScale * (ui.segmentWidth / 4), rFromData * ui.radiusScale);
                         return <SegmentTube key={`seg-${i}`} from={a} to={b} radius={r} color={color} />;
@@ -1776,16 +2251,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 if (layerId === "contours") {
                   if (!ui.showContours || filteredContourSegments.length === 0) return null;
                   const r = Math.max(0.01, sceneScale * 0.00015 * Math.max(0.25, ui.contourWidth));
-                  const zLift = Math.max(0.01, sceneScale * 0.00018);
+                  const zLift = Math.max(0.01, sceneScale * 0.00018) + layerLift(layerId);
                   return (
                     <group key="layer-contours">
                       {filteredContourSegments.map((s, i) => {
                         const az = s.hasExplicitZ
                           ? s.from[2]
-                          : sampleTerrainZ(sceneData.terrainGrid, s.from[0], s.from[1]) ?? s.from[2];
+                          : sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2];
                         const bz = s.hasExplicitZ
                           ? s.to[2]
-                          : sampleTerrainZ(sceneData.terrainGrid, s.to[0], s.to[1]) ?? s.to[2];
+                          : sampleTerrainZ(groundTerrainGrid, s.to[0], s.to[1]) ?? s.to[2];
                         const a = toLocal(s.from[0], s.from[1], az + zLift);
                         const b = toLocal(s.to[0], s.to[1], bz + zLift);
                         return (
@@ -1804,19 +2279,23 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 }
                 if (layerId === "assay_points") {
                   if (!ui.showSamples) return null;
+                  const lift = layerLift(layerId);
                   return (
                     <group key="layer-assay-points">
                       {sceneData.assayPoints.map((p, i) => {
-                        const pz = resolvePointZ(p, sceneData.terrainGrid);
+                        const pz = resolvePointZ(p, groundTerrainGrid);
                         if (pz === null) return null;
-                        const lp = toLocal(p.x, p.y, pz);
-                        const key = ui.selectedMeasure.trim();
-                        const mv = key && p.measures && typeof p.measures[key] === "number" ? (p.measures[key] as number) : null;
-                        const color = paletteColor(mv, measureDomain.lo, measureDomain.hi, ui.palette);
+                        const lp = toLocal(p.x, p.y, pz + lift);
+                        const key = assayStyle.attributeKey.trim();
+                        const mv = key && p.measures ? (p.measures[key] ?? null) : null;
+                        const color = colorFromLayerStyle(assayStyle, mv, assayDomain);
                         const rr = Math.max(0.09, sceneScale * 0.0009 * ui.radiusScale * (ui.sampleSize / 4));
+                        const shape = assayStyle.pointShape;
                         return (
                           <mesh key={`pt-${i}`} position={[lp.x, lp.y, lp.z]}>
-                            <sphereGeometry args={[rr, 10, 10]} />
+                            {shape === "sphere" ? <sphereGeometry args={[rr, 10, 10]} /> : null}
+                            {shape === "box" ? <boxGeometry args={[rr * 1.8, rr * 1.8, rr * 1.8]} /> : null}
+                            {shape === "diamond" ? <octahedronGeometry args={[rr * 1.25, 0]} /> : null}
                             <meshStandardMaterial color={color} />
                           </mesh>
                         );
@@ -1848,22 +2327,23 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                   if (!ui.showBalloons || balloonPoints.length === 0) return null;
                   const baseR = Math.max(0.14, sceneScale * 0.0014 * Math.max(0.35, ui.balloonScale));
                   const maxAttachDist = Math.max(0.2, sceneScale * 0.04);
+                  const lift = layerLift(layerId);
                   return (
                     <group key="layer-high-grade-balloons">
                       {balloonPoints.map(({ point, value }, i) => {
-                        const pz = resolvePointZ(point, sceneData.terrainGrid);
+                        const pz = resolvePointZ(point, groundTerrainGrid);
                         if (pz === null) return null;
-                        const lp = toLocal(point.x, point.y, pz);
+                        const lp = toLocal(point.x, point.y, pz + lift);
                         const t =
-                          measureDomain.hi > measureDomain.lo
+                          balloonDomain.hi > balloonDomain.lo
                             ? Math.max(
                                 0,
-                                Math.min(1, (value - measureDomain.lo) / (measureDomain.hi - measureDomain.lo))
+                                Math.min(1, (value - balloonDomain.lo) / (balloonDomain.hi - balloonDomain.lo))
                               )
                             : 1;
                         const r = baseR * (0.85 + t * 2.2);
                         const tube = Math.max(r * 0.2, sceneScale * 0.0003);
-                        const color = paletteColor(value, measureDomain.lo, measureDomain.hi, ui.palette);
+                        const color = colorFromLayerStyle(balloonStyle, value, balloonDomain);
                         let nearestDir: THREE.Vector3 | null = null;
                         let bestDistSq = Number.POSITIVE_INFINITY;
                         for (const seg of localDrillSegments) {
@@ -1923,8 +2403,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             {!ui.panelCollapsed && (
               <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
                 <details open>
-                  <summary style={{ fontWeight: 700, cursor: "pointer" }}>Layers</summary>
+                  <summary style={{ fontWeight: 700, cursor: "pointer" }}>Layer manager</summary>
                   <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
+                    <div style={{ fontSize: 10, opacity: 0.72 }}>
+                      Generic viewer inputs are auto-routed into these layers. Terrain is the primary attachment surface for XY-only features.
+                    </div>
                     {hasLayerStackContract ? (
                       <div style={{ fontSize: 11, opacity: 0.8 }}>
                         Layer order:
@@ -1947,6 +2430,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                       </div>
                     ) : null}
                     {orderedLayerIds.map((layerId, i) => {
+                      const style = layerStyle(layerId);
+                      const styleable = styleableLayers.has(layerId);
                       const visible =
                         layerId === "esri_drape"
                           ? ui.showDrape
@@ -1964,26 +2449,30 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                       return (
                         <div
                           key={`chip-${layerId}`}
-                          draggable={canDragLayers}
-                          onDragStart={() => {
-                            if (!canDragLayers) return;
-                            setDraggingLayer(layerId);
-                          }}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={() => onDropLayer(layerId)}
                           style={{
                             border: "1px solid #30363d",
                             borderRadius: 8,
-                            padding: "6px 8px",
+                            padding: "4px 6px",
                             background: "rgba(22,27,34,0.75)",
                           }}
                         >
-                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                             <span
                               style={{
                                 opacity: canDragLayers ? 0.55 : 0.28,
                                 cursor: canDragLayers ? "grab" : "not-allowed",
+                                userSelect: "none",
+                                padding: "2px 4px",
                               }}
+                              draggable={canDragLayers}
+                              onDragStart={(e) => {
+                                if (!canDragLayers) return;
+                                e.stopPropagation();
+                                setDraggingLayer(layerId);
+                              }}
+                              onDragEnd={() => setDraggingLayer(null)}
                             >
                               ⋮⋮
                             </span>
@@ -2009,7 +2498,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                               }
                             />
                             <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 12, fontWeight: 600 }}>{layerLabel[layerId]}</div>
+                              <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.2 }}>{layerLabel[layerId]}</div>
                               <div style={{ fontSize: 10, opacity: 0.65 }}>z:{i + 1}</div>
                             </div>
                             <button
@@ -2017,12 +2506,13 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                               onClick={() =>
                                 setExpandedLayers((prev) => ({ ...prev, [layerId]: !prev[layerId] }))
                               }
+                              style={{ fontSize: 11, lineHeight: 1, padding: "4px 6px", minWidth: 26 }}
                             >
-                              {expandedLayers[layerId] ? "Hide" : "Edit"}
+                              {expandedLayers[layerId] ? "▾" : "▸"}
                             </button>
                           </div>
                           {expandedLayers[layerId] && (
-                            <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
+                            <div style={{ marginTop: 4, display: "grid", gap: 6 }}>
                               {layerId === "esri_drape" ? (
                                 <>
                                   <label>
@@ -2072,19 +2562,38 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                 </>
                               ) : null}
                               {layerId === "terrain_points" ? (
-                                <label>
-                                  Terrain alpha
-                                  <input
-                                    type="range"
-                                    min={0}
-                                    max={1}
-                                    step={0.02}
-                                    value={ui.terrainOpacity}
-                                    onChange={(e) =>
-                                      setUi((p) => ({ ...p, terrainOpacity: Number(e.target.value) || 0 }))
-                                    }
-                                  />
-                                </label>
+                                <>
+                                  {sceneData.terrainGrids.length > 1 ? (
+                                    <label>
+                                      Ground surface
+                                      <select
+                                        value={ui.groundSurfaceKey}
+                                        onChange={(e) =>
+                                          setUi((p) => ({ ...p, groundSurfaceKey: e.target.value }))
+                                        }
+                                      >
+                                        {sceneData.terrainGrids.map((t) => (
+                                          <option key={t.id} value={t.id}>
+                                            {t.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  ) : null}
+                                  <label>
+                                    Terrain alpha
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={1}
+                                      step={0.02}
+                                      value={ui.terrainOpacity}
+                                      onChange={(e) =>
+                                        setUi((p) => ({ ...p, terrainOpacity: Number(e.target.value) || 0 }))
+                                      }
+                                    />
+                                  </label>
+                                </>
                               ) : null}
                               {layerId === "contours" ? (
                                 <>
@@ -2244,28 +2753,162 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   </label>
                                 </>
                               ) : null}
+                              {styleable ? (
+                                <div
+                                  style={{
+                                    borderTop: "1px solid rgba(139,148,158,0.25)",
+                                    paddingTop: 6,
+                                    display: "grid",
+                                    gap: 6,
+                                  }}
+                                >
+                                  <div style={{ fontSize: 10, opacity: 0.75, fontWeight: 700 }}>
+                                    Styling
+                                  </div>
+                                  <label>
+                                    Attribute
+                                    <select
+                                      value={style.attributeKey}
+                                      onChange={(e) =>
+                                        setLayerStyle(layerId, { attributeKey: e.target.value })
+                                      }
+                                    >
+                                      <option value="">(constant color)</option>
+                                      {sceneData.measureCandidates.map((m) => (
+                                        <option key={`${layerId}-${m}`} value={m}>
+                                          {m}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <label>
+                                    Color mode
+                                    <select
+                                      value={style.colorMode}
+                                      onChange={(e) =>
+                                        setLayerStyle(layerId, {
+                                          colorMode: e.target.value as SceneUiState["measureColorMode"],
+                                        })
+                                      }
+                                    >
+                                      <option value="continuous">Continuous</option>
+                                      <option value="categorical">Categorical</option>
+                                    </select>
+                                  </label>
+                                  <label>
+                                    Color ramp
+                                    <select
+                                      value={style.palette}
+                                      onChange={(e) =>
+                                        setLayerStyle(layerId, {
+                                          palette: e.target.value as SceneUiState["palette"],
+                                        })
+                                      }
+                                    >
+                                      {paletteOptions.map((opt) => (
+                                        <option key={opt.value} value={opt.value}>
+                                          {opt.label}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  {style.colorMode === "continuous" ? (
+                                    <>
+                                      <label>
+                                        Transform
+                                        <select
+                                          value={style.transform}
+                                          onChange={(e) =>
+                                            setLayerStyle(layerId, {
+                                              transform: e.target.value as SceneUiState["measureTransform"],
+                                            })
+                                          }
+                                        >
+                                          <option value="linear">Linear</option>
+                                          <option value="log10">Log10</option>
+                                          <option value="ln">Natural log</option>
+                                        </select>
+                                      </label>
+                                      <label>
+                                        Clamp low (%)
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={100}
+                                          value={style.clampLowPct}
+                                          onChange={(e) =>
+                                            setLayerStyle(layerId, {
+                                              clampLowPct: Math.max(
+                                                0,
+                                                Math.min(100, Number(e.target.value) || 0)
+                                              ),
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                      <label>
+                                        Clamp high (%)
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={100}
+                                          value={style.clampHighPct}
+                                          onChange={(e) =>
+                                            setLayerStyle(layerId, {
+                                              clampHighPct: Math.max(
+                                                0,
+                                                Math.min(100, Number(e.target.value) || 100)
+                                              ),
+                                            })
+                                          }
+                                        />
+                                      </label>
+                                    </>
+                                  ) : (
+                                    <label>
+                                      Category map (JSON)
+                                      <textarea
+                                        value={style.categoricalColorMap}
+                                        rows={3}
+                                        onChange={(e) =>
+                                          setLayerStyle(layerId, {
+                                            categoricalColorMap: e.target.value,
+                                          })
+                                        }
+                                        style={{
+                                          width: "100%",
+                                          resize: "vertical",
+                                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                                          fontSize: 11,
+                                        }}
+                                        placeholder='{"ore":"#f97316","waste":"#3b82f6"}'
+                                      />
+                                    </label>
+                                  )}
+                                  {layerId === "assay_points" ? (
+                                    <label>
+                                      Point shape
+                                      <select
+                                        value={style.pointShape}
+                                        onChange={(e) =>
+                                          setLayerStyle(layerId, {
+                                            pointShape: e.target.value as LayerVizStyle["pointShape"],
+                                          })
+                                        }
+                                      >
+                                        <option value="sphere">Sphere</option>
+                                        <option value="box">Box</option>
+                                        <option value="diamond">Diamond</option>
+                                      </select>
+                                    </label>
+                                  ) : null}
+                                </div>
+                              ) : null}
                             </div>
                           )}
                         </div>
                       );
                     })}
-                  </div>
-                </details>
-
-                <details open>
-                  <summary style={{ fontWeight: 700, cursor: "pointer" }}>Measure</summary>
-                  <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-                    <select value={ui.selectedMeasure} onChange={(e) => setUi((p) => ({ ...p, selectedMeasure: e.target.value }))}>
-                      {sceneData.measureCandidates.length === 0 ? <option value="">(none)</option> : sceneData.measureCandidates.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <select value={ui.palette} onChange={(e) => setUi((p) => ({ ...p, palette: e.target.value as SceneUiState["palette"] }))}>
-                      <option value="inferno">Inferno</option>
-                      <option value="viridis">Viridis</option>
-                      <option value="turbo">Turbo</option>
-                      <option value="red_blue">Red ↔ Blue</option>
-                    </select>
-                    <label>Clamp low (%)<input type="number" min={0} max={100} value={ui.clampLowPct} onChange={(e) => setUi((p) => ({ ...p, clampLowPct: Math.max(0, Math.min(100, Number(e.target.value) || 0)) }))} /></label>
-                    <label>Clamp high (%)<input type="number" min={0} max={100} value={ui.clampHighPct} onChange={(e) => setUi((p) => ({ ...p, clampHighPct: Math.max(0, Math.min(100, Number(e.target.value) || 100)) }))} /></label>
                   </div>
                 </details>
 

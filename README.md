@@ -4,6 +4,17 @@ Geo-Scry's graph-native exploration platform for mining workflows.
 
 This repository contains a componentized backend graph/orchestration runtime, worker execution engine, and the Vite web client used to design pipelines, run nodes, and preview 2D/3D outputs.
 
+## Middleware-First Design
+
+`mine-eye` is intentionally middleware-first to prevent frontend drift:
+
+- backend services own graph truth, execution/cache state, CRS policy, and lineage
+- versioned contracts (`spatial.aoi.v1`, `terrain.surface_grid.v1`, `scene3d.*`) are the handoff boundary
+- orchestrator viewer manifests broker render intent so clients do not duplicate inference logic
+- clients should render contracts/manifests, not provider internals
+
+This is the core parity rule for web, iOS, and desktop clients.
+
 ## What This Project Is
 
 `mine-eye` is an early-stage, end-to-end framework for exploration data workflows:
@@ -24,9 +35,8 @@ This repository contains a componentized backend graph/orchestration runtime, wo
 - `crates/mine-eye-scheduler` — dirty-node planning/scheduling helpers
 - `crates/mine-eye-nodes` — node executors (ingest/transform/model/visualization)
 - `crates/mine-eye-store` — Postgres persistence layer and migrations
+- `contracts/scene3d` — JSON schema contracts for AOI/terrain/imagery/layer-stack payloads
 - `sample-data` — sample inputs for local testing
-- `GEO_SCRY_FRAMEWORK_CHECKLIST.md` — active implementation checklist
-- `V1SPEC.md` — v1 behavior/spec notes
 - `ARCHITECTURE.md` — architecture and design principles
 
 ### Node Kind Taxonomy (Current)
@@ -45,6 +55,19 @@ This repository contains a componentized backend graph/orchestration runtime, wo
 - `stubs` (alpha placeholders)
 
 `runtime.rs` is internal helper/runtime support. New public node entrypoints should be added to the domain module, not directly exposed from `runtime.rs`.
+
+## Componentized Middleware Brokers
+
+To keep frontends efficient and consistent, behavior is split into broker components:
+
+- **Graph broker** (`services/orchestrator`): graph CRUD, branch/revision state, run planning.
+- **Execution broker** (`mine-eye-scheduler` + worker): dirty propagation, queue discipline, deterministic execution.
+- **Scene broker** (viewer manifest + `scene_contract` nodes): layer composition, renderer intent, UI capability boundary.
+- **Spatial broker** (`spatial` nodes + CRS APIs): AOI inference/lock, CRS normalization, bounds provenance.
+- **Terrain/imagery broker** (`surface`, `imagery_raster`): DEM fetch/fit, imagery fallback strategy, cache metadata.
+- **Artifact broker** (`mine-eye-store`): immutable artifacts, lineage/content hash, schema/variant metadata.
+
+Frontend rule: fetch one brokered contract/manifest and render, rather than recomputing semantics in the UI.
 
 ## Design Principles
 
@@ -160,7 +183,20 @@ To keep this sustainable:
   - cached picks
   - live EPSG search
 - `plan_view_2d` is the current 2D visualization node.
-- `cesium_display_node` is the current Cesium-backed 3D visualization node (legacy alias path exists for `plan_view_3d`).
+- `threejs_display_node` is the active 3D workflow node for current scene/layer UX iteration.
+- `cesium_display_node` remains supported as a legacy/parallel 3D path (and older graphs may still reference `plan_view_3d` alias flows).
+
+## Recommended 3D Pipeline (Current)
+
+For deterministic draped terrain scenes:
+
+1. `aoi` (manual or inferred from connected XY/XYZ)
+2. `dem_fetch` (provider DEM with optional fit to known XYZ controls)
+3. `tilebroker` / `imagery_provider` (imagery contract + provider fallback chain)
+4. optional `xyz_to_surface` / mesh/model nodes
+5. `threejs_display_node` consuming wired contracts/layers
+
+This ordering keeps AOI, terrain, and imagery explicit and reproducible.
 
 ## Current Scope
 
