@@ -269,6 +269,11 @@ cargo check
 cd apps/web && npm run build
 ```
 
+## Engineering Playbooks
+
+- Plugin/analytic delivery guide:
+  [docs/plugin-analytic-implementation-guide.md](/Users/troytravlos/mine-eye/docs/plugin-analytic-implementation-guide.md)
+
 ## License
 
 Workspace license is `MIT OR Apache-2.0`.
