@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AoiBboxEditor } from "./AoiBboxEditor";
+import { extractBboxAndEpsg, toWgs84Bbox, type AoiBbox } from "./aoiBounds";
 import { GraphCanvas } from "./GraphCanvas";
 import { GraphErrorBoundary } from "./GraphErrorBoundary";
 import {
@@ -14,6 +16,7 @@ import {
   listGraphBranches,
   listGraphPromotions,
   listGraphRevisions,
+  patchNodeParams,
   runGraph,
   updateWorkspaceProjectCrs,
   type ApiBranch,
@@ -33,6 +36,7 @@ import { NodePreviewPanel } from "./NodePreviewPanel";
 import { loadNodeRegistryFromApi, nodeSpec } from "./nodeRegistry";
 import type { InspectorTab } from "./graphInspectorContext";
 import {
+  deleteProject,
   getActiveProjectId,
   loadProjects,
   setActiveProjectId,
@@ -46,7 +50,7 @@ type SeedResponse = {
   nodes: Record<string, string>;
 };
 
-type MainTab = "workspace" | `node:${string}` | `edit:${string}`;
+type MainTab = "workspace" | `node:${string}` | `edit:${string}` | `aoi:${string}`;
 
 function collectWorkspaceUsedEpsg(nodes: ApiNode[]): number[] {
   const out = new Set<number>();
@@ -94,6 +98,7 @@ export default function App() {
   const [pendingProjectEpsg, setPendingProjectEpsg] = useState<number | null>(null);
   const [openViewerNodeIds, setOpenViewerNodeIds] = useState<string[]>([]);
   const [openEditorNodeIds, setOpenEditorNodeIds] = useState<string[]>([]);
+  const [openAoiEditorNodeIds, setOpenAoiEditorNodeIds] = useState<string[]>([]);
   const [editorTabs, setEditorTabs] = useState<Record<string, InspectorTab>>({});
   const [branches, setBranches] = useState<ApiBranch[]>([]);
   const [revisions, setRevisions] = useState<ApiRevision[]>([]);
@@ -230,12 +235,41 @@ export default function App() {
     setPendingProjectEpsg(null);
     setOpenViewerNodeIds([]);
     setOpenEditorNodeIds([]);
+    setOpenAoiEditorNodeIds([]);
     setEditorTabs({});
     setRevisionDiff(null);
     setStatus("");
     setActiveBranchId(null);
     setMainTab("workspace");
   }, []);
+
+  const handleDeleteProject = useCallback(
+    (localId: string) => {
+      deleteProject(localId);
+      const remaining = loadProjects();
+      setProjects(remaining);
+      if (activeProjectId === localId) {
+        // Switch to next available project, or clear state
+        if (remaining.length > 0) {
+          selectProject(remaining[0]);
+        } else {
+          setActiveProjectIdState(null);
+          setGraphId(null);
+          setArtifacts([]);
+          setGraphEdges([]);
+          setGraphNodes([]);
+          setWorkspaceId(null);
+          setProjectEpsg(4326);
+          setOpenViewerNodeIds([]);
+          setOpenEditorNodeIds([]);
+          setOpenAoiEditorNodeIds([]);
+          setActiveBranchId(null);
+          setMainTab("workspace");
+        }
+      }
+    },
+    [activeProjectId, selectProject]
+  );
 
   const queuePipelineRun = useCallback(async () => {
     if (!graphId) return;
@@ -288,6 +322,7 @@ export default function App() {
       setMainTab("workspace");
       setOpenViewerNodeIds([]);
       setOpenEditorNodeIds([]);
+      setOpenAoiEditorNodeIds([]);
       setEditorTabs({});
       setPendingProjectEpsg(null);
       setStatus(
@@ -332,6 +367,7 @@ export default function App() {
       setMainTab("workspace");
       setOpenViewerNodeIds([]);
       setOpenEditorNodeIds([]);
+      setOpenAoiEditorNodeIds([]);
       setEditorTabs({});
       setPendingProjectEpsg(null);
       setStatus(
@@ -515,6 +551,83 @@ export default function App() {
     setGraphNodes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
   }, []);
 
+  // Pre-fetched WGS84 bboxes for AOI editor tabs.
+  // undefined = not yet attempted, null = attempted but nothing found, [...] = ready.
+  const [aoiInitialBboxes, setAoiInitialBboxes] = useState<
+    Record<string, [number, number, number, number] | null>
+  >({});
+
+  // Fetch an artifact, extract bbox, reproject to WGS84.
+  const fetchWgs84BboxForNode = useCallback(
+    async (nodeId: string) => {
+      const nodeArtifacts = artifacts.filter((a) => a.node_id === nodeId);
+      if (nodeArtifacts.length === 0) return;
+      for (const artifact of nodeArtifacts) {
+        try {
+          const r = await fetch(api(artifact.url), { cache: "no-store" });
+          if (!r.ok) continue;
+          const data = (await r.json()) as Record<string, unknown>;
+          const extracted = extractBboxAndEpsg(data);
+          if (!extracted) continue;
+          const wgs84 = await toWgs84Bbox(extracted.bbox, extracted.epsg);
+          if (!wgs84) continue;
+          setAoiInitialBboxes((prev) => ({ ...prev, [nodeId]: wgs84 }));
+          return;
+        } catch {
+          // try next artifact
+        }
+      }
+      // Nothing found — mark as attempted so we don't spin
+      setAoiInitialBboxes((prev) => ({ ...prev, [nodeId]: null }));
+    },
+    [artifacts]
+  );
+
+  // If an AOI tab was opened before artifacts existed, retry once artifacts land.
+  useEffect(() => {
+    for (const nodeId of openAoiEditorNodeIds) {
+      if (nodeId in aoiInitialBboxes) continue;
+      void fetchWgs84BboxForNode(nodeId);
+    }
+  }, [openAoiEditorNodeIds, aoiInitialBboxes, fetchWgs84BboxForNode]);
+
+  const openAoiEditor = useCallback(
+    (nodeId: string) => {
+      setOpenAoiEditorNodeIds((prev) => (prev.includes(nodeId) ? prev : [...prev, nodeId]));
+      setMainTab(`aoi:${nodeId}`);
+      // Kick off artifact fetch so the map gets a real initial bbox
+      setAoiInitialBboxes((prev) => {
+        if (nodeId in prev) return prev; // already fetched
+        return prev; // don't reset, fetch below
+      });
+      void fetchWgs84BboxForNode(nodeId);
+    },
+    [fetchWgs84BboxForNode]
+  );
+
+  const closeAoiEditor = useCallback((nodeId: string) => {
+    setOpenAoiEditorNodeIds((prev) => prev.filter((id) => id !== nodeId));
+    setMainTab((prev) => (prev === `aoi:${nodeId}` ? "workspace" : prev));
+  }, []);
+
+  const saveAoiBbox = useCallback(
+    async (nodeId: string, bbox: [number, number, number, number], epsg: number) => {
+      if (!graphId) return;
+      try {
+        const updated = await patchNodeParams(
+          graphId,
+          nodeId,
+          { ui: { bbox, bbox_epsg: epsg } },
+          { branchId: activeBranchId }
+        );
+        setGraphNodes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+      } catch (e) {
+        setStatus(`AOI save failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [graphId, activeBranchId]
+  );
+
   const applyProjectCrs = useCallback(
     async (wsId: string, epsg: number) => {
       const next = Math.trunc(epsg);
@@ -655,6 +768,7 @@ export default function App() {
               onPromoteBranch={(source, target) => void onPromoteBranch(source, target)}
               revisionDiff={revisionDiff}
               onDiffRevisions={(from, to) => void onDiffRevisions(from, to)}
+              onDeleteProject={handleDeleteProject}
             />
           </div>
         ) : (
@@ -791,6 +905,25 @@ export default function App() {
                   />
                 );
               })}
+            {openAoiEditorNodeIds
+              .filter((id) => graphNodes.some((n) => n.id === id))
+              .map((id) => {
+                const node = graphNodes.find((n) => n.id === id) ?? null;
+                const nodeAlias = node ? (node.config.params._alias as string | undefined | null) : null;
+                const label = node
+                  ? `${(nodeAlias ?? node.config.kind).replace(/_/g, " ")} map`
+                  : `AOI map ${id.slice(0, 6)}`;
+                const tabId = `aoi:${id}` as MainTab;
+                return (
+                  <TabButton
+                    key={`aoi-tab:${id}`}
+                    active={mainTab === tabId}
+                    onClick={() => setMainTab(tabId)}
+                    onClose={() => closeAoiEditor(id)}
+                    label={label}
+                  />
+                );
+              })}
           </div>
           <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
             <div
@@ -811,6 +944,7 @@ export default function App() {
                   onPipelineQueued={refreshAll}
                   onOpenNodeViewer={openNodeViewer}
                   onOpenNodeEditor={openNodeEditor}
+                  onOpenAoiEditor={openAoiEditor}
                   onGraphChanged={refreshAll}
                 />
               </GraphErrorBoundary>
@@ -906,6 +1040,7 @@ export default function App() {
                           setEditorTabs((prev) => ({ ...prev, [nodeId]: next }))
                         }
                         onClose={() => closeNodeEditor(nodeId)}
+                        onOpenAoiEditor={openAoiEditor}
                         mode="editor"
                         onNodeUpdated={onNodeUpdatedFromEditor}
                         nodeArtifacts={nodeArtifacts}
@@ -913,6 +1048,112 @@ export default function App() {
                       />
                     </div>
                   )}
+                </div>
+              );
+            })}
+            {openAoiEditorNodeIds.map((nodeId) => {
+              const node = graphNodes.find((n) => n.id === nodeId) ?? null;
+              const active = mainTab === (`aoi:${nodeId}` as MainTab);
+              const nodeArtifacts = artifacts.filter((a) => a.node_id === nodeId);
+
+              // Prefer the pre-fetched WGS84 bbox from the node's cached artifact output.
+              // Fall back to ui.bbox only if that exists and is already in WGS84 range.
+              const prefetched = aoiInitialBboxes[nodeId]; // undefined=loading, null=none, [...]=ready
+              const nodeUi = (
+                node?.config?.params?.ui &&
+                typeof node.config.params.ui === "object" &&
+                !Array.isArray(node.config.params.ui)
+                  ? node.config.params.ui
+                  : {}
+              ) as Record<string, unknown>;
+              const uiBboxRaw = nodeUi.bbox;
+              const uiBbox: AoiBbox | null =
+                Array.isArray(uiBboxRaw) && uiBboxRaw.length >= 4
+                  ? [Number(uiBboxRaw[0]), Number(uiBboxRaw[1]), Number(uiBboxRaw[2]), Number(uiBboxRaw[3])]
+                  : null;
+              const uiBboxEpsg =
+                typeof nodeUi.bbox_epsg === "number" && Number.isFinite(nodeUi.bbox_epsg)
+                  ? Math.trunc(nodeUi.bbox_epsg)
+                  : 4326;
+
+              // Prefer artifact-derived WGS84 bounds; fallback to ui.bbox in its own EPSG.
+              const initialBbox: AoiBbox | null =
+                prefetched !== undefined
+                  ? (prefetched ?? uiBbox)
+                  : uiBbox;
+              const initialBboxEpsg = prefetched ? 4326 : uiBboxEpsg;
+
+              // Don't mount the map until we've finished the artifact fetch attempt,
+              // so Leaflet always gets a real bbox at init time (no world-view flash).
+              const fetchDone = nodeId in aoiInitialBboxes;
+              const mapReady = active && (fetchDone || nodeArtifacts.length === 0);
+
+              return (
+                <div
+                  key={`aoi:${nodeId}`}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: active ? "flex" : "none",
+                    flexDirection: "row",
+                    background: "#0d1117",
+                  }}
+                >
+                  {/* ── Left: config panel (always mounted so form state persists) ── */}
+                  <div style={{
+                    width: 340,
+                    minWidth: 340,
+                    flexShrink: 0,
+                    borderRight: "2px solid #30363d",
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                    background: "#0d1117",
+                  }}>
+                    {node ? (
+                      <NodeInspector
+                        graphId={graphId ?? ""}
+                        activeBranchId={activeBranchId}
+                        node={node}
+                        nodeSpec={nodeSpec(node.config.kind)}
+                        projectEpsg={projectEpsg}
+                        workspaceUsedEpsgs={workspaceUsedEpsgs}
+                        tab="config"
+                        onTab={() => {}}
+                        onClose={() => closeAoiEditor(nodeId)}
+                        mode="sidebar"
+                        onNodeUpdated={onNodeUpdatedFromEditor}
+                        nodeArtifacts={nodeArtifacts}
+                        onPipelineQueued={refreshAll}
+                        onOpenAoiEditor={openAoiEditor}
+                      />
+                    ) : (
+                      <div style={{ padding: 16, fontSize: 13, opacity: 0.6 }}>Node unavailable</div>
+                    )}
+                  </div>
+                  {/* ── Right: map — only mounts once artifact fetch is done ──────── */}
+                  <div style={{ flex: 1, minWidth: 0, position: "relative", overflow: "hidden" }}>
+                    {!mapReady && (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#8b949e", fontSize: 13 }}>
+                        Loading extent…
+                      </div>
+                    )}
+                    {mapReady && (
+                      <AoiBboxEditor
+                        mode="panel"
+                        initialBbox={initialBbox}
+                        initialBboxEpsg={initialBboxEpsg}
+                        projectEpsg={projectEpsg}
+                        workspaceUsedEpsgs={workspaceUsedEpsgs}
+                        onSave={(bbox, epsg) => {
+                          void saveAoiBbox(nodeId, bbox, epsg);
+                          closeAoiEditor(nodeId);
+                        }}
+                        onCancel={() => closeAoiEditor(nodeId)}
+                      />
+                    )}
+                  </div>
                 </div>
               );
             })}

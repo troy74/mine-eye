@@ -10,6 +10,8 @@ import type {
 } from "./graphApi";
 import type { StoredProject } from "./projectStorage";
 
+type SidebarTab = "chat" | "project";
+
 type Props = {
   projects: StoredProject[];
   activeLocalId: string | null;
@@ -31,6 +33,7 @@ type Props = {
   onPromoteBranch: (sourceBranchId: string, targetBranchId: string) => void;
   revisionDiff: ApiRevisionDiff | null;
   onDiffRevisions: (fromRevisionId: string, toRevisionId: string) => void;
+  onDeleteProject: (localId: string) => void;
 };
 
 export function LeftSidebar({
@@ -54,9 +57,9 @@ export function LeftSidebar({
   onPromoteBranch,
   revisionDiff,
   onDiffRevisions,
+  onDeleteProject,
 }: Props) {
-  const [artifactsOpen, setArtifactsOpen] = useState(true);
-  const [branchesOpen, setBranchesOpen] = useState(true);
+  const [tab, setTab] = useState<SidebarTab>("chat");
   const [newBranchName, setNewBranchName] = useState("");
   const [fromRevisionId, setFromRevisionId] = useState("");
   const [toRevisionId, setToRevisionId] = useState("");
@@ -64,6 +67,7 @@ export function LeftSidebar({
   useEffect(() => {
     setProjectCrsValue(String(projectEpsg));
   }, [projectEpsg, activeLocalId]);
+
   const active = useMemo(
     () => projects.find((p) => p.localId === activeLocalId) ?? null,
     [projects, activeLocalId]
@@ -72,324 +76,440 @@ export function LeftSidebar({
   const mainBranch = branches.find((b) => b.name === "main") ?? null;
 
   return (
-    <aside
-      style={{
-        borderRight: "1px solid #30363d",
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        minHeight: 0,
-        minWidth: 0,
-        width: "100%",
-        background: "#0d1117",
-        fontSize: 13,
-      }}
-    >
-      <section style={section}>
-        <div style={sectionTitle}>Project</div>
-        <p style={hint}>
-          A project is this workspace: graph, node configs, execution cache (artifacts), and local
-          agent history.
-        </p>
-        <select
-          style={selectStyle}
-          value={activeLocalId ?? ""}
-          onChange={(e) => {
-            const id = e.target.value;
-            const p = projects.find((x) => x.localId === id);
-            if (p) onSelectProject(p);
-          }}
+    <aside style={aside}>
+      {/* ── Tab bar ──────────────────────────────────────────────────────── */}
+      <div style={tabBar}>
+        <button
+          type="button"
+          style={tab === "chat" ? tabBtnActive : tabBtn}
+          onClick={() => setTab("chat")}
         >
-          <option value="" disabled>
-            Select project…
-          </option>
-          {projects.map((p) => (
-            <option key={p.localId} value={p.localId}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button type="button" style={btnSecondary} onClick={onNewProject}>
-            New project…
-          </button>
-          <button type="button" style={btnSecondary} onClick={onSeedDemo}>
-            Seed demo
-          </button>
+          <span style={{ fontSize: 14, lineHeight: 1 }}>💬</span>
+          <span>AI Chat</span>
+        </button>
+        <button
+          type="button"
+          style={tab === "project" ? tabBtnActive : tabBtn}
+          onClick={() => setTab("project")}
+        >
+          <span style={{ fontSize: 14, lineHeight: 1 }}>⚙</span>
+          <span>Project</span>
+          {active && (
+            <span style={{ marginLeft: "auto", fontSize: 9, color: "#3fb950", fontWeight: 700 }}>
+              ●
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* ── Chat tab ─────────────────────────────────────────────────────── */}
+      {tab === "chat" && (
+        <div style={tabContent}>
+          <AgentChat
+            projectLocalId={activeLocalId}
+            projectName={active?.name ?? ""}
+            graphId={graphId}
+            activeBranchId={activeBranchId}
+          />
         </div>
-        {active && (
-          <div style={{ marginTop: 10, fontSize: 11, opacity: 0.55, wordBreak: "break-all" }}>
-            Graph <code>{active.graphId.slice(0, 8)}…</code>
+      )}
+
+      {/* ── Project tab ──────────────────────────────────────────────────── */}
+      {tab === "project" && (
+        <div style={{ ...tabContent, overflowY: "auto", padding: "10px 12px 16px", gap: 0 }}>
+
+          {/* Project selector */}
+          <div style={sectionLabel}>Project</div>
+          <select
+            style={sel}
+            value={activeLocalId ?? ""}
+            onChange={(e) => {
+              const id = e.target.value;
+              const p = projects.find((x) => x.localId === id);
+              if (p) onSelectProject(p);
+            }}
+          >
+            <option value="" disabled>
+              Select project…
+            </option>
+            {projects.map((p) => (
+              <option key={p.localId} value={p.localId}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
+            <button type="button" style={btn} onClick={onNewProject}>
+              New project…
+            </button>
+            <button type="button" style={btn} onClick={onSeedDemo}>
+              Seed demo
+            </button>
           </div>
-        )}
-        {graphId && (
-          <div style={{ marginTop: 10 }}>
-            <label style={labTiny}>Project CRS</label>
-            <CrsPicker
-              value={projectCrsValue}
-              onChange={(v) => {
-                setProjectCrsValue(v);
-                const epsg = v === "project" ? projectEpsg : parseInt(v, 10);
-                if (Number.isFinite(epsg) && epsg > 0) onSetProjectCrs(epsg);
-              }}
-              projectEpsg={projectEpsg}
-              workspaceUsedEpsgs={workspaceUsedEpsgs}
-              includeProject
-            />
-            <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>
-              Current: EPSG:{projectEpsg}
+          {active && (
+            <div style={{ marginTop: 6, fontSize: 10, color: "#484f58", wordBreak: "break-all" }}>
+              Graph <code style={{ color: "#6e7681" }}>{active.graphId.slice(0, 8)}…</code>
             </div>
-          </div>
-        )}
-      </section>
+          )}
+          {active && (
+            <button
+              type="button"
+              style={{
+                ...btn,
+                marginTop: 10,
+                color: "#f85149",
+                borderColor: "rgba(248,81,73,0.3)",
+                width: "100%",
+              }}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Delete "${active.name}" from your local project list?\n\nThis only removes it from your browser — the graph and data on the server are unaffected.`
+                  )
+                ) {
+                  onDeleteProject(active.localId);
+                }
+              }}
+            >
+              Delete project…
+            </button>
+          )}
 
-      <AgentChat
-        projectLocalId={activeLocalId}
-        projectName={active?.name ?? ""}
-      />
+          {/* CRS */}
+          {graphId && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 16 }}>Coordinate system</div>
+              <CrsPicker
+                value={projectCrsValue}
+                onChange={(v) => {
+                  setProjectCrsValue(v);
+                  const epsg = v === "project" ? projectEpsg : parseInt(v, 10);
+                  if (Number.isFinite(epsg) && epsg > 0) onSetProjectCrs(epsg);
+                }}
+                projectEpsg={projectEpsg}
+                workspaceUsedEpsgs={workspaceUsedEpsgs}
+                includeProject
+              />
+              <div style={{ fontSize: 10, color: "#484f58", marginTop: 4 }}>
+                Active: EPSG:{projectEpsg}
+              </div>
+            </>
+          )}
 
-      <section style={{ ...section, flexShrink: 0, maxHeight: "32%", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <button
-          type="button"
-          onClick={() => setArtifactsOpen((o) => !o)}
-          style={collapseHead}
-        >
-          <span>Artifacts</span>
-          <span style={{ opacity: 0.6 }}>{artifactsOpen ? "▼" : "▶"}</span>
-        </button>
-        {artifactsOpen && (
-          <div style={{ overflow: "auto", flex: 1, minHeight: 0, paddingTop: 6 }}>
-            {!graphId && (
-              <p style={{ ...hint, marginTop: 0 }}>Load a project with a graph to see artifacts.</p>
-            )}
-            {graphId && artifacts.length === 0 && (
-              <p style={{ ...hint, marginTop: 0 }}>None yet — queue a run and start the worker.</p>
-            )}
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11 }}>
-              {artifacts.map((a) => (
-                <li key={a.key} style={{ wordBreak: "break-all", marginBottom: 4 }}>
-                  {a.key}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </section>
-
-      <section style={{ ...section, flexShrink: 0, maxHeight: "34%", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <button
-          type="button"
-          onClick={() => setBranchesOpen((o) => !o)}
-          style={collapseHead}
-        >
-          <span>Branches & Revisions</span>
-          <span style={{ opacity: 0.6 }}>{branchesOpen ? "▼" : "▶"}</span>
-        </button>
-        {branchesOpen && (
-          <div style={{ overflow: "auto", flex: 1, minHeight: 0, paddingTop: 6 }}>
-            {!graphId ? (
-              <p style={{ ...hint, marginTop: 0 }}>Load a project to manage branches.</p>
-            ) : (
-              <>
-                <label style={labTiny}>Active branch</label>
-                <select
-                  style={selectStyle}
-                  value={activeBranchId ?? ""}
-                  onChange={(e) => onActiveBranchId(e.target.value || null)}
-                >
-                  <option value="" disabled>
-                    Select branch…
+          {/* Branches */}
+          <div style={{ ...sectionLabel, marginTop: 18 }}>Branches</div>
+          {!graphId ? (
+            <p style={hint}>Load a project to manage branches.</p>
+          ) : (
+            <>
+              <select
+                style={sel}
+                value={activeBranchId ?? ""}
+                onChange={(e) => onActiveBranchId(e.target.value || null)}
+              >
+                <option value="" disabled>
+                  Select branch…
+                </option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name} ({b.status})
                   </option>
-                  {branches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name} ({b.status})
-                    </option>
-                  ))}
-                </select>
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  <input
-                    value={newBranchName}
-                    onChange={(e) => setNewBranchName(e.target.value)}
-                    placeholder="new branch name"
-                    style={inputMini}
-                  />
-                  <button
-                    type="button"
-                    style={btnSecondary}
-                    onClick={() => {
-                      const v = newBranchName.trim();
-                      if (!v) return;
-                      onCreateBranch(v);
-                      setNewBranchName("");
-                    }}
-                  >
-                    Create
-                  </button>
-                </div>
-                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    type="button"
-                    style={btnSecondary}
-                    disabled={!activeBranch}
-                    onClick={() =>
-                      activeBranch && onCommitCurrentToBranch(activeBranch.id, "ui_commit_current")
-                    }
-                  >
-                    Commit current
-                  </button>
-                  <button
-                    type="button"
-                    style={btnSecondary}
-                    disabled={!activeBranch || !mainBranch || activeBranch.id === mainBranch.id}
-                    onClick={() =>
-                      activeBranch &&
-                      mainBranch &&
-                      onPromoteBranch(activeBranch.id, mainBranch.id)
-                    }
-                  >
-                    Promote to main
-                  </button>
-                </div>
-                <div style={{ marginTop: 10, fontSize: 11, opacity: 0.75 }}>
-                  Revisions: {revisions.length} • Promotions: {promotions.length}
-                </div>
-                <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 11 }}>
-                  {promotions.slice(0, 6).map((p) => (
-                    <li key={p.id} style={{ marginBottom: 4, wordBreak: "break-word" }}>
-                      {p.status} • {new Date(p.created_at).toLocaleString()}
+                ))}
+              </select>
+              <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
+                <input
+                  value={newBranchName}
+                  onChange={(e) => setNewBranchName(e.target.value)}
+                  placeholder="new branch name…"
+                  style={inp}
+                />
+                <button
+                  type="button"
+                  style={btn}
+                  onClick={() => {
+                    const v = newBranchName.trim();
+                    if (!v) return;
+                    onCreateBranch(v);
+                    setNewBranchName("");
+                  }}
+                >
+                  Create
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  style={btn}
+                  disabled={!activeBranch}
+                  onClick={() =>
+                    activeBranch && onCommitCurrentToBranch(activeBranch.id, "ui_commit_current")
+                  }
+                >
+                  Commit current
+                </button>
+                <button
+                  type="button"
+                  style={btn}
+                  disabled={!activeBranch || !mainBranch || activeBranch.id === mainBranch.id}
+                  onClick={() =>
+                    activeBranch &&
+                    mainBranch &&
+                    onPromoteBranch(activeBranch.id, mainBranch.id)
+                  }
+                >
+                  Promote to main
+                </button>
+              </div>
+              <div style={{ fontSize: 10, color: "#484f58", marginTop: 6 }}>
+                {revisions.length} revision{revisions.length !== 1 ? "s" : ""} ·{" "}
+                {promotions.length} promotion{promotions.length !== 1 ? "s" : ""}
+              </div>
+
+              {/* Recent promotions */}
+              {promotions.length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  {promotions.slice(0, 4).map((p) => (
+                    <div
+                      key={p.id}
+                      style={{
+                        fontSize: 10,
+                        color: "#6e7681",
+                        padding: "3px 0",
+                        borderBottom: "1px solid #161b22",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: "50%",
+                          background:
+                            p.status === "succeeded"
+                              ? "#3fb950"
+                              : p.status === "conflict"
+                                ? "#f85149"
+                                : p.status === "failed"
+                                  ? "#f0883e"
+                                  : "#8b949e",
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {p.status} · {new Date(p.created_at).toLocaleDateString()}
+                      </span>
                       {p.conflict_report && (
                         <button
                           type="button"
-                          style={{ ...btnSecondary, marginLeft: 6, padding: "2px 6px" }}
+                          style={{ ...btn, padding: "1px 5px", fontSize: 9 }}
                           onClick={() =>
                             void navigator.clipboard.writeText(
                               JSON.stringify(p.conflict_report, null, 2)
                             )
                           }
                         >
-                          Copy conflict
+                          Copy
                         </button>
                       )}
-                    </li>
-                  ))}
-                </ul>
-                <div style={{ marginTop: 10, borderTop: "1px solid #30363d", paddingTop: 8 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>
-                    Revision Diff
-                  </div>
-                  <select
-                    style={selectStyle}
-                    value={fromRevisionId}
-                    onChange={(e) => setFromRevisionId(e.target.value)}
-                  >
-                    <option value="">From revision…</option>
-                    {revisions.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.id.slice(0, 8)}… ({r.created_by})
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    style={{ ...selectStyle, marginTop: 6 }}
-                    value={toRevisionId}
-                    onChange={(e) => setToRevisionId(e.target.value)}
-                  >
-                    <option value="">To revision…</option>
-                    {revisions.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        {r.id.slice(0, 8)}… ({r.created_by})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    style={{ ...btnSecondary, marginTop: 6 }}
-                    disabled={!fromRevisionId || !toRevisionId}
-                    onClick={() =>
-                      fromRevisionId && toRevisionId && onDiffRevisions(fromRevisionId, toRevisionId)
-                    }
-                  >
-                    Compare
-                  </button>
-                  {revisionDiff && (
-                    <div style={{ marginTop: 8, fontSize: 11, opacity: 0.85 }}>
-                      Δ nodes +{revisionDiff.diff.summary.nodes_added}/-{revisionDiff.diff.summary.nodes_removed} ~
-                      {revisionDiff.diff.summary.nodes_changed}, edges +{revisionDiff.diff.summary.edges_added}/-
-                      {revisionDiff.diff.summary.edges_removed}
                     </div>
-                  )}
+                  ))}
                 </div>
-              </>
-            )}
-          </div>
-        )}
-      </section>
+              )}
+            </>
+          )}
+
+          {/* Revision diff */}
+          {graphId && revisions.length >= 2 && (
+            <>
+              <div style={{ ...sectionLabel, marginTop: 18 }}>Revision diff</div>
+              <select
+                style={sel}
+                value={fromRevisionId}
+                onChange={(e) => setFromRevisionId(e.target.value)}
+              >
+                <option value="">From…</option>
+                {revisions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.id.slice(0, 8)}… ({r.created_by})
+                  </option>
+                ))}
+              </select>
+              <select
+                style={{ ...sel, marginTop: 5 }}
+                value={toRevisionId}
+                onChange={(e) => setToRevisionId(e.target.value)}
+              >
+                <option value="">To…</option>
+                {revisions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.id.slice(0, 8)}… ({r.created_by})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                style={{ ...btn, marginTop: 6 }}
+                disabled={!fromRevisionId || !toRevisionId}
+                onClick={() =>
+                  fromRevisionId &&
+                  toRevisionId &&
+                  onDiffRevisions(fromRevisionId, toRevisionId)
+                }
+              >
+                Compare
+              </button>
+              {revisionDiff && (
+                <div style={{ marginTop: 6, fontSize: 10, color: "#8b949e" }}>
+                  Δ nodes +{revisionDiff.diff.summary.nodes_added}/−
+                  {revisionDiff.diff.summary.nodes_removed} ~
+                  {revisionDiff.diff.summary.nodes_changed}, edges +
+                  {revisionDiff.diff.summary.edges_added}/−
+                  {revisionDiff.diff.summary.edges_removed}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Artifacts */}
+          <div style={{ ...sectionLabel, marginTop: 18 }}>Artifacts</div>
+          {!graphId && <p style={hint}>Load a project to see artifacts.</p>}
+          {graphId && artifacts.length === 0 && (
+            <p style={hint}>None yet — queue a run and start the worker.</p>
+          )}
+          {artifacts.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              {artifacts.map((a) => (
+                <div
+                  key={a.key}
+                  style={{
+                    fontSize: 10,
+                    color: "#6e7681",
+                    padding: "3px 0",
+                    borderBottom: "1px solid #161b22",
+                    wordBreak: "break-all",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {a.key}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </aside>
   );
 }
 
-const section: CSSProperties = {
-  padding: "12px 12px 10px",
-  flexShrink: 0,
-};
-const sectionTitle: CSSProperties = {
-  fontWeight: 600,
+/* ── Styles ────────────────────────────────────────────────────────────────── */
+
+const aside: CSSProperties = {
+  borderRight: "1px solid #21262d",
+  display: "flex",
+  flexDirection: "column",
+  height: "100%",
+  minHeight: 0,
+  minWidth: 0,
+  width: "100%",
+  background: "#0d1117",
   fontSize: 13,
+};
+
+const tabBar: CSSProperties = {
+  display: "flex",
+  flexShrink: 0,
+  borderBottom: "1px solid #21262d",
+  background: "#0d1117",
+};
+
+const tabBase: CSSProperties = {
+  flex: 1,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+  padding: "10px 8px",
+  border: "none",
+  borderBottom: "2px solid transparent",
+  background: "transparent",
+  color: "#6e7681",
+  cursor: "pointer",
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.04em",
+  fontFamily: "inherit",
+  transition: "color 0.12s, border-color 0.12s, background 0.12s",
+};
+
+const tabBtn: CSSProperties = {
+  ...tabBase,
+};
+
+const tabBtnActive: CSSProperties = {
+  ...tabBase,
+  color: "#e6edf3",
+  borderBottomColor: "#388bfd",
+  background: "rgba(56,139,253,0.04)",
+};
+
+const tabContent: CSSProperties = {
+  flex: 1,
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+  overflow: "hidden",
+};
+
+const sectionLabel: CSSProperties = {
+  fontSize: 9.5,
+  fontWeight: 700,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "#484f58",
   marginBottom: 6,
 };
+
 const hint: CSSProperties = {
-  margin: "0 0 10px",
-  opacity: 0.65,
+  margin: "0 0 8px",
+  color: "#484f58",
   fontSize: 11,
   lineHeight: 1.45,
 };
-const selectStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 6,
-  border: "1px solid #30363d",
-  background: "#161b22",
-  color: "#e6edf3",
-  fontSize: 13,
-};
-const btnSecondary: CSSProperties = {
-  padding: "6px 10px",
-  borderRadius: 6,
-  border: "1px solid #30363d",
-  background: "#21262d",
-  color: "#e6edf3",
-  cursor: "pointer",
-  fontSize: 12,
-};
-const collapseHead: CSSProperties = {
-  width: "100%",
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  padding: "8px 0",
-  border: "none",
-  borderTop: "1px solid #30363d",
-  background: "transparent",
-  color: "#e6edf3",
-  cursor: "pointer",
-  fontWeight: 600,
-  fontSize: 13,
-};
 
-const labTiny: CSSProperties = {
-  fontSize: 10,
-  opacity: 0.65,
-  marginBottom: 4,
-  display: "block",
-};
-
-const inputMini: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
+const sel: CSSProperties = {
+  width: "100%",
   padding: "6px 8px",
   borderRadius: 6,
   border: "1px solid #30363d",
   background: "#161b22",
   color: "#e6edf3",
   fontSize: 12,
+  fontFamily: "inherit",
+  cursor: "pointer",
+};
+
+const btn: CSSProperties = {
+  padding: "5px 10px",
+  borderRadius: 6,
+  border: "1px solid #30363d",
+  background: "#21262d",
+  color: "#c9d1d9",
+  cursor: "pointer",
+  fontSize: 11,
+  fontFamily: "inherit",
+  transition: "background 0.1s, border-color 0.1s",
+};
+
+const inp: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  padding: "5px 8px",
+  borderRadius: 6,
+  border: "1px solid #30363d",
+  background: "#161b22",
+  color: "#e6edf3",
+  fontSize: 12,
+  fontFamily: "inherit",
 };

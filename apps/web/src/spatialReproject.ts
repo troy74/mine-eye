@@ -39,9 +39,20 @@ function saveCachedDef(epsg: number, def: string) {
   localStorage.setItem(PROJ4_CACHE_KEY, JSON.stringify(all));
 }
 
+/** Generate a proj4 def string for WGS84 UTM zones (EPSG 32601-32660 north, 32701-32760 south). */
+function wgs84UtmDef(epsg: number): string | null {
+  if (epsg >= 32601 && epsg <= 32660) {
+    return `+proj=utm +zone=${epsg - 32600} +datum=WGS84 +units=m +no_defs +type=crs`;
+  }
+  if (epsg >= 32701 && epsg <= 32760) {
+    return `+proj=utm +zone=${epsg - 32700} +south +datum=WGS84 +units=m +no_defs +type=crs`;
+  }
+  return null;
+}
+
 function ensureDef(epsg: number): boolean {
   if (epsg === 4326) return true;
-  const def = EPSG_DEFS[epsg] ?? loadCachedDefs()[String(epsg)];
+  const def = EPSG_DEFS[epsg] ?? loadCachedDefs()[String(epsg)] ?? wgs84UtmDef(epsg);
   if (!def) return false;
   const key = `EPSG:${epsg}`;
   try {
@@ -113,4 +124,26 @@ export async function lonLatFromProjectedAsync(
   const lat = out[1];
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
   return [lon, lat];
+}
+
+/**
+ * Project WGS84 lon/lat to the target projected CRS.
+ * Async version that can fetch missing proj4 defs on demand.
+ * Returns null if the CRS def is unavailable or the conversion fails.
+ */
+export async function projectedFromLonLatAsync(
+  epsg: number,
+  lon: number,
+  lat: number
+): Promise<[number, number] | null> {
+  if (epsg === 4326) return [lon, lat];
+  const ok = await ensureDefAsync(epsg);
+  if (!ok) return null;
+  const key = `EPSG:${epsg}`;
+  const out = proj4(WGS84, key, [lon, lat]);
+  if (!Array.isArray(out) || out.length < 2) return null;
+  const x = out[0];
+  const y = out[1];
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return [x, y];
 }

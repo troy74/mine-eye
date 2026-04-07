@@ -1,6 +1,6 @@
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   fetchViewerManifest,
@@ -11,6 +11,7 @@ import {
   type ViewerManifestLayer,
 } from "./graphApi";
 import { isPlanViewInputSemantic } from "./portTaxonomy";
+import { edgeColorForApiEdge } from "./portTypes";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 import {
   extractDisplayContractFromJson,
@@ -452,6 +453,18 @@ export function Map2DPanel({
   const autoFitContextRef = useRef<string>("");
 
   const sourceById = useMemo(() => new Map(sourceData.map((s) => [s.id, s])), [sourceData]);
+
+  // Map from upstream node_id → semantic edge colour, for layer dot colouring
+  const nodeSemanticColorMap = useMemo(() => {
+    if (!viewerNodeId) return new Map<string, string>();
+    const map = new Map<string, string>();
+    for (const e of edges) {
+      if (e.to_node === viewerNodeId) {
+        map.set(e.from_node, edgeColorForApiEdge(e));
+      }
+    }
+    return map;
+  }, [edges, viewerNodeId]);
   const legend = useMemo(() => {
     const activeLayer = layers.find((l) => {
       if (!l.visible || !l.heatmap.enabled) return false;
@@ -740,6 +753,18 @@ export function Map2DPanel({
     }, 30);
     return () => window.clearTimeout(tid);
   }, [active]);
+
+  // Invalidate Leaflet size whenever the container element is resized (e.g. when
+  // the left sidebar collapses/expands), preventing patchy tile loading.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      mapRef.current?.invalidateSize();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!active) return;
@@ -1471,7 +1496,7 @@ export function Map2DPanel({
             <span style={{ opacity: 0.75 }}>
               Viewer <code style={{ fontSize: 11 }}>{viewerNodeId.slice(0, 8)}…</code>
             </span>
-            <button type="button" onClick={onClearViewer} style={ghostBtn}>
+            <button type="button" onClick={onClearViewer} className="me-btn">
               Clear viewer
             </button>
           </>
@@ -1522,53 +1547,59 @@ export function Map2DPanel({
             )}
           </div>
         )}
-        <aside style={{ ...panel, width: panelCollapsed ? 168 : 320 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <strong>Layers</strong>
-            <button type="button" onClick={() => setPanelCollapsed((v) => !v)} style={ghostBtn}>
-              {panelCollapsed ? "+" : "-"}
-            </button>
-          </div>
-          <div style={{ fontSize: 10, opacity: 0.7, marginTop: 4 }}>
-            Base: {imageryContract?.provider_label ?? "Esri satellite"}
-          </div>
-          {imageryContract?.attribution ? (
-            <div style={{ fontSize: 10, opacity: 0.58, marginTop: 2 }}>
-              {imageryContract.attribution}
-            </div>
-          ) : null}
-          {hasLayerStackContract ? (
-            <div style={{ fontSize: 10, opacity: 0.68, marginTop: 6 }}>
-              Layer order:
-              <select
-                value={layerOrderMode}
-                onChange={(e) => setLayerOrderMode(e.target.value as LayerOrderMode)}
-                style={{ marginLeft: 6, fontSize: 11 }}
-              >
-              <option value="contract">Contract</option>
-              <option value="override">Local override</option>
-              </select>
-              {layerOrderMode === "contract" ? (
-                <span style={{ marginLeft: 6, opacity: 0.62 }}>(drag locked)</span>
-              ) : null}
-            </div>
-          ) : null}
-          {!panelCollapsed && (
-            <div style={{ marginTop: 8 }}>
-              {layers.map((layer, i) => {
+        <aside style={{ position: "absolute", top: 12, right: 12, zIndex: 900, width: panelCollapsed ? 40 : 320, maxHeight: "calc(100% - 24px)", display: "flex", flexDirection: "column", background: "rgba(13,17,23,0.96)", border: "1px solid #30363d", borderRadius: 12, boxShadow: "0 4px 24px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+          {panelCollapsed ? (
+            <button type="button" title="Expand panel" onClick={() => setPanelCollapsed(false)} style={{ flex: 1, background: "transparent", border: "none", color: "#6e7681", cursor: "pointer", fontSize: 16, padding: "8px 0" }}>›</button>
+          ) : (
+            <>
+              <div className="me-panel-header">
+                <span className="me-panel-header-title">Layers</span>
+                <button type="button" title="Collapse" className="me-panel-collapse-btn" onClick={() => setPanelCollapsed(true)}>‹</button>
+              </div>
+              <div className="me-panel-body me-panel">
+                <div className="me-section-note">
+                  Base: {imageryContract?.provider_label ?? "Esri satellite"}
+                  {imageryContract?.attribution ? ` · ${imageryContract.attribution}` : ""}
+                </div>
+                {hasLayerStackContract ? (
+                  <label>
+                    Order
+                    <select
+                      value={layerOrderMode}
+                      onChange={(e) => setLayerOrderMode(e.target.value as LayerOrderMode)}
+                    >
+                      <option value="contract">Contract</option>
+                      <option value="override">Local override</option>
+                    </select>
+                    {layerOrderMode === "contract" ? (
+                      <span className="me-section-note">(drag locked)</span>
+                    ) : null}
+                  </label>
+                ) : null}
+                <div style={{ display: "grid", gap: 6 }}>
+              {layers.map((layer) => {
                 const src = sourceById.get(layer.sourceId);
                 const measures = src?.measureNames ?? [];
                 const lockedRenderer = src?.displayContract?.renderer === "heat_surface";
+                // Derive dot colour: semantic type from edge takes priority, then content heuristic
+                const srcNodeId = layer.sourceId.split(":")[0] ?? "";
+                const dotColor = nodeSemanticColorMap.get(srcNodeId)
+                  ?? (src?.surfaceGrid ? "#4ade80"
+                    : (src?.lines?.length ?? 0) > 0 ? "#38bdf8"
+                    : lockedRenderer ? "#facc15"
+                    : src?.heatmapHint?.measure ? "#f97316"
+                    : "#38bdf8");
                 return (
                   <div
                     key={layer.id}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={() => onDropLayer(layer.id)}
-                    style={card}
+                    className="me-layer-card"
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div className="me-layer-card-header">
                       <span
-                        style={{ opacity: canDragLayers ? 0.55 : 0.28, cursor: canDragLayers ? "grab" : "not-allowed" }}
+                        className="me-drag-handle"
+                        style={{ opacity: canDragLayers ? 0.5 : 0.15, cursor: canDragLayers ? "grab" : "default" }}
                         draggable={canDragLayers}
                         onDragStart={(e) => {
                           if (!canDragLayers) return;
@@ -1577,38 +1608,33 @@ export function Map2DPanel({
                         }}
                         onDragEnd={() => setDraggingId(null)}
                       >
-                        ⋮⋮
+                        ⠿
                       </span>
-                      <input
-                        type="checkbox"
-                        checked={layer.visible}
-                        onChange={(e) =>
+                      <span className="me-layer-dot" style={{ background: dotColor, opacity: layer.visible ? 1 : 0.25 }} />
+                      <button
+                        type="button"
+                        className="me-layer-vis-btn"
+                        title={layer.visible ? "Hide layer" : "Show layer"}
+                        style={{ color: layer.visible ? "#e6edf3" : "#484f58" }}
+                        onClick={() =>
                           setLayers((prev) =>
                             prev.map((l) =>
-                              l.id === layer.id ? { ...l, visible: e.target.checked } : l
+                              l.id === layer.id ? { ...l, visible: !l.visible } : l
                             )
                           )
                         }
-                      />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {layer.title}
-                        </div>
-                        <div style={{ fontSize: 10, opacity: 0.65 }}>
-                          z:{i + 1} · m:{measures.length}
-                        </div>
+                      >
+                        {layer.visible ? "●" : "○"}
+                      </button>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: layer.visible ? "#e6edf3" : "#6e7681", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {layer.title}
                       </div>
+                      {measures.length > 0 && (
+                        <span className="me-section-note" style={{ flexShrink: 0 }}>m:{measures.length}</span>
+                      )}
                       <button
                         type="button"
-                        style={ghostBtn}
+                        className="me-layer-expand-btn"
                         onClick={() =>
                           setLayers((prev) =>
                             prev.map((l) =>
@@ -1617,13 +1643,13 @@ export function Map2DPanel({
                           )
                         }
                       >
-                        {layer.expanded ? "Hide" : "Edit"}
+                        {layer.expanded ? "▾" : "›"}
                       </button>
                     </div>
                     {layer.expanded && (
-                      <div style={editor}>
-                        <label style={field}>
-                          <span>Source</span>
+                      <div className="me-layer-card-body">
+                        <label>
+                          Source
                           <select
                             value={layer.sourceId}
                             onChange={(e) =>
@@ -1633,7 +1659,6 @@ export function Map2DPanel({
                                 )
                               )
                             }
-                            style={select}
                           >
                             {sourceData.map((s) => (
                               <option key={s.id} value={s.id}>
@@ -1642,8 +1667,8 @@ export function Map2DPanel({
                             ))}
                           </select>
                         </label>
-                        <label style={field}>
-                          <span>Layer opacity</span>
+                        <label>
+                          Layer opacity ({Math.round(layer.opacity * 100)}%)
                           <input
                             type="range"
                             min={0}
@@ -1667,8 +1692,8 @@ export function Map2DPanel({
                           />
                         </label>
 
-                        <div style={groupTitle}>Points</div>
-                        <label style={field}>
+                        <div className="me-style-subheader">Points</div>
+                        <label>
                           <span>Shape</span>
                           <select
                             value={layer.points.shape}
@@ -1682,15 +1707,14 @@ export function Map2DPanel({
                                 )
                               )
                             }
-                            style={select}
                           >
                             <option value="circle">Circle</option>
                             <option value="square">Square</option>
                             <option value="diamond">Diamond</option>
                           </select>
                         </label>
-                        <div style={row2}>
-                          <label style={fieldInline}>
+                        <div className="me-col2">
+                          <label>
                             <span>Color</span>
                             <select
                             value={layer.points.colorMode}
@@ -1704,15 +1728,14 @@ export function Map2DPanel({
                                   )
                                 )
                               }
-                              style={select}
-                            >
+                              >
                               <option value="fixed">Fixed</option>
                               <option value="measure">Measure</option>
                               <option value="categorical">Categorical</option>
                             </select>
                           </label>
                           {layer.points.colorMode === "fixed" ? (
-                            <label style={fieldInline}>
+                            <label>
                               <span>Pick</span>
                               <input
                                 type="color"
@@ -1730,7 +1753,7 @@ export function Map2DPanel({
                               />
                             </label>
                           ) : (
-                            <label style={fieldInline}>
+                            <label>
                               <span>Measure</span>
                               <select
                                 value={layer.points.colorMeasure}
@@ -1744,8 +1767,7 @@ export function Map2DPanel({
                                     )
                                   )
                                 }
-                                style={select}
-                              >
+                                  >
                                 {measures.map((m) => (
                                   <option key={m} value={m}>
                                     {m}
@@ -1756,9 +1778,9 @@ export function Map2DPanel({
                           )}
                         </div>
                         {layer.points.colorMode !== "fixed" && (
-                          <div style={row2}>
+                          <div className="me-col2">
                             {layer.points.colorMode === "measure" ? (
-                              <label style={fieldInline}>
+                              <label>
                                 <span>Transform</span>
                                 <select
                                   value={layer.points.colorTransform}
@@ -1778,15 +1800,14 @@ export function Map2DPanel({
                                       )
                                     )
                                   }
-                                  style={select}
-                                >
+                                      >
                                   <option value="linear">Linear</option>
                                   <option value="log10">Log10</option>
                                   <option value="ln">Natural log</option>
                                 </select>
                               </label>
                             ) : null}
-                            <label style={fieldInline}>
+                            <label>
                               <span>Palette</span>
                               <select
                                 value={layer.points.colorPalette}
@@ -1803,8 +1824,7 @@ export function Map2DPanel({
                                     )
                                   )
                                 }
-                                style={select}
-                              >
+                                  >
                                 <option value="turbo">Turbo</option>
                                 <option value="inferno">Inferno</option>
                                 <option value="viridis">Viridis</option>
@@ -1814,8 +1834,8 @@ export function Map2DPanel({
                           </div>
                         )}
 
-                        <div style={row2}>
-                          <label style={fieldInline}>
+                        <div className="me-col2">
+                          <label>
                             <span>Size</span>
                             <select
                               value={layer.points.sizeMode}
@@ -1829,14 +1849,13 @@ export function Map2DPanel({
                                   )
                                 )
                               }
-                              style={select}
-                            >
+                              >
                               <option value="fixed">Fixed</option>
                               <option value="measure">Measure</option>
                             </select>
                           </label>
                           {layer.points.sizeMode === "fixed" ? (
-                            <label style={fieldInline}>
+                            <label>
                               <span>Px</span>
                               <input
                                 type="range"
@@ -1856,7 +1875,7 @@ export function Map2DPanel({
                               />
                             </label>
                           ) : (
-                            <label style={fieldInline}>
+                            <label>
                               <span>Measure</span>
                               <select
                                 value={layer.points.sizeMeasure}
@@ -1870,8 +1889,7 @@ export function Map2DPanel({
                                     )
                                   )
                                 }
-                                style={select}
-                              >
+                                  >
                                 {measures.map((m) => (
                                   <option key={m} value={m}>
                                     {m}
@@ -1882,7 +1900,7 @@ export function Map2DPanel({
                           )}
                         </div>
                         {layer.points.sizeMode === "measure" && (
-                          <label style={field}>
+                          <label>
                             <span>Size transform</span>
                             <select
                               value={layer.points.sizeTransform}
@@ -1902,8 +1920,7 @@ export function Map2DPanel({
                                   )
                                 )
                               }
-                              style={select}
-                            >
+                              >
                               <option value="linear">Linear</option>
                               <option value="log10">Log10</option>
                               <option value="ln">Natural log</option>
@@ -1911,7 +1928,7 @@ export function Map2DPanel({
                           </label>
                         )}
                         {layer.points.sizeMode === "measure" && (
-                          <label style={field}>
+                          <label>
                             <span>
                               Size range {layer.points.sizeMinPx}-{layer.points.sizeMaxPx}px
                             </span>
@@ -1968,8 +1985,8 @@ export function Map2DPanel({
                           </label>
                         )}
 
-                        <div style={groupTitle}>Heatmap</div>
-                        <label style={fieldInline}>
+                        <div className="me-style-subheader">Heatmap</div>
+                        <label>
                           <input
                             type="checkbox"
                             checked={layer.heatmap.enabled}
@@ -1988,7 +2005,7 @@ export function Map2DPanel({
                         </label>
                         {layer.heatmap.enabled && (
                           <>
-                            <label style={field}>
+                            <label>
                               <span>Measure</span>
                               <select
                                 value={layer.heatmap.measure}
@@ -2002,8 +2019,7 @@ export function Map2DPanel({
                                     )
                                   )
                                 }
-                                style={select}
-                              >
+                                  >
                                 {measures.map((m) => (
                                   <option key={m} value={m}>
                                     {m}
@@ -2012,8 +2028,8 @@ export function Map2DPanel({
                               </select>
                             </label>
                             {!lockedRenderer && (
-                              <div style={row2}>
-                                <label style={fieldInline}>
+                              <div className="me-col2">
+                                <label>
                                   <span>Transform</span>
                                   <select
                                     value={layer.heatmap.transform}
@@ -2032,14 +2048,13 @@ export function Map2DPanel({
                                         )
                                       )
                                     }
-                                    style={select}
-                                  >
+                                          >
                                     <option value="linear">Linear</option>
                                     <option value="log10">Log10</option>
                                     <option value="ln">Natural log</option>
                                   </select>
                                 </label>
-                                <label style={fieldInline}>
+                                <label>
                                   <span>Palette</span>
                                   <select
                                     value={layer.heatmap.palette}
@@ -2055,8 +2070,7 @@ export function Map2DPanel({
                                         )
                                       )
                                     }
-                                    style={select}
-                                  >
+                                          >
                                     <option value="rainbow">Rainbow</option>
                                     <option value="turbo">Turbo</option>
                                     <option value="inferno">Inferno</option>
@@ -2065,7 +2079,7 @@ export function Map2DPanel({
                                 </label>
                               </div>
                             )}
-                            <label style={field}>
+                            <label>
                               <span>Heat opacity</span>
                               <input
                                 type="range"
@@ -2094,7 +2108,7 @@ export function Map2DPanel({
                             </label>
                             {!lockedRenderer && (
                               <>
-                                <label style={field}>
+                                <label>
                                   <span>Smoothness ({layer.heatmap.smoothness})</span>
                                   <input
                                     type="range"
@@ -2119,7 +2133,7 @@ export function Map2DPanel({
                                     }
                                   />
                                 </label>
-                                <label style={field}>
+                                <label>
                                   <span>Blend power ({layer.heatmap.power.toFixed(1)})</span>
                                   <input
                                     type="range"
@@ -2158,7 +2172,9 @@ export function Map2DPanel({
                   </div>
                 );
               })}
-            </div>
+                </div>
+              </div>
+            </>
           )}
         </aside>
       </div>
@@ -2166,80 +2182,3 @@ export function Map2DPanel({
   );
 }
 
-const panel: CSSProperties = {
-  position: "absolute",
-  top: 10,
-  right: 10,
-  zIndex: 900,
-  maxHeight: "calc(100% - 20px)",
-  overflow: "auto",
-  background: "rgba(15,20,25,0.94)",
-  border: "1px solid #30363d",
-  borderRadius: 8,
-  padding: 8,
-  color: "#e6edf3",
-  fontSize: 12,
-  backdropFilter: "blur(4px)",
-};
-
-const card: CSSProperties = {
-  border: "1px solid #30363d",
-  borderRadius: 8,
-  marginBottom: 6,
-  padding: "6px 8px",
-  background: "rgba(22,27,34,0.9)",
-};
-
-const editor: CSSProperties = {
-  marginTop: 6,
-  borderTop: "1px solid #30363d",
-  paddingTop: 6,
-};
-
-const groupTitle: CSSProperties = {
-  marginTop: 6,
-  fontSize: 11,
-  fontWeight: 700,
-  opacity: 0.85,
-};
-
-const row2: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: 8,
-};
-
-const field: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  marginTop: 6,
-  fontSize: 11,
-};
-
-const fieldInline: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: 4,
-  marginTop: 6,
-  fontSize: 11,
-};
-
-const select: CSSProperties = {
-  background: "#0f1419",
-  color: "#e6edf3",
-  border: "1px solid #30363d",
-  borderRadius: 6,
-  padding: "5px 7px",
-  fontSize: 12,
-};
-
-const ghostBtn: CSSProperties = {
-  background: "transparent",
-  border: "1px solid #30363d",
-  color: "#8b949e",
-  borderRadius: 6,
-  padding: "3px 8px",
-  cursor: "pointer",
-  fontSize: 11,
-};

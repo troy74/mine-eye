@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { TrackballControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -31,6 +31,7 @@ type Point3D = {
   hasExplicitZ?: boolean;
   epsg?: number;
   measures?: Record<string, number | string>;
+  sourceLayerId?: string;   // e.g. "assay_points__abc123node"
 };
 
 type Segment3D = {
@@ -41,6 +42,7 @@ type Segment3D = {
   measures?: Record<string, number | string>;
   hasExplicitZ?: boolean;
   contourLevel?: number;
+  sourceLayerId?: string;   // e.g. "grade_segments__abc123node"
 };
 
 type TerrainPoint = {
@@ -67,6 +69,25 @@ type TerrainGridPick = {
   cells: number;
 };
 
+// Pre-computed heatmap surface grid from the assay_heatmap pipeline node.
+// Values are measure values (e.g. Au ppm), NOT elevation. Stored row-major
+// south-to-north (row 0 = ymin, row ny-1 = ymax), same as TerrainGrid.
+type HeatmapSurfaceGrid = {
+  id: string;
+  nodeId: string;
+  nodeKind: string;
+  label: string;
+  grid: {
+    nx: number;
+    ny: number;
+    xmin: number;
+    xmax: number;
+    ymin: number;
+    ymax: number;
+    values: Array<number | null>;
+  };
+};
+
 type SceneData = {
   traces: Segment3D[];
   drillSegments: Segment3D[];
@@ -84,6 +105,17 @@ type SceneData = {
   aoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null;
   measureCandidates: string[];
   totalArtifacts: number;
+  sourceLayers: SourceLayer[];
+  heatmapSurfaces: HeatmapSurfaceGrid[];
+};
+
+type SourceLayer = {
+  id: string;         // "${baseType}__${nodeId}"  e.g. "assay_points__abc123"
+  baseType: string;   // "assay_points" | "grade_segments" | "trajectories"
+  nodeId: string;
+  nodeKind: string;
+  label: string;      // human-readable
+  dotColor: string;
 };
 
 type ImageryDrapeContract = {
@@ -110,6 +142,8 @@ type LayerStackContract = {
   schema_id: "scene3d.layer_stack.v1";
   layers?: LayerStackLayer[];
 };
+
+type ColorStop = { pos: number; color: string };
 
 type SceneUiState = {
   showTraces: boolean;
@@ -148,6 +182,11 @@ type SceneUiState = {
   layerOrderMode: "contract" | "override";
   invertDepth: boolean;
   panelCollapsed: boolean;
+  // Scene globals
+  ambientIntensity: number;
+  fogEnabled: boolean;
+  gridEnabled: boolean;
+  bgPreset: "night" | "dusk" | "dawn" | "overcast";
 };
 
 type LayerVizStyle = {
@@ -158,7 +197,23 @@ type LayerVizStyle = {
   clampLowPct: number;
   clampHighPct: number;
   categoricalColorMap: string;
-  pointShape: "sphere" | "box" | "diamond";
+  pointShape: "sphere" | "box" | "diamond" | "cone" | "disc" | "spike";
+  sizeAttribute: string;
+  sizeMin: number;
+  sizeMax: number;
+  sizeTransform: "linear" | "sqrt" | "log10";
+  opacity: number;
+  showLabels: boolean;
+  labelAttribute: string;
+  labelSize: number;
+  colorStops: ColorStop[];
+  rampNormMode: "pct" | "fixed";
+  fixedMin: number;
+  fixedMax: number;
+  visible: boolean;
+  displayMode: "points" | "heatmap";
+  hmGridSize: number;   // IDW grid resolution 64-512
+  hmPower: number;      // IDW distance exponent 1-4
 };
 
 const LAYER_KEYS = [
@@ -168,7 +223,6 @@ const LAYER_KEYS = [
   "trajectories",
   "grade_segments",
   "assay_points",
-  "high_grade_balloons",
 ] as const;
 
 type LayerKey = (typeof LAYER_KEYS)[number];
@@ -250,6 +304,46 @@ const DEFAULT_UI: SceneUiState = {
   layerOrderMode: "contract",
   invertDepth: false,
   panelCollapsed: false,
+  ambientIntensity: 0.92,
+  fogEnabled: true,
+  gridEnabled: true,
+  bgPreset: "night",
+};
+
+const BG_PRESETS: Record<SceneUiState["bgPreset"], { sky: string; fog: string; grid1: string; grid2: string; hemi: [string, string] }> = {
+  night:    { sky: "#0b1220", fog: "#0b1220", grid1: "#30363d", grid2: "#21262d", hemi: ["#c4d8ff", "#1a2438"] },
+  dusk:     { sky: "#12081e", fog: "#12081e", grid1: "#3d2d4e", grid2: "#261a35", hemi: ["#e8c4ff", "#1a0d30"] },
+  dawn:     { sky: "#1a0e08", fog: "#261408", grid1: "#4e3020", grid2: "#2e1a0e", hemi: ["#ffd8a8", "#1a0800"] },
+  overcast: { sky: "#1c2228", fog: "#1c2228", grid1: "#3a4550", grid2: "#2a3540", hemi: ["#d8e8ff", "#253040"] },
+};
+
+const PALETTE_STOPS: Record<string, ColorStop[]> = {
+  inferno: [
+    { pos: 0.00, color: "#000004" }, { pos: 0.20, color: "#420a68" },
+    { pos: 0.40, color: "#932667" }, { pos: 0.60, color: "#dd513a" },
+    { pos: 0.80, color: "#fca50a" }, { pos: 1.00, color: "#fcffa4" },
+  ],
+  viridis: [
+    { pos: 0.00, color: "#440154" }, { pos: 0.25, color: "#31688e" },
+    { pos: 0.50, color: "#35b779" }, { pos: 1.00, color: "#fde725" },
+  ],
+  turbo: [
+    { pos: 0.00, color: "#30123b" }, { pos: 0.14, color: "#4456c7" },
+    { pos: 0.28, color: "#1b9ce2" }, { pos: 0.43, color: "#29e5a3" },
+    { pos: 0.57, color: "#9ef551" }, { pos: 0.71, color: "#f9c632" },
+    { pos: 0.85, color: "#e7630a" }, { pos: 1.00, color: "#b01b0c" },
+  ],
+  red_blue: [
+    { pos: 0.00, color: "#3b82f6" }, { pos: 0.50, color: "#e8e8e8" }, { pos: 1.00, color: "#ef4444" },
+  ],
+  plasma: [
+    { pos: 0.00, color: "#0d0887" }, { pos: 0.25, color: "#7e03a8" },
+    { pos: 0.50, color: "#cc4778" }, { pos: 0.75, color: "#f89540" }, { pos: 1.00, color: "#f0f921" },
+  ],
+  cool: [
+    { pos: 0.00, color: "#030d28" }, { pos: 0.33, color: "#0077b6" },
+    { pos: 0.66, color: "#48cae4" }, { pos: 1.00, color: "#caf0f8" },
+  ],
 };
 
 const DEFAULT_LAYER_STYLE: LayerVizStyle = {
@@ -261,6 +355,71 @@ const DEFAULT_LAYER_STYLE: LayerVizStyle = {
   clampHighPct: 98,
   categoricalColorMap: "{}",
   pointShape: "sphere",
+  sizeAttribute: "",
+  sizeMin: 1.0,
+  sizeMax: 3.0,
+  sizeTransform: "linear",
+  opacity: 1.0,
+  showLabels: false,
+  labelAttribute: "",
+  labelSize: 11,
+  colorStops: PALETTE_STOPS.inferno,
+  rampNormMode: "pct",
+  fixedMin: 0,
+  fixedMax: 1,
+  visible: true,
+  displayMode: "points",
+  hmGridSize: 256,
+  hmPower: 2,
+};
+
+const PALETTE_GRADIENT: Record<string, string> = {
+  inferno: "linear-gradient(to right, #000004, #420a68, #932667, #dd513a, #fca50a, #fcffa4)",
+  viridis: "linear-gradient(to right, #440154, #31688e, #35b779, #fde725)",
+  turbo: "linear-gradient(to right, #30123b, #4456c7, #1b9ce2, #29e5a3, #9ef551, #f9c632, #e7630a, #b01b0c)",
+  red_blue: "linear-gradient(to right, #3b82f6, #f8f8f8, #ef4444)",
+};
+
+const subHead: { fontSize: number; fontWeight: number; letterSpacing: string; textTransform: "uppercase"; color: string; marginTop: number } = {
+  fontSize: 9.5,
+  fontWeight: 700,
+  letterSpacing: "0.07em",
+  textTransform: "uppercase",
+  color: "#484f58",
+  marginTop: 2,
+};
+
+const ctlSelect: { width: string; background: string; border: string; borderRadius: number; color: string; fontSize: number; padding: string; fontFamily: string } = {
+  width: "100%",
+  background: "#0d1117",
+  border: "1px solid #30363d",
+  borderRadius: 5,
+  color: "#c9d1d9",
+  fontSize: 11,
+  padding: "4px 6px",
+  fontFamily: "inherit",
+};
+
+const pillBtn: { padding: string; borderRadius: number; cursor: string; fontSize: number; fontFamily: string; fontWeight: number } = {
+  padding: "3px 6px",
+  borderRadius: 5,
+  cursor: "pointer",
+  fontSize: 10,
+  fontFamily: "inherit",
+  fontWeight: 600,
+};
+
+const miniLabel: { fontSize: number; color: string; display: string; gap: number } = {
+  fontSize: 10,
+  color: "#6e7681",
+  display: "grid",
+  gap: 2,
+};
+
+const rangeVal: { fontSize: number; color: string; textAlign: "right" } = {
+  fontSize: 9,
+  color: "#484f58",
+  textAlign: "right",
 };
 
 function n(v: unknown): number | null {
@@ -341,7 +500,7 @@ function parseSegmentMeasuresFromAssays(raw: unknown): Record<string, number | s
 function parseSceneJson(
   text: string,
   manifestLayer: ViewerManifestLayer | undefined
-): Omit<SceneData, "totalArtifacts"> {
+): Omit<SceneData, "totalArtifacts" | "sourceLayers" | "heatmapSurfaces"> {
   let root: unknown;
   try {
     root = JSON.parse(text) as unknown;
@@ -619,6 +778,7 @@ function parseSceneJson(
         n(props?.elev) ??
         n(props?.z) ??
         n(props?.contour) ??
+        n(props?.level) ??
         n(props?.height) ??
         n(props?.value);
       const g = (f as Record<string, unknown>).geometry;
@@ -781,7 +941,6 @@ function mapLayerKindToKey(kind: string): LayerKey | null {
   if (kind === "drill_segments") return "grade_segments";
   if (kind === "assay_points") return "assay_points";
   if (kind === "mesh") return "trajectories";
-  if (kind === "volume") return "high_grade_balloons";
   return null;
 }
 
@@ -893,6 +1052,39 @@ function categoricalMeasureColor(
   return paletteColor(t, 0, 1, palette);
 }
 
+// ── Color stop helpers ────────────────────────────────────────────────────────
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "").padEnd(6, "0");
+  return [parseInt(h.slice(0,2),16)||0, parseInt(h.slice(2,4),16)||0, parseInt(h.slice(4,6),16)||0];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return "#" + [r,g,b].map(v => Math.round(Math.max(0,Math.min(255,v))).toString(16).padStart(2,"0")).join("");
+}
+
+function interpolateStopsColor(stops: ColorStop[], t: number): string {
+  if (!stops.length) return "#888888";
+  const s = [...stops].sort((a,b) => a.pos - b.pos);
+  if (t <= s[0].pos) return s[0].color;
+  if (t >= s[s.length-1].pos) return s[s.length-1].color;
+  for (let i = 0; i < s.length-1; i++) {
+    if (t >= s[i].pos && t <= s[i+1].pos) {
+      const u = (t - s[i].pos) / ((s[i+1].pos - s[i].pos) || 1);
+      const [r1,g1,b1] = hexToRgb(s[i].color);
+      const [r2,g2,b2] = hexToRgb(s[i+1].color);
+      return rgbToHex(r1+(r2-r1)*u, g1+(g2-g1)*u, b1+(b2-b1)*u);
+    }
+  }
+  return s[s.length-1].color;
+}
+
+function stopsToGradientCss(stops: ColorStop[]): string {
+  if (!stops.length) return "#888888";
+  const s = [...stops].sort((a,b) => a.pos - b.pos);
+  return `linear-gradient(to right, ${s.map(st=>`${st.color} ${(st.pos*100).toFixed(1)}%`).join(", ")})`;
+}
+
 function parseCategoricalColorMap(raw: string): Record<string, string> {
   if (!raw || raw.trim().length === 0) return {};
   try {
@@ -939,9 +1131,238 @@ function SegmentTube({
       <meshStandardMaterial
         color={color}
         metalness={0.05}
-        roughness={0.8}
+        roughness={0.75}
         transparent={opacity < 0.999}
         opacity={Math.max(0.02, Math.min(1, opacity))}
+        polygonOffset={true}
+        polygonOffsetFactor={-2}
+        polygonOffsetUnits={-2}
+      />
+    </mesh>
+  );
+}
+
+// ── 3-D IDW terrain heatmap ───────────────────────────────────────────────────
+// Computes an Inverse-Distance-Weighted grid from scattered assay points and
+// renders it as a flat canvas-textured plane, draped just above the terrain —
+// exactly the same approach as the 2-D Leaflet version.
+function HeatmapLayer3D({
+  layerId,
+  pts,
+  style,
+  domain,
+  toLocal,
+  sceneScale,
+  lift,
+  groundTerrainGrid,
+}: {
+  layerId: string;
+  pts: Point3D[];
+  style: LayerVizStyle;
+  domain: { lo: number; hi: number };
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+  sceneScale: number;
+  lift: number;
+  groundTerrainGrid: TerrainGrid | null;
+}) {
+  const result = useMemo(() => {
+    const key = style.attributeKey.trim();
+    if (!key) return null;
+
+    const samples: { x: number; y: number; value: number }[] = [];
+    for (const p of pts) {
+      const v = p.measures?.[key];
+      if (typeof v === "number" && Number.isFinite(v)) samples.push({ x: p.x, y: p.y, value: v });
+    }
+    if (samples.length < 3) return null;
+
+    const xMin = Math.min(...samples.map(s => s.x));
+    const xMax = Math.max(...samples.map(s => s.x));
+    const yMin = Math.min(...samples.map(s => s.y));
+    const yMax = Math.max(...samples.map(s => s.y));
+    if (xMax <= xMin || yMax <= yMin) return null;
+
+    const n = Math.max(64, Math.min(512, Math.trunc(style.hmGridSize ?? 256)));
+    const power = Math.max(1, Math.min(4, style.hmPower ?? 2));
+    const vMin = domain.lo;
+    const vMax = domain.hi;
+    const vRange = vMax - vMin || 1;
+    const stops = style.colorStops?.length >= 2 ? style.colorStops : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = n;
+    canvas.height = n;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const img = ctx.createImageData(n, n);
+
+    // Canvas row 0 = northMax (yi=0→yMax), last row = southMin (yi=n-1→yMin).
+    // We set tex.flipY=false so THREE.js doesn't double-flip; with rotation=-90°X
+    // UV.y=0 lands at Three.js +Z (north) which is correct for this orientation.
+    for (let yi = 0; yi < n; yi++) {
+      const worldY = yMax - ((yi + 0.5) / n) * (yMax - yMin);
+      for (let xi = 0; xi < n; xi++) {
+        const worldX = xMin + ((xi + 0.5) / n) * (xMax - xMin);
+        let num = 0, den = 0;
+        for (const s of samples) {
+          const dx = worldX - s.x;
+          const dy = worldY - s.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < 1e-12) { num = s.value; den = 1; break; }
+          const w = 1 / Math.pow(d2, power * 0.5);
+          num += w * s.value;
+          den += w;
+        }
+        const iv = den > 0 ? num / den : vMin;
+        const t = Math.max(0, Math.min(1, (iv - vMin) / vRange));
+        const hex = interpolateStopsColor(stops, t);
+        const [r, g, b] = hexToRgb(hex);
+        const idx = (yi * n + xi) * 4;
+        img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false; // canvas yi=0=north; without this Three.js would reverse it
+    return { tex, xMin, xMax, yMin, yMax };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pts, style.attributeKey, style.colorStops, style.palette, style.hmGridSize, style.hmPower, domain.lo, domain.hi]);
+
+  useEffect(() => () => { result?.tex.dispose(); }, [result]);
+
+  if (!result) return null;
+  const { tex, xMin, xMax, yMin, yMax } = result;
+  const cx = (xMin + xMax) / 2;
+  const cy = (yMin + yMax) / 2;
+
+  // Sample terrain at a 7×7 grid to find the maximum elevation under the extent
+  // so the plane is always visible above uneven terrain.
+  let maxTerrainZ = 0;
+  if (groundTerrainGrid) {
+    for (let xi = 0; xi <= 6; xi++) {
+      for (let yi = 0; yi <= 6; yi++) {
+        const z = sampleTerrainZ(groundTerrainGrid, xMin + (xi / 6) * (xMax - xMin), yMin + (yi / 6) * (yMax - yMin));
+        if (z !== null) maxTerrainZ = Math.max(maxTerrainZ, z);
+      }
+    }
+  }
+
+  const planeW = xMax - xMin;
+  const planeH = yMax - yMin;
+  const elevation = maxTerrainZ + lift + Math.max(1, sceneScale * 0.0012);
+  const center = toLocal(cx, cy, elevation);
+
+  return (
+    <mesh
+      key={`hm3d-${layerId}`}
+      position={[center.x, center.y, center.z]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      renderOrder={5}
+    >
+      <planeGeometry args={[planeW, planeH]} />
+      <meshBasicMaterial
+        map={tex}
+        transparent
+        opacity={style.opacity * 0.82}
+        depthWrite={false}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+// ── Pre-computed surface heatmap from assay_heatmap pipeline node ─────────────
+// Grid values are the measure (e.g. Au ppm), stored south→north (row 0 = ymin).
+// Rendered as a canvas-textured horizontal plane draped above terrain.
+function SurfaceHeatmapLayer3D({
+  heatmapSurface,
+  style,
+  toLocal,
+  sceneScale,
+  lift,
+  groundTerrainGrid,
+}: {
+  heatmapSurface: HeatmapSurfaceGrid;
+  style: LayerVizStyle;
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+  sceneScale: number;
+  lift: number;
+  groundTerrainGrid: TerrainGrid | null;
+}) {
+  const result = useMemo(() => {
+    const { nx, ny, xmin, xmax, ymin, ymax, values } = heatmapSurface.grid;
+    const finiteVals = values.filter((v): v is number => v !== null && Number.isFinite(v));
+    if (finiteVals.length === 0) return null;
+
+    // Value domain: use the full grid range; layer style can clip further.
+    const vMin = Math.min(...finiteVals);
+    const vMax = Math.max(...finiteVals);
+    // Honour per-layer clamp if fixedMin/fixedMax are set, else use data range.
+    const domLo = style.rampNormMode === "fixed" ? style.fixedMin : vMin;
+    const domHi = style.rampNormMode === "fixed" ? style.fixedMax : vMax;
+    const vRange = domHi - domLo || 1;
+    const stops = style.colorStops?.length >= 2 ? style.colorStops : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = nx;
+    canvas.height = ny;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const img = ctx.createImageData(nx, ny);
+
+    // Grid is stored south→north (row 0 = ymin). Flip Y for canvas so yi=0=north.
+    // tex.flipY=false below ensures Three.js doesn't double-flip.
+    for (let yi = 0; yi < ny; yi++) {
+      const srcYi = ny - 1 - yi; // flip: canvas top = grid north row
+      for (let xi = 0; xi < nx; xi++) {
+        const v = values[srcYi * nx + xi];
+        const idx = (yi * nx + xi) * 4;
+        if (v === null || !Number.isFinite(v)) { img.data[idx + 3] = 0; continue; }
+        const t = Math.max(0, Math.min(1, (v - domLo) / vRange));
+        const hex = interpolateStopsColor(stops, t);
+        const [r, g, b] = hexToRgb(hex);
+        img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b; img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false; // canvas yi=0=north; correct with Rx(-90°) rotation
+    return { tex, xmin, xmax, ymin, ymax };
+  }, [heatmapSurface, style.colorStops, style.palette, style.rampNormMode, style.fixedMin, style.fixedMax]);
+
+  useEffect(() => () => { result?.tex.dispose(); }, [result]);
+
+  if (!result) return null;
+  const { tex, xmin, xmax, ymin, ymax } = result;
+  const cx = (xmin + xmax) / 2;
+  const cy = (ymin + ymax) / 2;
+
+  let maxTerrainZ = 0;
+  if (groundTerrainGrid) {
+    for (let xi = 0; xi <= 6; xi++) {
+      for (let yi = 0; yi <= 6; yi++) {
+        const z = sampleTerrainZ(groundTerrainGrid, xmin + (xi / 6) * (xmax - xmin), ymin + (yi / 6) * (ymax - ymin));
+        if (z !== null) maxTerrainZ = Math.max(maxTerrainZ, z);
+      }
+    }
+  }
+
+  const elevation = maxTerrainZ + lift + Math.max(1, sceneScale * 0.0012);
+  const center = toLocal(cx, cy, elevation);
+
+  return (
+    <mesh
+      position={[center.x, center.y, center.z]}
+      rotation={[-Math.PI / 2, 0, 0]}
+      renderOrder={5}
+    >
+      <planeGeometry args={[xmax - xmin, ymax - ymin]} />
+      <meshBasicMaterial
+        map={tex}
+        transparent
+        opacity={style.opacity * 0.85}
+        depthWrite={false}
+        side={THREE.DoubleSide}
       />
     </mesh>
   );
@@ -1049,6 +1470,306 @@ function EsriDrape({
   );
 }
 
+// ── ColorRampEditor component ─────────────────────────────────────────────────
+
+type ColorRampEditorProps = {
+  stops: ColorStop[];
+  onStopsChange: (s: ColorStop[]) => void;
+  transform: "linear" | "log10" | "ln";
+  onTransformChange: (t: "linear" | "log10" | "ln") => void;
+  clampLow: number;
+  clampHigh: number;
+  onClampChange: (lo: number, hi: number) => void;
+  rawValues: number[];
+  dataMin: number;
+  dataMax: number;
+};
+
+function ColorRampEditor({
+  stops, onStopsChange, transform, onTransformChange,
+  clampLow, clampHigh, onClampChange,
+  rawValues, dataMin, dataMax,
+}: ColorRampEditorProps) {
+  const [selIdx, setSelIdx] = React.useState(0);
+  const trackRef = React.useRef<HTMLDivElement>(null);
+  const dragging = React.useRef<{origIdx: number} | null>(null);
+  const [isDragging, setIsDragging] = React.useState(false);
+
+  const sorted = React.useMemo(() => [...stops].sort((a,b) => a.pos - b.pos), [stops]);
+  const gradCss = stopsToGradientCss(sorted);
+
+  // Histogram bins
+  const histBins = React.useMemo(() => {
+    if (rawValues.length < 2) return Array(24).fill(0);
+    const vals = rawValues.filter(v => Number.isFinite(v));
+    if (vals.length < 2) return Array(24).fill(0);
+    const vs = [...vals].sort((a,b)=>a-b);
+    const lo = vs[Math.floor(clampLow/100 * (vs.length-1))];
+    const hi = vs[Math.min(vs.length-1, Math.floor(clampHigh/100 * (vs.length-1)))];
+    const range = hi - lo || 1;
+    const N = 24;
+    const bins = Array(N).fill(0);
+    for (const v of vs) {
+      const i = Math.min(N-1, Math.max(0, Math.floor((v - lo)/range * N)));
+      bins[i]++;
+    }
+    const mx = Math.max(...bins, 1);
+    return bins.map(b => b/mx);
+  }, [rawValues, clampLow, clampHigh]);
+
+  // Pointer capture drag — stays on the track element
+  const handleStopPointerDown = React.useCallback((e: React.PointerEvent, origIdx: number, sortedI: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setSelIdx(sortedI);
+    dragging.current = { origIdx };
+    setIsDragging(true);
+  }, []);
+
+  const handleTrackPointerMove = React.useCallback((e: React.PointerEvent) => {
+    if (!dragging.current || !trackRef.current) return;
+    const rect = trackRef.current.getBoundingClientRect();
+    const pos = Math.max(0.001, Math.min(0.999, (e.clientX - rect.left) / rect.width));
+    const newStops = stops.map((s, i) => i === dragging.current!.origIdx ? { ...s, pos } : s);
+    onStopsChange(newStops);
+  }, [stops, onStopsChange]);
+
+  const handleTrackPointerUp = React.useCallback(() => {
+    dragging.current = null;
+    setIsDragging(false);
+  }, []);
+
+  const addStop = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (isDragging || !trackRef.current) return;
+    // Check if near existing stop
+    const rect = trackRef.current.getBoundingClientRect();
+    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const nearIdx = sorted.findIndex(s => Math.abs(s.pos - pos) < 0.04);
+    if (nearIdx >= 0) { setSelIdx(nearIdx); return; }
+    const color = interpolateStopsColor(sorted, pos);
+    const newStops = [...stops, { pos, color }].sort((a,b) => a.pos - b.pos);
+    onStopsChange(newStops);
+    setSelIdx(newStops.findIndex(s => Math.abs(s.pos - pos) < 0.002));
+  }, [isDragging, sorted, stops, onStopsChange]);
+
+  const selStop = sorted[selIdx] ?? sorted[0];
+  const selOrigIdx = selStop ? stops.findIndex(s => Math.abs(s.pos - selStop.pos) < 0.0001 && s.color === selStop.color) : -1;
+
+  const rampSection: React.CSSProperties = {
+    display: "flex", flexDirection: "column", gap: 0,
+    background: "#0d1117", borderRadius: 6,
+    border: "1px solid #21262d",
+    overflow: "hidden",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+
+      {/* Scale selector row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase", flex: 1 }}>Scale</span>
+        {(["linear","log10","ln"] as const).map(t => (
+          <button key={t} type="button"
+            onClick={() => onTransformChange(t)}
+            style={{
+              fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4, cursor: "pointer",
+              letterSpacing: "0.03em", fontFamily: "inherit",
+              background: transform === t ? "#388bfd22" : "transparent",
+              border: `1px solid ${transform === t ? "#388bfd" : "#30363d"}`,
+              color: transform === t ? "#58a6ff" : "#6e7681",
+              transition: "all 0.1s",
+            }}>
+            {t === "log10" ? "Log₁₀" : t === "ln" ? "Ln" : "Lin"}
+          </button>
+        ))}
+      </div>
+
+      {/* Gradient + histogram + stop track — unified block */}
+      <div style={rampSection}>
+        {/* Gradient bar with histogram */}
+        <div style={{
+          height: 18,
+          background: gradCss,
+          cursor: "crosshair",
+          position: "relative",
+          overflow: "hidden",
+        }}
+          onClick={addStop}
+        >
+          {/* Histogram bars (inverted, from bottom, dark overlay) */}
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "flex-end", pointerEvents: "none" }}>
+            {histBins.map((h, i) => (
+              <div key={i} style={{
+                flex: 1,
+                height: `${Math.round(h * 70)}%`,
+                background: "rgba(0,0,0,0.28)",
+                borderLeft: i > 0 ? "0.5px solid rgba(0,0,0,0.12)" : "none",
+              }} />
+            ))}
+          </div>
+        </div>
+
+        {/* Stop track */}
+        <div
+          ref={trackRef}
+          style={{
+            position: "relative",
+            height: 14,
+            background: "#161b22",
+            cursor: isDragging ? "ew-resize" : "crosshair",
+            borderTop: "1px solid #21262d",
+            userSelect: "none",
+          }}
+          onClick={addStop}
+          onPointerMove={handleTrackPointerMove}
+          onPointerUp={handleTrackPointerUp}
+        >
+          {/* Guide line */}
+          <div style={{ position: "absolute", top: "50%", left: 8, right: 8, height: 1, background: "#30363d", transform: "translateY(-50%)" }} />
+
+          {sorted.map((s, i) => {
+            const origIdx = stops.findIndex(os => Math.abs(os.pos - s.pos) < 0.0001 && os.color === s.color);
+            const isSel = i === selIdx;
+            return (
+              <div
+                key={i}
+                title={`Stop ${i+1}: ${(s.pos*100).toFixed(0)}%`}
+                style={{
+                  position: "absolute",
+                  left: `calc(${s.pos*100}% - 5px + ${s.pos < 0.05 ? 5 : s.pos > 0.95 ? -5 : 0}px)`,
+                  top: 2,
+                  width: 10,
+                  height: 10,
+                  background: s.color,
+                  border: `2px solid ${isSel ? "#58a6ff" : "rgba(200,200,200,0.4)"}`,
+                  borderRadius: 3,
+                  cursor: "ew-resize",
+                  zIndex: isSel ? 3 : 1,
+                  boxShadow: isSel
+                    ? `0 0 0 3px rgba(88,166,255,0.25), 0 2px 6px rgba(0,0,0,0.6)`
+                    : "0 1px 4px rgba(0,0,0,0.5)",
+                  touchAction: "none",
+                }}
+                onPointerDown={(e) => handleStopPointerDown(e, origIdx, i)}
+                onClick={(e) => { e.stopPropagation(); setSelIdx(i); }}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Selected stop controls */}
+      {selStop && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 4,
+          background: "#161b22", borderRadius: 5, padding: "3px 6px",
+          border: "1px solid #21262d",
+        }}>
+          <div style={{ position: "relative", width: 20, height: 20, flexShrink: 0 }}>
+            <div style={{
+              position: "absolute", inset: 0, background: selStop.color,
+              borderRadius: 4, border: "2px solid rgba(255,255,255,0.2)",
+              pointerEvents: "none",
+            }} />
+            <input type="color" value={selStop.color}
+              onChange={(e) => {
+                if (selOrigIdx < 0) return;
+                onStopsChange(stops.map((s,i) => i === selOrigIdx ? {...s, color: e.target.value} : s));
+              }}
+              style={{ opacity: 0, position: "absolute", inset: 0, width: "100%", height: "100%", cursor: "pointer", padding: 0, border: "none" }}
+            />
+          </div>
+          <span style={{ fontSize: 8.5, color: "#6e7681" }}>pos</span>
+          <input type="number" min={0} max={100} step={0.5}
+            value={+(selStop.pos * 100).toFixed(1)}
+            onChange={(e) => {
+              if (selOrigIdx < 0) return;
+              const pos = Math.max(0, Math.min(1, Number(e.target.value) / 100));
+              onStopsChange(stops.map((s,i) => i === selOrigIdx ? {...s, pos} : s));
+            }}
+            style={{
+              width: 38, fontSize: 11, textAlign: "right", fontFamily: "ui-monospace,monospace",
+              background: "#0d1117", border: "1px solid #30363d", borderRadius: 4,
+              color: "#c9d1d9", padding: "2px 5px",
+            }}
+          />
+          <span style={{ fontSize: 8.5, color: "#6e7681" }}>%</span>
+          <div style={{ flex: 1 }} />
+          <button type="button" title="Reverse ramp"
+            onClick={() => {
+              const rev = [...stops].map(s => ({ ...s, pos: 1 - s.pos }));
+              onStopsChange(rev);
+            }}
+            style={{
+              fontSize: 10, padding: "2px 6px", borderRadius: 3, cursor: "pointer",
+              background: "transparent", border: "1px solid #30363d", color: "#8b949e",
+            }}>↔</button>
+          {stops.length > 2 && (
+            <button type="button" title="Delete stop"
+              onClick={() => {
+                if (selOrigIdx < 0) return;
+                const ns = stops.filter((_,i) => i !== selOrigIdx);
+                onStopsChange(ns);
+                setSelIdx(Math.min(selIdx, ns.length - 1));
+              }}
+              style={{
+                fontSize: 11, padding: "2px 7px", borderRadius: 3, cursor: "pointer",
+                background: "rgba(248,81,73,0.08)", border: "1px solid rgba(248,81,73,0.25)",
+                color: "#f85149",
+              }}>×</button>
+          )}
+        </div>
+      )}
+
+      {/* Preset palette row */}
+      <div style={{ display: "flex", gap: 4 }}>
+        {(Object.entries(PALETTE_STOPS) as [string, ColorStop[]][]).map(([key, ps]) => (
+          <button key={key} type="button" title={key}
+            onClick={() => { onStopsChange([...ps]); }}
+            style={{
+              flex: 1, height: 12, borderRadius: 3, cursor: "pointer", padding: 0,
+              background: stopsToGradientCss(ps),
+              border: stopsToGradientCss(stops) === stopsToGradientCss(ps)
+                ? "2px solid #58a6ff" : "1px solid rgba(255,255,255,0.1)",
+              boxSizing: "border-box",
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Clip range — dual compact sliders with value labels */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase", flex: 1 }}>Clip</span>
+          {dataMin !== dataMax && (
+            <span style={{ fontSize: 8.5, color: "#484f58", fontFamily: "ui-monospace,monospace" }}>
+              {dataMin.toPrecision(3)} – {dataMax.toPrecision(3)}
+            </span>
+          )}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "22px 1fr 26px", gap: 4, alignItems: "center" }}>
+          <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>low</span>
+          <input type="range" min={0} max={49} step={1} value={clampLow}
+            onChange={(e) => onClampChange(Number(e.target.value), Math.max(Number(e.target.value)+1, clampHigh))}
+            style={{ width: "100%" }}
+          />
+          <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{clampLow}%</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "22px 1fr 26px", gap: 4, alignItems: "center" }}>
+          <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>high</span>
+          <input type="range" min={51} max={100} step={1} value={clampHigh}
+            onChange={(e) => onClampChange(Math.min(Number(e.target.value)-1, clampLow), Number(e.target.value))}
+            style={{ width: "100%" }}
+          />
+          <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{clampHigh}%</span>
+        </div>
+      </div>
+
+    </div>
+  );
+}
+
 export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges, artifacts, viewerNodeId, onClearViewer }: Props) {
   const [status, setStatus] = useState("Loading 3D viewer…");
   const [projectEpsg, setProjectEpsg] = useState(4326);
@@ -1065,6 +1786,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     aoiBounds: null,
     measureCandidates: [],
     totalArtifacts: 0,
+    sourceLayers: [],
+    heatmapSurfaces: [],
   });
   const [ui, setUi] = useState<SceneUiState>(DEFAULT_UI);
   const [configHydrated, setConfigHydrated] = useState(false);
@@ -1074,15 +1797,14 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const [drapeLoadError, setDrapeLoadError] = useState<string | null>(null);
   const [contractImagery, setContractImagery] = useState<ImageryDrapeContract | null>(null);
   const [contractLayerStack, setContractLayerStack] = useState<LayerStackContract | null>(null);
-  const [draggingLayer, setDraggingLayer] = useState<LayerKey | null>(null);
-  const [expandedLayers, setExpandedLayers] = useState<Record<LayerKey, boolean>>({
+  const [draggingLayer, setDraggingLayer] = useState<string | null>(null);
+  const [expandedLayers, setExpandedLayers] = useState<Record<string, boolean>>({
     esri_drape: false,
     terrain_points: false,
     contours: false,
     trajectories: false,
     grade_segments: true,
     assay_points: false,
-    high_grade_balloons: false,
   });
   const savedRef = useRef<string>("");
   const saveTidRef = useRef<number | null>(null);
@@ -1217,6 +1939,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           // cannot silently keep scenes upside-down after orientation fixes.
           invertDepth: uiRaw.invert_vertical_axis === true,
           panelCollapsed: uiRaw.panel_collapsed === true,
+          ambientIntensity:
+            typeof uiRaw.ambient_intensity === "number"
+              ? Math.max(0, Math.min(2, uiRaw.ambient_intensity))
+              : DEFAULT_UI.ambientIntensity,
+          fogEnabled: uiRaw.fog_enabled !== false,
+          gridEnabled: uiRaw.grid_enabled !== false,
+          bgPreset:
+            uiRaw.bg_preset === "dusk" || uiRaw.bg_preset === "dawn" || uiRaw.bg_preset === "overcast"
+              ? (uiRaw.bg_preset as SceneUiState["bgPreset"])
+              : "night",
         });
       } catch {
         setUi(DEFAULT_UI);
@@ -1278,6 +2010,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             invert_vertical_axis: ui.invertDepth,
             invert_depth: ui.invertDepth,
             panel_collapsed: ui.panelCollapsed,
+            ambient_intensity: ui.ambientIntensity,
+            fog_enabled: ui.fogEnabled,
+            grid_enabled: ui.gridEnabled,
+            bg_preset: ui.bgPreset,
           },
         },
         { branchId: activeBranchId }
@@ -1314,6 +2050,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           aoiBounds: null,
           measureCandidates: [],
           totalArtifacts: 0,
+          sourceLayers: [],
+          heatmapSurfaces: [],
         });
         setStatus(inputLinks.length ? "No upstream 3D artifacts yet. Queue run, run worker, then refresh." : "No compatible inputs wired into this 3D viewer.");
         return;
@@ -1327,6 +2065,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const allContours: Segment3D[] = [];
       const allPoints: Point3D[] = [];
       const allTerrain: TerrainPoint[] = [];
+      const allSourceLayers: SourceLayer[] = [];
+      const allHeatmapSurfaces: HeatmapSurfaceGrid[] = [];
+      const seenSourceLayerIds = new Set<string>();
       const terrainCandidates: Array<{
         id: string;
         label: string;
@@ -1356,12 +2097,84 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           } catch {
             /* ignore non-json */
           }
-          const parsed = parseSceneJson(txt, manifestByArtifact.get(`${art.key}:${art.content_hash}`));
+          const artManifest = manifestByArtifact.get(`${art.key}:${art.content_hash}`);
+          const artNodeId = artManifest?.source_node_id ?? (art as unknown as Record<string,string>)["node_id"] ?? art.key.replace(/\//g, "_");
+          const artNodeKind = artManifest?.source_node_kind ?? "unknown";
+
+          // ── assay_heatmap: pre-computed IDW grid — render as coloured overlay, NOT terrain ──
+          if (artNodeKind === "assay_heatmap") {
+            try {
+              const raw = JSON.parse(txt) as Record<string, unknown>;
+              const sg = raw.surface_grid as Record<string, unknown> | undefined;
+              if (sg && typeof sg === "object" && !Array.isArray(sg)) {
+                const nx = typeof sg.nx === "number" ? Math.trunc(sg.nx) : 0;
+                const ny = typeof sg.ny === "number" ? Math.trunc(sg.ny) : 0;
+                const xmin = typeof sg.xmin === "number" ? sg.xmin : null;
+                const xmax = typeof sg.xmax === "number" ? sg.xmax : null;
+                const ymin = typeof sg.ymin === "number" ? sg.ymin : null;
+                const ymax = typeof sg.ymax === "number" ? sg.ymax : null;
+                const rawVals = Array.isArray(sg.values) ? sg.values as unknown[] : [];
+                if (nx > 1 && ny > 1 && xmin !== null && xmax !== null && ymin !== null && ymax !== null && rawVals.length === nx * ny) {
+                  const id = `heatmap_surface__${artNodeId}`;
+                  if (!seenSourceLayerIds.has(id)) {
+                    seenSourceLayerIds.add(id);
+                    const values = rawVals.map(v => (typeof v === "number" && Number.isFinite(v)) ? v : null);
+                    allHeatmapSurfaces.push({ id, nodeId: artNodeId, nodeKind: artNodeKind, label: "Assay Heatmap", grid: { nx, ny, xmin, xmax, ymin, ymax, values } });
+                    allSourceLayers.push({ id, baseType: "heatmap_surface", nodeId: artNodeId, nodeKind: artNodeKind, label: "Assay Heatmap", dotColor: "#fb923c" });
+                  }
+                }
+              }
+            } catch { /* ignore */ }
+            loaded += 1;
+            continue; // don't run through parseSceneJson — surface_grid values are NOT elevation
+          }
+
+          const parsed = parseSceneJson(txt, artManifest);
           loaded += 1;
-          allTraces.push(...parsed.traces);
-          allSegs.push(...parsed.drillSegments);
-          allContours.push(...parsed.contourSegments);
-          allPoints.push(...parsed.assayPoints);
+          {
+            const ml = artManifest;
+            const nodeId = artNodeId;
+            const nodeKind = artNodeKind;
+            const makeId = (base: string) => `${base}__${nodeId}`;
+            const fmtKind = (k: string) => k.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+            const taggedSegs   = parsed.drillSegments.map(s => ({...s, sourceLayerId: makeId("grade_segments")}));
+            const taggedPts    = parsed.assayPoints.map(p   => ({...p, sourceLayerId: makeId("assay_points")}));
+            const taggedTraces = parsed.traces.map(t        => ({...t, sourceLayerId: makeId("trajectories")}));
+
+            allSegs.push(...taggedSegs);
+            allPoints.push(...taggedPts);
+            allTraces.push(...taggedTraces);
+
+            // Tag contour segments with the source node so they can be independently styled.
+            const taggedContours = parsed.contourSegments.map(s => ({...s, sourceLayerId: makeId("contours")}));
+            allContours.push(...taggedContours);
+
+            for (const [baseType, hasItems] of [
+              ["assay_points",   parsed.assayPoints.length > 0],
+              ["grade_segments", parsed.drillSegments.length > 0],
+              ["trajectories",   parsed.traces.length > 0],
+              ["contours",       parsed.contourSegments.length > 0],
+            ] as const) {
+              if (!hasItems) continue;
+              const id = makeId(baseType);
+              if (seenSourceLayerIds.has(id)) continue;
+              seenSourceLayerIds.add(id);
+              allSourceLayers.push({
+                id,
+                baseType,
+                nodeId,
+                nodeKind,
+                label: baseType === "contours"
+                  ? `Contours (${fmtKind(nodeKind)})`
+                  : fmtKind(nodeKind),
+                dotColor: baseType === "assay_points" ? "#60a5fa"
+                        : baseType === "grade_segments" ? "#f97316"
+                        : baseType === "contours" ? "#34d399"
+                        : "#a78bfa",
+              });
+            }
+          }
           allTerrain.push(...parsed.terrainPoints);
           if (parsed.aoiBounds) {
             if (!mergedAoiBounds) {
@@ -1424,6 +2237,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         aoiBounds: mergedAoiBounds,
         measureCandidates: [...allMeasures].sort(),
         totalArtifacts: loaded,
+        sourceLayers: allSourceLayers,
+        heatmapSurfaces: allHeatmapSurfaces,
       });
       setStatus(`${allTraces.length + allSegs.length + allContours.length} line segment(s), ${allPoints.length} point(s), ${allTerrain.length} terrain samples from ${loaded} artifact(s).`);
     })();
@@ -1436,30 +2251,17 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     if (sceneData.measureCandidates.length === 0) return;
     const firstMeasure = sceneData.measureCandidates[0];
     setUi((p) => {
-      const hasAnyLayerAttr = Object.values(p.layerStyles).some(
-        (s) => typeof s?.attributeKey === "string" && s.attributeKey.trim().length > 0
-      );
-      if (hasAnyLayerAttr) return p;
-      return {
-        ...p,
-        layerStyles: {
-          ...p.layerStyles,
-          assay_points: {
-            ...(p.layerStyles.assay_points ?? DEFAULT_LAYER_STYLE),
-            attributeKey: firstMeasure,
-          },
-          grade_segments: {
-            ...(p.layerStyles.grade_segments ?? DEFAULT_LAYER_STYLE),
-            attributeKey: firstMeasure,
-          },
-          high_grade_balloons: {
-            ...(p.layerStyles.high_grade_balloons ?? DEFAULT_LAYER_STYLE),
-            attributeKey: firstMeasure,
-          },
-        },
-      };
+      const hasAnyAttr = Object.values(p.layerStyles).some(s => s?.attributeKey?.trim());
+      if (hasAnyAttr) return p;
+      const newStyles: Record<string, LayerVizStyle> = { ...p.layerStyles };
+      for (const sl of sceneData.sourceLayers) {
+        if (!newStyles[sl.id]?.attributeKey?.trim()) {
+          newStyles[sl.id] = { ...(newStyles[sl.id] ?? DEFAULT_LAYER_STYLE), attributeKey: firstMeasure };
+        }
+      }
+      return { ...p, layerStyles: newStyles };
     });
-  }, [sceneData.measureCandidates]);
+  }, [sceneData.measureCandidates, sceneData.sourceLayers]);
 
   useEffect(() => {
     if (sceneData.terrainGrids.length === 0) return;
@@ -1621,18 +2423,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   }, [ui.invertDepth, world.center]);
 
   const layerStyle = useCallback(
-    (layerId: LayerKey): LayerVizStyle => {
+    (layerId: string): LayerVizStyle => {
+      // Each layer ID gets its own independent style — no cross-layer fallback.
       const s = ui.layerStyles[layerId];
-      return {
-        ...DEFAULT_LAYER_STYLE,
-        ...(s ?? {}),
-      };
+      return { ...DEFAULT_LAYER_STYLE, ...(s ?? {}) };
     },
     [ui.layerStyles]
   );
 
   const setLayerStyle = useCallback(
-    (layerId: LayerKey, patch: Partial<LayerVizStyle>) => {
+    (layerId: string, patch: Partial<LayerVizStyle>) => {
       setUi((p) => {
         const prev = p.layerStyles[layerId] ?? {
           ...DEFAULT_LAYER_STYLE,
@@ -1649,10 +2449,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     []
   );
 
-  const domainFor = useCallback((key: string, transform: SceneUiState["measureTransform"], lowPct: number, highPct: number) => {
+  const domainFor = useCallback((key: string, transform: SceneUiState["measureTransform"], lowPct: number, highPct: number, sourceLayerIdFilter?: string) => {
     if (!key) return { lo: 0, hi: 1 };
     const vals: number[] = [];
     for (const s of sceneData.drillSegments) {
+      if (sourceLayerIdFilter && s.sourceLayerId !== sourceLayerIdFilter) continue;
       const v = s.measures?.[key];
       if (typeof v === "number" && Number.isFinite(v)) {
         const tv = applyMeasureTransform(v, transform);
@@ -1660,6 +2461,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       }
     }
     for (const p of sceneData.assayPoints) {
+      if (sourceLayerIdFilter && p.sourceLayerId !== sourceLayerIdFilter) continue;
       const v = p.measures?.[key];
       if (typeof v === "number" && Number.isFinite(v)) {
         const tv = applyMeasureTransform(v, transform);
@@ -1676,7 +2478,6 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const assayStyle = useMemo(() => layerStyle("assay_points"), [layerStyle]);
   const segmentStyle = useMemo(() => layerStyle("grade_segments"), [layerStyle]);
   const traceStyle = useMemo(() => layerStyle("trajectories"), [layerStyle]);
-  const balloonStyle = useMemo(() => layerStyle("high_grade_balloons"), [layerStyle]);
   const assayDomain = useMemo(
     () => domainFor(assayStyle.attributeKey, assayStyle.transform, assayStyle.clampLowPct, assayStyle.clampHighPct),
     [assayStyle, domainFor]
@@ -1689,11 +2490,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     () => domainFor(traceStyle.attributeKey, traceStyle.transform, traceStyle.clampLowPct, traceStyle.clampHighPct),
     [domainFor, traceStyle]
   );
-  const balloonDomain = useMemo(
-    () => domainFor(balloonStyle.attributeKey, balloonStyle.transform, balloonStyle.clampLowPct, balloonStyle.clampHighPct),
-    [balloonStyle, domainFor]
-  );
 
+  const domainForLayer = useCallback((layerId: string) => {
+    const style = layerStyle(layerId);
+    const filter = layerId.includes("__") ? layerId : undefined;
+    return domainFor(style.attributeKey, style.transform, style.clampLowPct, style.clampHighPct, filter);
+  }, [layerStyle, domainFor]);
   const drapeBounds = useMemo(() => {
     if (groundTerrainGrid) {
       return {
@@ -1896,45 +2698,6 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     };
   }, [contractImagery, currentImageryProvider, drapeBounds, groundTerrainGrid, projectEpsg, ui.imageryProvider, ui.showDrape]);
 
-  const filteredContourSegments = useMemo(() => {
-    if (sceneData.contourSegments.length === 0) return [] as Segment3D[];
-    const step = Math.max(1, Math.trunc(ui.contourIntervalStep));
-    if (step <= 1) return sceneData.contourSegments;
-    const levels = Array.from(
-      new Set(
-        sceneData.contourSegments
-          .map((s) => (typeof s.contourLevel === "number" && Number.isFinite(s.contourLevel) ? s.contourLevel : null))
-          .filter((v): v is number => v !== null)
-      )
-    ).sort((a, b) => a - b);
-    if (levels.length < 2) return sceneData.contourSegments;
-    const keep = new Set(levels.filter((_, idx) => idx % step === 0));
-    return sceneData.contourSegments.filter(
-      (s) => !(typeof s.contourLevel === "number" && Number.isFinite(s.contourLevel)) || keep.has(s.contourLevel)
-    );
-  }, [sceneData.contourSegments, ui.contourIntervalStep]);
-
-  const balloonThresholdValue = useMemo(() => {
-    const key = balloonStyle.attributeKey.trim();
-    if (!key) return null;
-    const vals = sceneData.assayPoints
-      .map((p) => p.measures?.[key])
-      .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
-      .sort((a, b) => a - b);
-    if (vals.length === 0) return null;
-    return percentile(vals, Math.max(0, Math.min(100, ui.balloonThresholdPct)));
-  }, [balloonStyle.attributeKey, sceneData.assayPoints, ui.balloonThresholdPct]);
-
-  const balloonPoints = useMemo(() => {
-    const key = balloonStyle.attributeKey.trim();
-    if (!key || balloonThresholdValue === null) return [] as Array<{ point: Point3D; value: number }>;
-    return sceneData.assayPoints
-      .map((p) => {
-        const v = p.measures?.[key];
-        return typeof v === "number" && Number.isFinite(v) ? { point: p, value: v } : null;
-      })
-      .filter((x): x is { point: Point3D; value: number } => x !== null && x.value >= balloonThresholdValue);
-  }, [balloonStyle.attributeKey, balloonThresholdValue, sceneData.assayPoints]);
 
   const localDrillSegments = useMemo(
     () =>
@@ -2027,21 +2790,28 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   }, [active, autoRefitSig, sceneData.totalArtifacts]);
 
   const orderedLayerIds = useMemo(() => {
-    const userOrder = normalizeLayerOrder(ui.layerOrder);
-    if (ui.layerOrderMode !== "contract") return userOrder;
-    const contractOrder = (contractLayerStack?.layers ?? [])
-      .slice()
-      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-      .map((l) => mapLayerKindToKey(String(l.kind ?? "")))
-      .filter((x): x is LayerKey => x !== null);
-    if (contractOrder.length === 0) return userOrder;
-    return normalizeLayerOrder([...contractOrder, ...userOrder]);
-  }, [contractLayerStack, ui.layerOrder, ui.layerOrderMode]);
+    // Static layers: esri_drape is always available (uses default provider even without contract).
+    // terrain_points only when there is actual terrain data.
+    // Contour lines are dynamic source layers (baseType "contours") — no static "contours" slot.
+    const hasTerrainData = sceneData.terrainGrid !== null || sceneData.terrainPoints.length > 0;
+    const staticBase: string[] = ["esri_drape"];
+    if (hasTerrainData) staticBase.push("terrain_points");
+    const dynamicIds = sceneData.sourceLayers.map(l => l.id);
+    const all = [...staticBase, ...dynamicIds];
+    if (ui.layerOrderMode === "override" && ui.layerOrder.length > 0) {
+      const known = new Set(all);
+      return [
+        ...ui.layerOrder.filter((id: string) => known.has(id)),
+        ...all.filter(id => !ui.layerOrder.includes(id as LayerKey)),
+      ];
+    }
+    return all;
+  }, [sceneData.sourceLayers, sceneData.terrainGrid, sceneData.terrainPoints.length, ui.layerOrder, ui.layerOrderMode]);
 
   const hasLayerStackContract = Boolean(contractLayerStack?.layers?.length);
   const canDragLayers = !hasLayerStackContract || ui.layerOrderMode === "override";
 
-  const onDropLayer = (targetId: LayerKey) => {
+  const onDropLayer = (targetId: string) => {
     if (!canDragLayers) return;
     if (!draggingLayer || draggingLayer === targetId) return;
     setUi((prev) => {
@@ -2059,18 +2829,24 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
   const layerLabel: Record<LayerKey, string> = {
     esri_drape: "Imagery drape",
-    terrain_points: "Terrain points",
+    terrain_points: "Terrain surface",
     contours: "Contours",
     trajectories: "Trajectories",
     grade_segments: "Grade segments",
     assay_points: "Assay points",
-    high_grade_balloons: "High-grade balloons",
+  };
+  const LAYER_DOT: Record<LayerKey, string> = {
+    esri_drape: "#facc15",
+    terrain_points: "#4ade80",
+    contours: "#38bdf8",
+    trajectories: "#a78bfa",
+    grade_segments: "#f97316",
+    assay_points: "#60a5fa",
   };
   const styleableLayers = new Set<LayerKey>([
     "trajectories",
     "grade_segments",
     "assay_points",
-    "high_grade_balloons",
   ]);
 
   const paletteOptions: Array<{ value: SceneUiState["palette"]; label: string }> = [
@@ -2081,7 +2857,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   ];
 
   const layerLift = useCallback(
-    (layerId: LayerKey) => {
+    (layerId: string) => {
       const idx = Math.max(0, orderedLayerIds.indexOf(layerId));
       return sceneScale * 0.00015 * (idx + 1);
     },
@@ -2089,11 +2865,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   );
 
   const colorFromLayerStyle = useCallback(
-    (
-      style: LayerVizStyle,
-      raw: number | string | null,
-      domain: { lo: number; hi: number }
-    ): string => {
+    (style: LayerVizStyle, raw: number | string | null, domain: { lo: number; hi: number }): string => {
       if (style.colorMode === "categorical") {
         const custom = parseCategoricalColorMap(style.categoricalColorMap);
         const key = raw === null ? "" : String(raw);
@@ -2106,7 +2878,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       }
       if (typeof raw !== "number" || !Number.isFinite(raw)) return "#58a6ff";
       const tv = applyMeasureTransform(raw, style.transform);
-      return paletteColor(tv, domain.lo, domain.hi, style.palette);
+      if (tv === null) return "#58a6ff";
+      const t = Math.max(0, Math.min(1, (tv - domain.lo) / ((domain.hi - domain.lo) || 1)));
+      const stopsToUse = style.colorStops?.length >= 2 ? style.colorStops : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno;
+      return interpolateStopsColor(stopsToUse, t);
     },
     []
   );
@@ -2116,6 +2891,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       drapeTerrainGeom?.dispose();
     };
   }, [drapeTerrainGeom]);
+
+  const bgPalette = BG_PRESETS[ui.bgPreset] ?? BG_PRESETS.night;
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#0f1419" }}>
@@ -2159,15 +2936,18 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               }}
               gl={{ logarithmicDepthBuffer: true }}
             >
-              <color attach="background" args={["#0b1220"]} />
-              <fog attach="fog" args={["#0b1220", sceneScale * 2, sceneScale * 40]} />
-              <ambientLight intensity={0.92} />
-              <hemisphereLight args={["#c4d8ff", "#1a2438", 0.55]} />
+              <color attach="background" args={[bgPalette.sky]} />
+              {ui.fogEnabled && <fog attach="fog" args={[bgPalette.fog, sceneScale * 2, sceneScale * 40]} />}
+              <ambientLight intensity={ui.ambientIntensity} />
+              <hemisphereLight args={[bgPalette.hemi[0], bgPalette.hemi[1], 0.55]} />
               <directionalLight position={[sceneScale, sceneScale * 0.8, sceneScale * 0.5]} intensity={0.42} />
               <directionalLight position={[-sceneScale * 0.7, sceneScale * 0.6, -sceneScale * 0.7]} intensity={0.24} />
-              <gridHelper args={[sceneScale * 1.25, 30, "#30363d", "#21262d"]} position={[0, -sceneScale * 0.02, 0]} />
+              {ui.gridEnabled && <gridHelper args={[sceneScale * 1.25, 30, bgPalette.grid1, bgPalette.grid2]} position={[0, -sceneScale * 0.02, 0]} />}
 
               {orderedLayerIds.map((layerId) => {
+                const layerBaseType = (id: string) => id.includes("__") ? id.split("__")[0] : id;
+                const baseType = layerBaseType(layerId);
+
                 if (layerId === "esri_drape") {
                   if (!ui.showDrape || drapeUrls.length === 0) return null;
                   return (
@@ -2200,12 +2980,18 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     />
                   );
                 }
-                if (layerId === "trajectories") {
-                  if (!ui.showTraces) return null;
+                if (baseType === "trajectories") {
+                  if (!layerStyle(layerId).visible) return null;
                   const lift = layerLift(layerId);
+                  const filterFn = layerId.includes("__")
+                    ? (s: Segment3D) => s.sourceLayerId === layerId
+                    : () => true;
+                  const traces = sceneData.traces.filter(filterFn);
+                  const thisTraceStyle = layerStyle(layerId);
+                  const thisDomain = domainForLayer(layerId);
                   return (
-                    <group key="layer-traces">
-                      {sceneData.traces.map((s, i) => {
+                    <group key={`layer-traces-${layerId}`}>
+                      {traces.map((s, i) => {
                         const az = s.hasExplicitZ === false
                           ? sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2]
                           : s.from[2];
@@ -2214,9 +3000,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                           : s.to[2];
                         const a = toLocal(s.from[0], s.from[1], az + lift);
                         const b = toLocal(s.to[0], s.to[1], bz + lift);
-                        const raw = traceStyle.attributeKey.trim() ? (s.measures?.[traceStyle.attributeKey.trim()] ?? null) : null;
-                        const color = traceStyle.attributeKey.trim()
-                          ? colorFromLayerStyle(traceStyle, raw, traceDomain)
+                        const raw = thisTraceStyle.attributeKey.trim() ? (s.measures?.[thisTraceStyle.attributeKey.trim()] ?? null) : null;
+                        const color = thisTraceStyle.attributeKey.trim()
+                          ? colorFromLayerStyle(thisTraceStyle, raw, thisDomain)
                           : ui.traceColor;
                         const r = Math.max(0.06, sceneScale * 0.0006 * ui.radiusScale * (ui.traceWidth / 2));
                         return <SegmentTube key={`trace-${i}`} from={a} to={b} radius={r} color={color} />;
@@ -2224,12 +3010,18 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     </group>
                   );
                 }
-                if (layerId === "grade_segments") {
-                  if (!ui.showSegments) return null;
+                if (baseType === "grade_segments") {
+                  if (!layerStyle(layerId).visible) return null;
                   const lift = layerLift(layerId);
+                  const filterFn = layerId.includes("__")
+                    ? (s: Segment3D) => s.sourceLayerId === layerId
+                    : () => true;
+                  const segs = sceneData.drillSegments.filter(filterFn);
+                  const thisSegStyle = layerStyle(layerId);
+                  const thisDomain = domainForLayer(layerId);
                   return (
-                    <group key="layer-segments">
-                      {sceneData.drillSegments.map((s, i) => {
+                    <group key={`layer-segments-${layerId}`}>
+                      {segs.map((s, i) => {
                         const az = s.hasExplicitZ === false
                           ? sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2]
                           : s.from[2];
@@ -2238,9 +3030,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                           : s.to[2];
                         const a = toLocal(s.from[0], s.from[1], az + lift);
                         const b = toLocal(s.to[0], s.to[1], bz + lift);
-                        const key = segmentStyle.attributeKey.trim();
-                        const mv = key && s.measures ? (s.measures[key] ?? null) : null;
-                        const color = colorFromLayerStyle(segmentStyle, mv, segmentDomain);
+                        const attrKey = thisSegStyle.attributeKey.trim();
+                        const mv = attrKey && s.measures ? (s.measures[attrKey] ?? null) : null;
+                        const color = colorFromLayerStyle(thisSegStyle, mv, thisDomain);
                         const rFromData = projectEpsg !== 4326 && typeof s.radiusM === "number" ? s.radiusM : 0;
                         const r = Math.max(0.08, sceneScale * 0.0012 * ui.radiusScale * (ui.segmentWidth / 4), rFromData * ui.radiusScale);
                         return <SegmentTube key={`seg-${i}`} from={a} to={b} radius={r} color={color} />;
@@ -2248,13 +3040,34 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     </group>
                   );
                 }
-                if (layerId === "contours") {
-                  if (!ui.showContours || filteredContourSegments.length === 0) return null;
+                if (baseType === "contours") {
+                  const thisContourStyle = layerStyle(layerId);
+                  if (!thisContourStyle.visible) return null;
+                  const filterFn = (s: Segment3D) => s.sourceLayerId === layerId;
+                  const step = Math.max(1, Math.trunc(ui.contourIntervalStep));
+                  let segs = sceneData.contourSegments.filter(filterFn);
+                  if (step > 1) {
+                    const levels = Array.from(new Set(
+                      segs.map(s => typeof s.contourLevel === "number" && Number.isFinite(s.contourLevel) ? s.contourLevel : null)
+                        .filter((v): v is number => v !== null)
+                    )).sort((a, b) => a - b);
+                    if (levels.length >= 2) {
+                      const keep = new Set(levels.filter((_, idx) => idx % step === 0));
+                      segs = segs.filter(s => !(typeof s.contourLevel === "number" && Number.isFinite(s.contourLevel)) || keep.has(s.contourLevel));
+                    }
+                  }
+                  if (segs.length === 0) return null;
+                  const contourColor = thisContourStyle.attributeKey ? undefined : (ui.contourColor);
                   const r = Math.max(0.01, sceneScale * 0.00015 * Math.max(0.25, ui.contourWidth));
                   const zLift = Math.max(0.01, sceneScale * 0.00018) + layerLift(layerId);
+                  // Build elevation domain for color ramp if attributeKey is set (or always for z-based coloring)
+                  const contourLevels = segs.map(s => s.contourLevel).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+                  const clMin = contourLevels.length ? Math.min(...contourLevels) : 0;
+                  const clMax = contourLevels.length ? Math.max(...contourLevels) : 1;
+                  const clRange = clMax - clMin || 1;
                   return (
-                    <group key="layer-contours">
-                      {filteredContourSegments.map((s, i) => {
+                    <group key={`layer-contours-${layerId}`}>
+                      {segs.map((s, i) => {
                         const az = s.hasExplicitZ
                           ? s.from[2]
                           : sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2];
@@ -2263,13 +3076,17 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                           : sampleTerrainZ(groundTerrainGrid, s.to[0], s.to[1]) ?? s.to[2];
                         const a = toLocal(s.from[0], s.from[1], az + zLift);
                         const b = toLocal(s.to[0], s.to[1], bz + zLift);
+                        // Color by elevation level using the layer's color ramp
+                        const t = typeof s.contourLevel === "number" ? Math.max(0, Math.min(1, (s.contourLevel - clMin) / clRange)) : 0.5;
+                        const stopsToUse = thisContourStyle.colorStops?.length >= 2 ? thisContourStyle.colorStops : PALETTE_STOPS[thisContourStyle.palette] ?? PALETTE_STOPS.inferno;
+                        const lineColor = contourColor ?? interpolateStopsColor(stopsToUse, t);
                         return (
                           <SegmentTube
                             key={`contour-${i}`}
                             from={a}
                             to={b}
                             radius={r}
-                            color={ui.contourColor}
+                            color={lineColor}
                             opacity={ui.contourOpacity}
                           />
                         );
@@ -2277,26 +3094,77 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     </group>
                   );
                 }
-                if (layerId === "assay_points") {
-                  if (!ui.showSamples) return null;
+                if (baseType === "assay_points") {
+                  if (!layerStyle(layerId).visible) return null;
                   const lift = layerLift(layerId);
+                  const filterFn = layerId.includes("__")
+                    ? (p: Point3D) => p.sourceLayerId === layerId
+                    : () => true;
+                  const pts = sceneData.assayPoints.filter(filterFn);
+                  const thisAssayStyle = layerStyle(layerId);
+                  const thisDomain = domainForLayer(layerId);
+
+                  // Heatmap mode — IDW canvas plane draped above terrain
+                  if (thisAssayStyle.displayMode === "heatmap") {
+                    return (
+                      <HeatmapLayer3D
+                        key={`hm3d-${layerId}`}
+                        layerId={layerId}
+                        pts={pts}
+                        style={thisAssayStyle}
+                        domain={thisDomain}
+                        toLocal={toLocal}
+                        sceneScale={sceneScale}
+                        lift={lift}
+                        groundTerrainGrid={groundTerrainGrid}
+                      />
+                    );
+                  }
+
                   return (
-                    <group key="layer-assay-points">
-                      {sceneData.assayPoints.map((p, i) => {
+                    <group key={`layer-assay-points-${layerId}`}>
+                      {pts.map((p, i) => {
                         const pz = resolvePointZ(p, groundTerrainGrid);
                         if (pz === null) return null;
                         const lp = toLocal(p.x, p.y, pz + lift);
-                        const key = assayStyle.attributeKey.trim();
-                        const mv = key && p.measures ? (p.measures[key] ?? null) : null;
-                        const color = colorFromLayerStyle(assayStyle, mv, assayDomain);
-                        const rr = Math.max(0.09, sceneScale * 0.0009 * ui.radiusScale * (ui.sampleSize / 4));
-                        const shape = assayStyle.pointShape;
+                        const attrKey = thisAssayStyle.attributeKey.trim();
+                        const mv = attrKey && p.measures ? (p.measures[attrKey] ?? null) : null;
+                        const color = colorFromLayerStyle(thisAssayStyle, mv, thisDomain);
+                        const baseR = Math.max(0.09, sceneScale * 0.0009 * ui.radiusScale * (ui.sampleSize / 4));
+                        const shape = thisAssayStyle.pointShape;
+                        const sizeKey = thisAssayStyle.sizeAttribute.trim();
+                        const sizeMv = sizeKey && p.measures ? (p.measures[sizeKey] ?? null) : null;
+                        let sizeT = 0.5; // default middle
+                        if (sizeMv !== null && typeof sizeMv === "number" && thisDomain.hi > thisDomain.lo) {
+                          const sv = thisAssayStyle.sizeTransform === "log10"
+                            ? Math.log10(Math.max(1e-9, sizeMv))
+                            : thisAssayStyle.sizeTransform === "sqrt"
+                              ? Math.sqrt(Math.max(0, sizeMv))
+                              : sizeMv;
+                          const slo = thisAssayStyle.sizeTransform === "log10"
+                            ? Math.log10(Math.max(1e-9, thisDomain.lo))
+                            : thisAssayStyle.sizeTransform === "sqrt"
+                              ? Math.sqrt(Math.max(0, thisDomain.lo))
+                              : thisDomain.lo;
+                          const shi = thisAssayStyle.sizeTransform === "log10"
+                            ? Math.log10(Math.max(1e-9, thisDomain.hi))
+                            : thisAssayStyle.sizeTransform === "sqrt"
+                              ? Math.sqrt(Math.max(0, thisDomain.hi))
+                              : thisDomain.hi;
+                          sizeT = shi > slo ? Math.max(0, Math.min(1, (sv - slo) / (shi - slo))) : 0.5;
+                        }
+                        const sizeMult = thisAssayStyle.sizeMin + (thisAssayStyle.sizeMax - thisAssayStyle.sizeMin) * sizeT;
+                        const rr = Math.max(0.09, baseR * sizeMult);
                         return (
                           <mesh key={`pt-${i}`} position={[lp.x, lp.y, lp.z]}>
                             {shape === "sphere" ? <sphereGeometry args={[rr, 10, 10]} /> : null}
                             {shape === "box" ? <boxGeometry args={[rr * 1.8, rr * 1.8, rr * 1.8]} /> : null}
                             {shape === "diamond" ? <octahedronGeometry args={[rr * 1.25, 0]} /> : null}
-                            <meshStandardMaterial color={color} />
+                            {shape === "cone" ? <coneGeometry args={[rr * 0.9, rr * 2.5, 8]} /> : null}
+                            {shape === "disc" ? <cylinderGeometry args={[rr, rr, rr * 0.28, 12]} /> : null}
+                            {shape === "spike" ? <coneGeometry args={[rr * 0.35, rr * 3, 6]} /> : null}
+                            <meshStandardMaterial color={color} transparent opacity={Math.max(0.05, thisAssayStyle.opacity)}
+                              polygonOffset={true} polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
                           </mesh>
                         );
                       })}
@@ -2323,65 +3191,22 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     </group>
                   );
                 }
-                if (layerId === "high_grade_balloons") {
-                  if (!ui.showBalloons || balloonPoints.length === 0) return null;
-                  const baseR = Math.max(0.14, sceneScale * 0.0014 * Math.max(0.35, ui.balloonScale));
-                  const maxAttachDist = Math.max(0.2, sceneScale * 0.04);
+                if (baseType === "heatmap_surface") {
+                  const thisStyle = layerStyle(layerId);
+                  if (!thisStyle.visible) return null;
+                  const hms = sceneData.heatmapSurfaces.find(h => h.id === layerId);
+                  if (!hms) return null;
                   const lift = layerLift(layerId);
                   return (
-                    <group key="layer-high-grade-balloons">
-                      {balloonPoints.map(({ point, value }, i) => {
-                        const pz = resolvePointZ(point, groundTerrainGrid);
-                        if (pz === null) return null;
-                        const lp = toLocal(point.x, point.y, pz + lift);
-                        const t =
-                          balloonDomain.hi > balloonDomain.lo
-                            ? Math.max(
-                                0,
-                                Math.min(1, (value - balloonDomain.lo) / (balloonDomain.hi - balloonDomain.lo))
-                              )
-                            : 1;
-                        const r = baseR * (0.85 + t * 2.2);
-                        const tube = Math.max(r * 0.2, sceneScale * 0.0003);
-                        const color = colorFromLayerStyle(balloonStyle, value, balloonDomain);
-                        let nearestDir: THREE.Vector3 | null = null;
-                        let bestDistSq = Number.POSITIVE_INFINITY;
-                        for (const seg of localDrillSegments) {
-                          const ab = seg.b.clone().sub(seg.a);
-                          const lenSq = Math.max(1e-12, ab.lengthSq());
-                          const tProj = Math.max(
-                            0,
-                            Math.min(1, lp.clone().sub(seg.a).dot(ab) / lenSq)
-                          );
-                          const q = seg.a.clone().add(ab.multiplyScalar(tProj));
-                          const dSq = q.distanceToSquared(lp);
-                          if (dSq < bestDistSq) {
-                            bestDistSq = dSq;
-                            nearestDir = seg.b.clone().sub(seg.a).normalize();
-                          }
-                        }
-                        const normal =
-                          nearestDir && Math.sqrt(bestDistSq) <= maxAttachDist
-                            ? nearestDir
-                            : new THREE.Vector3(0, 1, 0);
-                        const quat = new THREE.Quaternion().setFromUnitVectors(
-                          new THREE.Vector3(0, 0, 1),
-                          normal.clone().normalize()
-                        );
-                        return (
-                          <mesh key={`balloon-${i}`} position={[lp.x, lp.y, lp.z]} quaternion={quat}>
-                            <torusGeometry args={[r, tube, 14, 30]} />
-                            <meshStandardMaterial
-                              color={color}
-                              transparent
-                              opacity={Math.max(0.05, Math.min(1, ui.balloonOpacity))}
-                              emissive={new THREE.Color(color)}
-                              emissiveIntensity={0.14}
-                            />
-                          </mesh>
-                        );
-                      })}
-                    </group>
+                    <SurfaceHeatmapLayer3D
+                      key={`shm-${layerId}`}
+                      heatmapSurface={hms}
+                      style={thisStyle}
+                      toLocal={toLocal}
+                      sceneScale={sceneScale}
+                      lift={lift}
+                      groundTerrainGrid={groundTerrainGrid}
+                    />
                   );
                 }
                 return null;
@@ -2398,19 +3223,22 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             </Canvas>
           ) : null}
 
-          <aside style={{ position: "absolute", top: 12, right: 12, width: ui.panelCollapsed ? 42 : 320, maxHeight: "calc(100% - 24px)", overflow: "auto", background: "rgba(15,20,25,0.92)", border: "1px solid #30363d", borderRadius: 10, padding: ui.panelCollapsed ? 6 : 10 }}>
-            <button type="button" onClick={() => setUi((p) => ({ ...p, panelCollapsed: !p.panelCollapsed }))} style={{ width: "100%", textAlign: ui.panelCollapsed ? "center" : "right", marginBottom: ui.panelCollapsed ? 0 : 8, background: "transparent", border: "none", color: "#8b949e", cursor: "pointer", fontSize: 16 }}>{ui.panelCollapsed ? "◀" : "▸"}</button>
-            {!ui.panelCollapsed && (
-              <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
+          <aside style={{ position: "absolute", top: 12, right: 12, width: ui.panelCollapsed ? 40 : 300, maxHeight: "calc(100% - 24px)", display: "flex", flexDirection: "column", background: "rgba(13,17,23,0.96)", border: "1px solid #30363d", borderRadius: 12, boxShadow: "0 4px 24px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+            {ui.panelCollapsed ? (
+              <button type="button" title="Expand panel" onClick={() => setUi((p) => ({ ...p, panelCollapsed: false }))} style={{ flex: 1, background: "transparent", border: "none", color: "#6e7681", cursor: "pointer", fontSize: 16, padding: "8px 0" }}>›</button>
+            ) : (
+              <>
+                <div className="me-panel-header">
+                  <span className="me-panel-header-title">Scene layers</span>
+                  <button type="button" title="Collapse" className="me-panel-collapse-btn" onClick={() => setUi((p) => ({ ...p, panelCollapsed: true }))}>‹</button>
+                </div>
+                <div className="me-panel-body me-panel">
                 <details open>
-                  <summary style={{ fontWeight: 700, cursor: "pointer" }}>Layer manager</summary>
-                  <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-                    <div style={{ fontSize: 10, opacity: 0.72 }}>
-                      Generic viewer inputs are auto-routed into these layers. Terrain is the primary attachment surface for XY-only features.
-                    </div>
+                  <summary>Layers</summary>
+                  <div style={{ display: "grid", gap: 6 }}>
                     {hasLayerStackContract ? (
-                      <div style={{ fontSize: 11, opacity: 0.8 }}>
-                        Layer order:
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span className="me-section-note" style={{ flex: 1 }}>Order</span>
                         <select
                           value={ui.layerOrderMode}
                           onChange={(e) =>
@@ -2419,19 +3247,26 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                               layerOrderMode: e.target.value as "contract" | "override",
                             }))
                           }
-                          style={{ marginLeft: 6, fontSize: 11 }}
                         >
                           <option value="contract">Contract</option>
-                          <option value="override">Local override</option>
+                          <option value="override">Override</option>
                         </select>
-                        {ui.layerOrderMode === "contract" ? (
-                          <span style={{ marginLeft: 6, opacity: 0.7 }}>(drag locked)</span>
-                        ) : null}
+                        {ui.layerOrderMode === "contract" && (
+                          <span className="me-section-note">(drag locked)</span>
+                        )}
                       </div>
                     ) : null}
-                    {orderedLayerIds.map((layerId, i) => {
+                    {orderedLayerIds.map((layerId) => {
                       const style = layerStyle(layerId);
-                      const styleable = styleableLayers.has(layerId);
+                      const lBaseType = layerId.includes("__") ? layerId.split("__")[0] : layerId;
+                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface";
+                      const sourceLayer = sceneData.sourceLayers.find(sl => sl.id === layerId);
+                      const thisLayerLabel = sourceLayer?.label
+                        ?? (layerId === "esri_drape" ? "Imagery drape"
+                          : layerId === "terrain_points" ? "Terrain surface"
+                          : layerId === "contours" ? "Contours"
+                          : layerId);
+                      const thisLayerDot = sourceLayer?.dotColor ?? (LAYER_DOT[layerId as LayerKey] ?? "#484f58");
                       const visible =
                         layerId === "esri_drape"
                           ? ui.showDrape
@@ -2439,33 +3274,18 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                             ? ui.showTerrain
                             : layerId === "contours"
                               ? ui.showContours
-                            : layerId === "trajectories"
-                                ? ui.showTraces
-                                : layerId === "grade_segments"
-                                  ? ui.showSegments
-                                  : layerId === "high_grade_balloons"
-                                    ? ui.showBalloons
-                                    : ui.showSamples;
+                              : style.visible;
                       return (
                         <div
                           key={`chip-${layerId}`}
                           onDragOver={(e) => e.preventDefault()}
                           onDrop={() => onDropLayer(layerId)}
-                          style={{
-                            border: "1px solid #30363d",
-                            borderRadius: 8,
-                            padding: "4px 6px",
-                            background: "rgba(22,27,34,0.75)",
-                          }}
+                          className="me-layer-card"
                         >
-                          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <div className="me-layer-card-header">
                             <span
-                              style={{
-                                opacity: canDragLayers ? 0.55 : 0.28,
-                                cursor: canDragLayers ? "grab" : "not-allowed",
-                                userSelect: "none",
-                                padding: "2px 4px",
-                              }}
+                              className="me-drag-handle"
+                              style={{ opacity: canDragLayers ? 0.5 : 0.15, cursor: canDragLayers ? "grab" : "default" }}
                               draggable={canDragLayers}
                               onDragStart={(e) => {
                                 if (!canDragLayers) return;
@@ -2474,45 +3294,41 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                               }}
                               onDragEnd={() => setDraggingLayer(null)}
                             >
-                              ⋮⋮
+                              ⠿
                             </span>
-                            <input
-                              type="checkbox"
-                              checked={visible}
-                              onChange={(e) =>
-                                setUi((p) =>
-                                  layerId === "esri_drape"
-                                    ? { ...p, showDrape: e.target.checked }
-                                    : layerId === "terrain_points"
-                                      ? { ...p, showTerrain: e.target.checked }
-                                      : layerId === "contours"
-                                        ? { ...p, showContours: e.target.checked }
-                                        : layerId === "trajectories"
-                                          ? { ...p, showTraces: e.target.checked }
-                                    : layerId === "grade_segments"
-                                            ? { ...p, showSegments: e.target.checked }
-                                            : layerId === "high_grade_balloons"
-                                              ? { ...p, showBalloons: e.target.checked }
-                                            : { ...p, showSamples: e.target.checked }
-                                )
-                              }
-                            />
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.2 }}>{layerLabel[layerId]}</div>
-                              <div style={{ fontSize: 10, opacity: 0.65 }}>z:{i + 1}</div>
+                            <span className="me-layer-dot" style={{ background: thisLayerDot, opacity: visible ? 1 : 0.25 }} />
+                            <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: visible ? "#e6edf3" : "#6e7681", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {thisLayerLabel}
                             </div>
                             <button
                               type="button"
-                              onClick={() =>
-                                setExpandedLayers((prev) => ({ ...prev, [layerId]: !prev[layerId] }))
-                              }
-                              style={{ fontSize: 11, lineHeight: 1, padding: "4px 6px", minWidth: 26 }}
+                              className="me-layer-vis-btn"
+                              title={visible ? "Hide layer" : "Show layer"}
+                              style={{ color: visible ? "#e6edf3" : "#484f58" }}
+                              onClick={() => {
+                                if (layerId === "esri_drape") {
+                                  setUi((p) => ({ ...p, showDrape: !p.showDrape }));
+                                } else if (layerId === "terrain_points") {
+                                  setUi((p) => ({ ...p, showTerrain: !p.showTerrain }));
+                                } else if (layerId === "contours") {
+                                  setUi((p) => ({ ...p, showContours: !p.showContours }));
+                                } else {
+                                  setLayerStyle(layerId, { visible: !style.visible });
+                                }
+                              }}
                             >
-                              {expandedLayers[layerId] ? "▾" : "▸"}
+                              {visible ? "●" : "○"}
+                            </button>
+                            <button
+                              type="button"
+                              className="me-layer-expand-btn"
+                              onClick={() => setExpandedLayers((prev) => ({ ...prev, [layerId]: !prev[layerId] }))}
+                            >
+                              {expandedLayers[layerId] ? "▾" : "›"}
                             </button>
                           </div>
                           {expandedLayers[layerId] && (
-                            <div style={{ marginTop: 4, display: "grid", gap: 6 }}>
+                            <div className="me-layer-card-body">
                               {layerId === "esri_drape" ? (
                                 <>
                                   <label>
@@ -2535,12 +3351,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                     </select>
                                   </label>
                                   {contractImagery ? (
-                                    <div style={{ fontSize: 10, opacity: 0.72 }}>
-                                      Provider controlled by `imagery_provider` contract input.
+                                    <div className="me-section-note">
+                                      Provider set by upstream imagery contract.
                                     </div>
                                   ) : (
-                                    <div style={{ fontSize: 10, opacity: 0.72 }}>
-                                      Default is unpaid Esri imagery. Paid services should stay debounced.
+                                    <div className="me-section-note">
+                                      Default: Esri World Imagery (free tier).
                                     </div>
                                   )}
                                   <label>
@@ -2595,18 +3411,13 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   </label>
                                 </>
                               ) : null}
-                              {layerId === "contours" ? (
+                              {lBaseType === "contours" ? (
                                 <>
+                                  <div style={{ fontSize: 9.5, color: "#8b949e", marginBottom: 2 }}>
+                                    Contour lines — colour mapped by elevation. Use the ramp below to customise.
+                                  </div>
                                   <label>
-                                    Contour color
-                                    <input
-                                      type="color"
-                                      value={ui.contourColor}
-                                      onChange={(e) => setUi((p) => ({ ...p, contourColor: e.target.value }))}
-                                    />
-                                  </label>
-                                  <label>
-                                    Contour opacity
+                                    Opacity
                                     <input
                                       type="range"
                                       min={0.05}
@@ -2619,7 +3430,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                     />
                                   </label>
                                   <label>
-                                    Contour width
+                                    Line width
                                     <input
                                       type="range"
                                       min={0.3}
@@ -2632,7 +3443,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                     />
                                   </label>
                                   <label>
-                                    Show every Nth contour
+                                    Show every Nth level
                                     <input
                                       type="number"
                                       min={1}
@@ -2652,7 +3463,27 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   </label>
                                 </>
                               ) : null}
-                              {layerId === "trajectories" ? (
+                              {lBaseType === "heatmap_surface" ? (
+                                <>
+                                  <div style={{ fontSize: 9.5, color: "#8b949e", marginBottom: 2, lineHeight: 1.4 }}>
+                                    Pre-computed IDW surface from the Assay Heatmap node. Values are mapped to colour via the ramp below.
+                                  </div>
+                                  <label>
+                                    Opacity
+                                    <input type="range" min={0.05} max={1} step={0.02}
+                                      value={style.opacity}
+                                      onChange={(e) => setLayerStyle(layerId, { opacity: Number(e.target.value) })}
+                                    />
+                                  </label>
+                                  <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
+                                    <button type="button" style={{ flex: 1, fontSize: 9, padding: "2px 0", borderRadius: 3, cursor: "pointer", fontFamily: "inherit", background: "transparent", border: "1px solid #30363d", color: "#6e7681" }}
+                                      onClick={() => setLayerStyle(layerId, { rampNormMode: style.rampNormMode === "pct" ? "fixed" : "pct" })}>
+                                      Norm: {style.rampNormMode === "pct" ? "Auto (data range)" : "Fixed"}
+                                    </button>
+                                  </div>
+                                </>
+                              ) : null}
+                              {lBaseType === "trajectories" ? (
                                 <>
                                   <label>
                                     Trace color
@@ -2677,231 +3508,316 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   </label>
                                 </>
                               ) : null}
-                              {layerId === "grade_segments" ? (
-                                <label>
-                                  Segment width
-                                  <input
-                                    type="range"
-                                    min={1}
-                                    max={12}
-                                    step={1}
-                                    value={ui.segmentWidth}
-                                    onChange={(e) =>
-                                      setUi((p) => ({ ...p, segmentWidth: Number(e.target.value) || 4 }))
-                                    }
-                                  />
-                                </label>
-                              ) : null}
-                              {layerId === "assay_points" ? (
-                                <label>
-                                  Sample size
-                                  <input
-                                    type="range"
-                                    min={2}
-                                    max={14}
-                                    step={1}
-                                    value={ui.sampleSize}
-                                    onChange={(e) =>
-                                      setUi((p) => ({ ...p, sampleSize: Number(e.target.value) || 7 }))
-                                    }
-                                  />
-                                </label>
-                              ) : null}
-                              {layerId === "high_grade_balloons" ? (
-                                <>
-                                  <label>
-                                    Threshold percentile ({Math.round(ui.balloonThresholdPct)}%)
-                                    <input
-                                      type="range"
-                                      min={50}
-                                      max={99}
-                                      step={1}
-                                      value={ui.balloonThresholdPct}
-                                      onChange={(e) =>
-                                        setUi((p) => ({
-                                          ...p,
-                                          balloonThresholdPct: Number(e.target.value) || 92,
-                                        }))
-                                      }
-                                    />
-                                  </label>
-                                  <label>
-                                    Balloon scale
-                                    <input
-                                      type="range"
-                                      min={0.4}
-                                      max={4}
-                                      step={0.1}
-                                      value={ui.balloonScale}
-                                      onChange={(e) =>
-                                        setUi((p) => ({ ...p, balloonScale: Number(e.target.value) || 1 }))
-                                      }
-                                    />
-                                  </label>
-                                  <label>
-                                    Balloon opacity
-                                    <input
-                                      type="range"
-                                      min={0.05}
-                                      max={1}
-                                      step={0.02}
-                                      value={ui.balloonOpacity}
-                                      onChange={(e) =>
-                                        setUi((p) => ({ ...p, balloonOpacity: Number(e.target.value) || 1 }))
-                                      }
-                                    />
-                                  </label>
-                                </>
-                              ) : null}
                               {styleable ? (
-                                <div
-                                  style={{
-                                    borderTop: "1px solid rgba(139,148,158,0.25)",
-                                    paddingTop: 6,
-                                    display: "grid",
-                                    gap: 6,
-                                  }}
-                                >
-                                  <div style={{ fontSize: 10, opacity: 0.75, fontWeight: 700 }}>
-                                    Styling
-                                  </div>
-                                  <label>
-                                    Attribute
-                                    <select
-                                      value={style.attributeKey}
-                                      onChange={(e) =>
-                                        setLayerStyle(layerId, { attributeKey: e.target.value })
-                                      }
-                                    >
+                                <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
+
+                                  {/* ── MEASURE (not shown for contour/heatmap layers — they colour by their own value domain automatically) ── */}
+                                  {lBaseType !== "contours" && lBaseType !== "heatmap_surface" ? (
+                                  <div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                                      <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, flex: 1 }}>Measure</span>
+                                      <button type="button"
+                                        onClick={() => setLayerStyle(layerId, { colorMode: style.colorMode === "continuous" ? "categorical" : "continuous" })}
+                                        style={{
+                                          fontSize: 9, padding: "1px 6px", borderRadius: 3, cursor: "pointer", fontFamily: "inherit",
+                                          background: "transparent", border: "1px solid #30363d", color: "#6e7681",
+                                        }}>
+                                        {style.colorMode === "continuous" ? "Continuous" : "Categorical"}
+                                      </button>
+                                    </div>
+                                    <select style={ctlSelect} value={style.attributeKey}
+                                      onChange={(e) => setLayerStyle(layerId, { attributeKey: e.target.value })}>
                                       <option value="">(constant color)</option>
                                       {sceneData.measureCandidates.map((m) => (
-                                        <option key={`${layerId}-${m}`} value={m}>
-                                          {m}
-                                        </option>
+                                        <option key={`${layerId}-${m}`} value={m}>{m}</option>
                                       ))}
                                     </select>
-                                  </label>
-                                  <label>
-                                    Color mode
-                                    <select
-                                      value={style.colorMode}
-                                      onChange={(e) =>
-                                        setLayerStyle(layerId, {
-                                          colorMode: e.target.value as SceneUiState["measureColorMode"],
-                                        })
-                                      }
-                                    >
-                                      <option value="continuous">Continuous</option>
-                                      <option value="categorical">Categorical</option>
-                                    </select>
-                                  </label>
-                                  <label>
-                                    Color ramp
-                                    <select
-                                      value={style.palette}
-                                      onChange={(e) =>
-                                        setLayerStyle(layerId, {
-                                          palette: e.target.value as SceneUiState["palette"],
-                                        })
-                                      }
-                                    >
-                                      {paletteOptions.map((opt) => (
-                                        <option key={opt.value} value={opt.value}>
-                                          {opt.label}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                  {style.colorMode === "continuous" ? (
-                                    <>
-                                      <label>
-                                        Transform
-                                        <select
-                                          value={style.transform}
-                                          onChange={(e) =>
-                                            setLayerStyle(layerId, {
-                                              transform: e.target.value as SceneUiState["measureTransform"],
-                                            })
-                                          }
-                                        >
-                                          <option value="linear">Linear</option>
-                                          <option value="log10">Log10</option>
-                                          <option value="ln">Natural log</option>
-                                        </select>
-                                      </label>
-                                      <label>
-                                        Clamp low (%)
-                                        <input
-                                          type="number"
-                                          min={0}
-                                          max={100}
-                                          value={style.clampLowPct}
-                                          onChange={(e) =>
-                                            setLayerStyle(layerId, {
-                                              clampLowPct: Math.max(
-                                                0,
-                                                Math.min(100, Number(e.target.value) || 0)
-                                              ),
-                                            })
-                                          }
-                                        />
-                                      </label>
-                                      <label>
-                                        Clamp high (%)
-                                        <input
-                                          type="number"
-                                          min={0}
-                                          max={100}
-                                          value={style.clampHighPct}
-                                          onChange={(e) =>
-                                            setLayerStyle(layerId, {
-                                              clampHighPct: Math.max(
-                                                0,
-                                                Math.min(100, Number(e.target.value) || 100)
-                                              ),
-                                            })
-                                          }
-                                        />
-                                      </label>
-                                    </>
+                                  </div>
                                   ) : (
-                                    <label>
-                                      Category map (JSON)
-                                      <textarea
-                                        value={style.categoricalColorMap}
-                                        rows={3}
-                                        onChange={(e) =>
-                                          setLayerStyle(layerId, {
-                                            categoricalColorMap: e.target.value,
-                                          })
-                                        }
-                                        style={{
-                                          width: "100%",
-                                          resize: "vertical",
-                                          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                          fontSize: 11,
-                                        }}
-                                        placeholder='{"ore":"#f97316","waste":"#3b82f6"}'
-                                      />
-                                    </label>
+                                    <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const }}>
+                                      {lBaseType === "heatmap_surface" ? "Value colour ramp" : "Elevation colour ramp"}
+                                    </div>
                                   )}
-                                  {layerId === "assay_points" ? (
-                                    <label>
-                                      Point shape
-                                      <select
-                                        value={style.pointShape}
-                                        onChange={(e) =>
-                                          setLayerStyle(layerId, {
-                                            pointShape: e.target.value as LayerVizStyle["pointShape"],
-                                          })
+
+                                  {/* ── COLOR RAMP ── */}
+                                  {style.colorMode === "continuous" ? (
+                                    <ColorRampEditor
+                                      stops={style.colorStops?.length >= 2 ? style.colorStops : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno}
+                                      onStopsChange={(s) => setLayerStyle(layerId, { colorStops: s })}
+                                      transform={style.transform}
+                                      onTransformChange={(t) => setLayerStyle(layerId, { transform: t })}
+                                      clampLow={style.clampLowPct}
+                                      clampHigh={style.clampHighPct}
+                                      onClampChange={(lo, hi) => setLayerStyle(layerId, { clampLowPct: lo, clampHighPct: hi })}
+                                      rawValues={(() => {
+                                        // For contour layers, use elevation levels as the value domain.
+                                        if (lBaseType === "contours") {
+                                          return sceneData.contourSegments
+                                            .filter(s => s.sourceLayerId === layerId)
+                                            .map(s => s.contourLevel)
+                                            .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
                                         }
-                                      >
-                                        <option value="sphere">Sphere</option>
-                                        <option value="box">Box</option>
-                                        <option value="diamond">Diamond</option>
-                                      </select>
-                                    </label>
+                                        // For pre-computed heatmap surface grids, use the grid values directly.
+                                        if (lBaseType === "heatmap_surface") {
+                                          const hms = sceneData.heatmapSurfaces.find(h => h.id === layerId);
+                                          return (hms?.grid.values ?? []).filter((v): v is number => v !== null && Number.isFinite(v));
+                                        }
+                                        const key = style.attributeKey;
+                                        if (!key) return [];
+                                        const vals: number[] = [];
+                                        for (const s of sceneData.drillSegments) {
+                                          const v = s.measures?.[key];
+                                          if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+                                        }
+                                        for (const p of sceneData.assayPoints) {
+                                          const v = p.measures?.[key];
+                                          if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+                                        }
+                                        return vals;
+                                      })()}
+                                      dataMin={(() => {
+                                        if (lBaseType === "contours") {
+                                          const levels = sceneData.contourSegments.filter(s => s.sourceLayerId === layerId).map(s => s.contourLevel).filter((v): v is number => typeof v === "number");
+                                          return levels.length ? Math.min(...levels) : 0;
+                                        }
+                                        if (lBaseType === "heatmap_surface") {
+                                          const vals = (sceneData.heatmapSurfaces.find(h => h.id === layerId)?.grid.values ?? []).filter((v): v is number => v !== null && Number.isFinite(v));
+                                          return vals.length ? Math.min(...vals) : 0;
+                                        }
+                                        const key = style.attributeKey;
+                                        if (!key) return 0;
+                                        let mn = Infinity;
+                                        for (const s of sceneData.drillSegments) { const v = s.measures?.[key]; if (typeof v === "number") mn = Math.min(mn, v); }
+                                        for (const p of sceneData.assayPoints) { const v = p.measures?.[key]; if (typeof v === "number") mn = Math.min(mn, v); }
+                                        return isFinite(mn) ? mn : 0;
+                                      })()}
+                                      dataMax={(() => {
+                                        if (lBaseType === "contours") {
+                                          const levels = sceneData.contourSegments.filter(s => s.sourceLayerId === layerId).map(s => s.contourLevel).filter((v): v is number => typeof v === "number");
+                                          return levels.length ? Math.max(...levels) : 1;
+                                        }
+                                        if (lBaseType === "heatmap_surface") {
+                                          const vals = (sceneData.heatmapSurfaces.find(h => h.id === layerId)?.grid.values ?? []).filter((v): v is number => v !== null && Number.isFinite(v));
+                                          return vals.length ? Math.max(...vals) : 1;
+                                        }
+                                        const key = style.attributeKey;
+                                        if (!key) return 1;
+                                        let mx = -Infinity;
+                                        for (const s of sceneData.drillSegments) { const v = s.measures?.[key]; if (typeof v === "number") mx = Math.max(mx, v); }
+                                        for (const p of sceneData.assayPoints) { const v = p.measures?.[key]; if (typeof v === "number") mx = Math.max(mx, v); }
+                                        return isFinite(mx) ? mx : 1;
+                                      })()}
+                                    />
+                                  ) : (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                                      <div style={{ display: "flex", gap: 4 }}>
+                                        {(Object.entries(PALETTE_STOPS) as [string, ColorStop[]][]).map(([key, ps]) => (
+                                          <button key={key} type="button" title={key}
+                                            onClick={() => setLayerStyle(layerId, { palette: key as LayerVizStyle["palette"] })}
+                                            style={{
+                                              flex: 1, height: 16, borderRadius: 3, cursor: "pointer", padding: 0,
+                                              background: stopsToGradientCss(ps),
+                                              border: style.palette === key ? "2px solid #58a6ff" : "1px solid rgba(255,255,255,0.1)",
+                                              boxSizing: "border-box",
+                                            }}
+                                          />
+                                        ))}
+                                      </div>
+                                      <label style={{ fontSize: 11, color: "#8b949e", display: "grid", gap: 3 }}>
+                                        Category map (JSON)
+                                        <textarea value={style.categoricalColorMap} rows={2}
+                                          onChange={(e) => setLayerStyle(layerId, { categoricalColorMap: e.target.value })}
+                                          style={{ width: "100%", resize: "vertical", fontFamily: "ui-monospace,monospace", fontSize: 10, background: "#0d1117", border: "1px solid #30363d", borderRadius: 4, color: "#e6edf3", padding: "4px 6px", boxSizing: "border-box" }}
+                                          placeholder='{"ore":"#f97316","waste":"#3b82f6"}'
+                                        />
+                                      </label>
+                                    </div>
+                                  )}
+
+                                  {/* ── WIDTH (grade_segments / trajectories) ── */}
+                                  {lBaseType === "grade_segments" ? (
+                                    <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 30px", gap: 4, alignItems: "center" }}>
+                                      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, gridColumn: "1/-1", marginBottom: 2 }}>Width</span>
+                                      <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>px</span>
+                                      <input type="range" min={1} max={12} step={1}
+                                        value={ui.segmentWidth}
+                                        onChange={(e) => setUi((p) => ({ ...p, segmentWidth: Number(e.target.value) || 4 }))}
+                                        style={{ width: "100%" }}
+                                      />
+                                      <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{ui.segmentWidth}</span>
+                                    </div>
+                                  ) : lBaseType === "trajectories" ? (
+                                    <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 30px", gap: 4, alignItems: "center" }}>
+                                      <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, gridColumn: "1/-1", marginBottom: 2 }}>Width</span>
+                                      <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>px</span>
+                                      <input type="range" min={1} max={12} step={1}
+                                        value={ui.traceWidth}
+                                        onChange={(e) => setUi((p) => ({ ...p, traceWidth: Number(e.target.value) || 2 }))}
+                                        style={{ width: "100%" }}
+                                      />
+                                      <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{ui.traceWidth}</span>
+                                    </div>
                                   ) : null}
+
+                                  {/* ── SIZE (assay_points only) ── */}
+                                  {lBaseType === "assay_points" ? (
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, flex: 1 }}>Size</span>
+                                      </div>
+                                      <select style={ctlSelect} value={style.sizeAttribute}
+                                        onChange={(e) => setLayerStyle(layerId, { sizeAttribute: e.target.value })}>
+                                        <option value="">(constant)</option>
+                                        {sceneData.measureCandidates.map((m) => (
+                                          <option key={`sz-${m}`} value={m}>{m}</option>
+                                        ))}
+                                      </select>
+                                      {style.sizeAttribute ? (
+                                        <>
+                                          <div style={{ display: "flex", gap: 3 }}>
+                                            {(["linear","sqrt","log10"] as const).map((t) => (
+                                              <button key={t} type="button"
+                                                onClick={() => setLayerStyle(layerId, { sizeTransform: t })}
+                                                style={{
+                                                  flex: 1, fontSize: 10, fontWeight: 600, padding: "2px 0", borderRadius: 4, cursor: "pointer",
+                                                  fontFamily: "inherit",
+                                                  background: style.sizeTransform === t ? "#388bfd22" : "transparent",
+                                                  border: `1px solid ${style.sizeTransform === t ? "#388bfd" : "#30363d"}`,
+                                                  color: style.sizeTransform === t ? "#58a6ff" : "#6e7681",
+                                                }}>
+                                                {t === "log10" ? "Log₁₀" : t === "sqrt" ? "√" : "Lin"}
+                                              </button>
+                                            ))}
+                                          </div>
+                                          {/* Visual size range bar */}
+                                          <div style={{ position: "relative", height: 18, background: "#0d1117", borderRadius: 5, border: "1px solid #21262d", padding: "0 10px", display: "flex", alignItems: "center" }}>
+                                            <div style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 8, height: 8, borderRadius: "50%", background: "#58a6ff", opacity: 0.7 }} />
+                                            <div style={{ flex: 1, height: 1, background: "linear-gradient(to right, #58a6ff55, #58a6ff)", marginLeft: 16, marginRight: 16 }} />
+                                            <div style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 16, height: 16, borderRadius: "50%", background: "#58a6ff", opacity: 0.9 }} />
+                                          </div>
+                                          <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 38px", gap: 4, alignItems: "center" }}>
+                                            <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>min</span>
+                                            <input type="range" min={0.1} max={3} step={0.05} value={style.sizeMin}
+                                              onChange={(e) => setLayerStyle(layerId, { sizeMin: Number(e.target.value) })}
+                                              style={{ width: "100%" }}
+                                            />
+                                            <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>×{style.sizeMin.toFixed(1)}</span>
+                                          </div>
+                                          <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 38px", gap: 4, alignItems: "center" }}>
+                                            <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>max</span>
+                                            <input type="range" min={0.1} max={8} step={0.1} value={style.sizeMax}
+                                              onChange={(e) => setLayerStyle(layerId, { sizeMax: Number(e.target.value) })}
+                                              style={{ width: "100%" }}
+                                            />
+                                            <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>×{style.sizeMax.toFixed(1)}</span>
+                                          </div>
+                                        </>
+                                      ) : (
+                                        <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 30px", gap: 4, alignItems: "center" }}>
+                                          <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>r</span>
+                                          <input type="range" min={0.5} max={8} step={0.25} value={ui.sampleSize}
+                                            onChange={(e) => setUi((p) => ({ ...p, sampleSize: Number(e.target.value) || 7 }))}
+                                            style={{ width: "100%" }}
+                                          />
+                                          <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{ui.sampleSize}</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : null}
+
+                                  {/* ── SHAPE (assay_points only) ── */}
+                                  {lBaseType === "assay_points" ? (
+                                    <div>
+                                      <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, marginBottom: 2 }}>Shape</div>
+                                      {/* Display mode toggle */}
+                                      {/* Points / Heatmap mode toggle */}
+                                      <div style={{ display: "flex", gap: 3, marginBottom: 5 }}>
+                                        {(["points", "heatmap"] as const).map(m => (
+                                          <button key={m} type="button"
+                                            onClick={() => setLayerStyle(layerId, { displayMode: m })}
+                                            style={{
+                                              flex: 1, fontSize: 10, fontWeight: 600, padding: "3px 0", borderRadius: 4,
+                                              fontFamily: "inherit", cursor: "pointer",
+                                              background: style.displayMode === m ? "#388bfd22" : "transparent",
+                                              border: `1px solid ${style.displayMode === m ? "#388bfd" : "#30363d"}`,
+                                              color: style.displayMode === m ? "#58a6ff" : "#6e7681",
+                                            }}>
+                                            {m === "points" ? "● Points" : "▦ Heatmap"}
+                                          </button>
+                                        ))}
+                                      </div>
+
+                                      {/* Point shape grid — hidden in heatmap mode */}
+                                      {style.displayMode === "points" ? (
+                                        <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 3 }}>
+                                          {([
+                                            { v: "sphere",  icon: "●", label: "Sphere" },
+                                            { v: "box",     icon: "■", label: "Box" },
+                                            { v: "diamond", icon: "◆", label: "Diamond" },
+                                            { v: "cone",    icon: "▲", label: "Cone" },
+                                            { v: "disc",    icon: "⬤", label: "Disc" },
+                                            { v: "spike",   icon: "▼", label: "Spike" },
+                                          ] as const).map(({ v, icon, label }) => (
+                                            <button key={v} type="button" title={label}
+                                              onClick={() => setLayerStyle(layerId, { pointShape: v })}
+                                              style={{
+                                                padding: "3px 0", fontSize: 14, borderRadius: 5, cursor: "pointer",
+                                                background: style.pointShape === v ? "#388bfd22" : "transparent",
+                                                border: `1px solid ${style.pointShape === v ? "#388bfd" : "#30363d"}`,
+                                                color: style.pointShape === v ? "#58a6ff" : "#6e7681",
+                                                fontFamily: "inherit",
+                                              }}>
+                                              {icon}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      ) : null}
+
+                                      {/* Heatmap-specific controls */}
+                                      {style.displayMode === "heatmap" ? (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 3, padding: "6px 8px", background: "#0d1117", borderRadius: 6, border: "1px solid #21262d" }}>
+                                          <div style={{ fontSize: 8.5, color: "#484f58", fontWeight: 700, letterSpacing: "0.07em", textTransform: "uppercase" as const }}>IDW Heatmap</div>
+                                          <div style={{ fontSize: 9, color: "#6e7681", lineHeight: 1.4 }}>
+                                            Inverse-distance weighted interpolation draped on terrain. Pick a measure above to populate.
+                                          </div>
+                                          {/* Grid resolution */}
+                                          <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 36px", gap: 4, alignItems: "center" }}>
+                                            <span style={{ fontSize: 9.5, color: "#8b949e" }}>Resolution</span>
+                                            <input type="range" min={64} max={512} step={32}
+                                              value={style.hmGridSize ?? 256}
+                                              onChange={(e) => setLayerStyle(layerId, { hmGridSize: Number(e.target.value) })}
+                                            />
+                                            <span style={{ fontSize: 9, fontFamily: "ui-monospace,monospace", color: "#c9d1d9", textAlign: "right" }}>{style.hmGridSize ?? 256}</span>
+                                          </div>
+                                          {/* IDW power */}
+                                          <div style={{ display: "grid", gridTemplateColumns: "70px 1fr 36px", gap: 4, alignItems: "center" }}>
+                                            <span style={{ fontSize: 9.5, color: "#8b949e" }}>Blend power</span>
+                                            <input type="range" min={1} max={4} step={0.1}
+                                              value={style.hmPower ?? 2}
+                                              onChange={(e) => setLayerStyle(layerId, { hmPower: Number(e.target.value) })}
+                                            />
+                                            <span style={{ fontSize: 9, fontFamily: "ui-monospace,monospace", color: "#c9d1d9", textAlign: "right" }}>{(style.hmPower ?? 2).toFixed(1)}</span>
+                                          </div>
+                                          <div style={{ fontSize: 8.5, color: "#484f58" }}>
+                                            Higher blend power = sharper transitions; lower = smoother gradients.
+                                          </div>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ) : null}
+
+                                  {/* ── OPACITY ── */}
+                                  <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 30px", gap: 4, alignItems: "center" }}>
+                                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, gridColumn: "1/-1", marginBottom: 2 }}>Opacity</span>
+                                    <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>%</span>
+                                    <input type="range" min={0.05} max={1} step={0.05}
+                                      value={style.opacity}
+                                      onChange={(e) => setLayerStyle(layerId, { opacity: Number(e.target.value) })}
+                                      style={{ width: "100%" }}
+                                    />
+                                    <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{Math.round(style.opacity * 100)}</span>
+                                  </div>
+
                                 </div>
                               ) : null}
                             </div>
@@ -2913,16 +3829,60 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 </details>
 
                 <details open>
-                  <summary style={{ fontWeight: 700, cursor: "pointer" }}>View</summary>
-                  <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-                    <div style={{ opacity: 0.7, fontSize: 11 }}>
-                      Axis map: X=easting, Y=elevation (up), Z=northing.
-                    </div>
+                  <summary>View</summary>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <div className="me-section-note">X = easting · Y = elevation · Z = northing</div>
                     <label><input type="checkbox" checked={ui.invertDepth} onChange={(e) => setUi((p) => ({ ...p, invertDepth: e.target.checked }))} /> Invert vertical axis (depth-down view)</label>
                     <label>Radius scale<input type="range" min={0.25} max={4} step={0.05} value={ui.radiusScale} onChange={(e) => setUi((p) => ({ ...p, radiusScale: Number(e.target.value) || 1 }))} /></label>
                   </div>
                 </details>
-              </div>
+
+                <details>
+                  <summary>Scene</summary>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    <label>
+                      Background
+                      <select
+                        value={ui.bgPreset}
+                        onChange={(e) => setUi((p) => ({ ...p, bgPreset: e.target.value as SceneUiState["bgPreset"] }))}
+                      >
+                        <option value="night">Night (deep blue)</option>
+                        <option value="dusk">Dusk (deep purple)</option>
+                        <option value="dawn">Dawn (warm brown)</option>
+                        <option value="overcast">Overcast (cool grey)</option>
+                      </select>
+                    </label>
+                    <label>
+                      Ambient light ({Math.round(ui.ambientIntensity * 100)}%)
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        value={ui.ambientIntensity}
+                        onChange={(e) => setUi((p) => ({ ...p, ambientIntensity: Number(e.target.value) }))}
+                      />
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={ui.fogEnabled}
+                        onChange={(e) => setUi((p) => ({ ...p, fogEnabled: e.target.checked }))}
+                      />
+                      Depth fog
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={ui.gridEnabled}
+                        onChange={(e) => setUi((p) => ({ ...p, gridEnabled: e.target.checked }))}
+                      />
+                      Ground grid
+                    </label>
+                  </div>
+                </details>
+                </div>
+              </>
             )}
           </aside>
         </div>

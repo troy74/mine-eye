@@ -49,6 +49,9 @@ pub async fn build_viewer_manifest(
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
 
+    // Terrain-class node kinds whose tileserver_in port is traversed to inject imagery layers.
+    const TERRAIN_PASSTHROUGH_KINDS: &[&str] = &["dem_fetch", "terrain_adjust", "dem_integrate"];
+
     let mut layers: Vec<ViewerManifestLayer> = Vec::new();
     for edge in snapshot.edges.iter().filter(|e| e.to_node == viewer_node_id) {
         let source_kind = snapshot
@@ -77,6 +80,46 @@ pub async fn build_viewer_manifest(
                 media_type,
                 presentation,
             });
+        }
+
+        // If this source node is a terrain node with a tileserver_in port wired, inject the
+        // imagery provider's artifacts as drape layers (tileserver → dem_fetch → viewer pattern).
+        if TERRAIN_PASSTHROUGH_KINDS.contains(&source_kind.as_str()) {
+            for upstream in snapshot
+                .edges
+                .iter()
+                .filter(|e| e.to_node == edge.from_node && e.to_port == "tileserver_in")
+            {
+                let upstream_kind = snapshot
+                    .nodes
+                    .get(&upstream.from_node)
+                    .map(|n| n.config.kind.clone())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let up_rows = store.list_artifacts_for_node(upstream.from_node).await?;
+                for (key, hash, media_type) in up_rows {
+                    let lower = key.to_ascii_lowercase();
+                    if !(lower.ends_with(".json") || lower.ends_with(".geojson")) {
+                        continue;
+                    }
+                    let presentation =
+                        layer_presentation_from_artifact(artifact_root, &key, &upstream_kind).await;
+                    layers.push(ViewerManifestLayer {
+                        source_node_id: upstream.from_node,
+                        source_node_kind: upstream_kind.clone(),
+                        edge_id: upstream.id,
+                        semantic_type: format!("{:?}", upstream.semantic_type)
+                            .to_ascii_lowercase(),
+                        from_port: upstream.from_port.clone(),
+                        // prefix with "00_" so drape sorts before terrain in the layer stack
+                        to_port: format!("00_{}", edge.to_port),
+                        artifact_key: key.clone(),
+                        artifact_url: format!("/files/{}?h={}", key, hash),
+                        content_hash: hash,
+                        media_type,
+                        presentation,
+                    });
+                }
+            }
         }
     }
     layers.sort_by(|a, b| {

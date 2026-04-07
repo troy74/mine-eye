@@ -10,9 +10,10 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use async_stream::stream;
+mod ai_chat;
 mod ingest_synth;
 mod viewer_manifest;
-const NODE_REGISTRY_JSON: &str = include_str!("node-registry.json");
+pub(crate) const NODE_REGISTRY_JSON: &str = include_str!("node-registry.json");
 
 use mine_eye_graph::propagate_stale;
 use mine_eye_scheduler::{collect_dirty_nodes, Scheduler};
@@ -129,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
             get(get_viewer_manifest),
         )
         .route("/graphs/{graph_id}/ai/suggest", post(ai_suggest))
+        .route("/graphs/{graph_id}/ai/chat", post(ai_chat))
         .route(
             "/graphs/{graph_id}/ai/suggestions",
             get(list_ai_suggestions),
@@ -1585,6 +1587,23 @@ async fn ai_suggest(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(IdResp { id }))
+}
+
+async fn ai_chat(
+    State(s): State<AppState>,
+    Path(graph_id): Path<Uuid>,
+    Json(body): Json<ai_chat::AiChatRequest>,
+) -> Result<Json<ai_chat::AiChatResponse>, (StatusCode, String)> {
+    let resp = ai_chat::run_ai_chat(
+        s.store.clone(),
+        s.jobs.clone(),
+        s.scheduler.clone(),
+        &s.artifact_root,
+        graph_id,
+        body,
+    )
+    .await?;
+    Ok(Json(resp))
 }
 
 #[derive(Deserialize)]

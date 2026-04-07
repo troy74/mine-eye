@@ -5,7 +5,7 @@
       "kind": "collar_ingest",
       "category": "input",
       "label": "Collar ingest",
-      "role": "Acquisition · collars (hole collars, CRS)",
+      "role": "Acquisition \u00b7 collars (hole collars, CRS)",
       "menu": {
         "enabled": true,
         "order": 10
@@ -28,7 +28,7 @@
       "kind": "survey_ingest",
       "category": "input",
       "label": "Survey ingest",
-      "role": "Acquisition · survey stations (az/dip/depth)",
+      "role": "Acquisition \u00b7 survey stations (az/dip/depth)",
       "menu": {
         "enabled": true,
         "order": 20
@@ -51,7 +51,7 @@
       "kind": "surface_sample_ingest",
       "category": "input",
       "label": "Surface sample ingest",
-      "role": "Acquisition · surface samples (XY/Z + optional measures)",
+      "role": "Acquisition \u00b7 surface samples (XY/Z + optional measures)",
       "menu": {
         "enabled": true,
         "order": 25
@@ -74,7 +74,7 @@
       "kind": "assay_ingest",
       "category": "input",
       "label": "Assay ingest",
-      "role": "Acquisition · interval assays / geochem",
+      "role": "Acquisition \u00b7 interval assays / geochem",
       "menu": {
         "enabled": true,
         "order": 30
@@ -97,7 +97,7 @@
       "kind": "data_model_transform",
       "category": "transform",
       "label": "Data model transform",
-      "role": "Transform · mutate/derive/select/rename tabular datasets",
+      "role": "Transform \u00b7 mutate/derive/select/rename tabular datasets",
       "framework_group": "data_model",
       "submenu": "tabular_transform",
       "plugin_source": "core",
@@ -109,29 +109,14 @@
         "inputs": [
           {
             "id": "in",
-            "label": "Input table",
+            "label": "Input",
             "semantic": "table"
-          },
-          {
-            "id": "in_2",
-            "label": "Input table 2",
-            "semantic": "table"
-          },
-          {
-            "id": "in_3",
-            "label": "Input point set",
-            "semantic": "point_set"
-          },
-          {
-            "id": "in_4",
-            "label": "Input intervals",
-            "semantic": "interval_set"
           }
         ],
         "outputs": [
           {
             "id": "out",
-            "label": "Transformed table",
+            "label": "Output",
             "semantic": "table"
           }
         ]
@@ -141,7 +126,7 @@
       "kind": "desurvey_trajectory",
       "category": "transform",
       "label": "Desurvey trajectory",
-      "role": "Transform · collars + surveys → 3D trajectory segments",
+      "role": "Transform \u00b7 collars + surveys \u2192 3D trajectory segments",
       "menu": {
         "enabled": true,
         "order": 40
@@ -175,7 +160,7 @@
       "kind": "drillhole_model",
       "category": "model",
       "label": "Drillhole model",
-      "role": "Model · trajectory + assays → cylinder mesh + assay points",
+      "role": "Model \u00b7 trajectory + assays \u2192 cylinder mesh + assay points",
       "menu": {
         "enabled": true,
         "order": 50
@@ -214,7 +199,7 @@
       "kind": "assay_heatmap",
       "category": "transform",
       "label": "Assay heatmap",
-      "role": "Transform · point measures → heatmap-ready surface",
+      "role": "Transform \u00b7 point measures \u2192 heatmap-ready surface",
       "menu": {
         "enabled": true,
         "order": 80
@@ -242,8 +227,8 @@
     {
       "kind": "surface_iso_extract",
       "category": "transform",
-      "label": "Surface iso extract",
-      "role": "Transform · surface grid → contour/iso artifacts",
+      "label": "Contour lines (from DEM)",
+      "role": "Transform \u00b7 surface grid \u2192 contour line GeoJSON",
       "menu": {
         "enabled": true,
         "order": 82
@@ -260,12 +245,46 @@
           {
             "id": "contours",
             "label": "Contours",
-            "semantic": "table"
+            "semantic": "interval_set"
           },
           {
             "id": "meta",
-            "label": "Iso meta",
+            "label": "Meta",
             "semantic": "table"
+          }
+        ]
+      },
+      "framework_group": "surface",
+      "submenu": "contours",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "dem_contour_xyz",
+      "category": "transform",
+      "label": "Contour export (XYZ)",
+      "role": "Transform \u00b7 DEM \u2192 contour lines as XYZ point shapefile",
+      "menu": {
+        "enabled": true,
+        "order": 83
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "terrain_in",
+            "label": "Terrain surface",
+            "semantic": "surface"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "xyz_points",
+            "label": "Contour XYZ",
+            "semantic": "point_set"
+          },
+          {
+            "id": "contour_lines",
+            "label": "Contour lines",
+            "semantic": "interval_set"
           }
         ]
       },
@@ -277,7 +296,7 @@
       "kind": "terrain_adjust",
       "category": "transform",
       "label": "Terrain adjust",
-      "role": "Transform · DEM fit/nudge with control points",
+      "role": "Transform \u00b7 DEM fit/nudge with control points",
       "menu": {
         "enabled": true,
         "order": 84
@@ -311,7 +330,7 @@
       "kind": "xyz_to_surface",
       "category": "transform",
       "label": "XYZ to surface",
-      "role": "Transform · interpolate XYZ points/segments into surface grid",
+      "role": "Transform \u00b7 interpolate XYZ points/segments into surface grid",
       "menu": {
         "enabled": true,
         "order": 85
@@ -320,23 +339,8 @@
         "inputs": [
           {
             "id": "xyz_in",
-            "label": "XYZ input",
-            "semantic": "table"
-          },
-          {
-            "id": "xyz_in_2",
-            "label": "XYZ input 2",
+            "label": "Geometry",
             "semantic": "point_set"
-          },
-          {
-            "id": "xyz_in_3",
-            "label": "XYZ input 3",
-            "semantic": "trajectory_set"
-          },
-          {
-            "id": "xyz_in_4",
-            "label": "XYZ input 4",
-            "semantic": "mesh"
           }
         ],
         "outputs": [
@@ -355,7 +359,7 @@
       "kind": "dem_fetch",
       "category": "transform",
       "label": "DEM fetch",
-      "role": "Transform · public DEM sample fetch for inferred AOI",
+      "role": "Transform \u00b7 public DEM sample fetch for inferred AOI",
       "menu": {
         "enabled": true,
         "order": 86
@@ -364,29 +368,20 @@
         "inputs": [
           {
             "id": "aoi_in",
-            "label": "AOI/seed geometry",
-            "semantic": "table"
-          },
-          {
-            "id": "aoi_in_2",
-            "label": "AOI/seed geometry 2",
+            "label": "Geometry",
             "semantic": "point_set"
           },
           {
-            "id": "aoi_in_3",
-            "label": "AOI/seed geometry 3",
-            "semantic": "trajectory_set"
-          },
-          {
-            "id": "aoi_in_4",
-            "label": "AOI/seed geometry 4",
-            "semantic": "mesh"
+            "id": "tileserver_in",
+            "label": "Imagery",
+            "semantic": "raster",
+            "optional": true
           }
         ],
         "outputs": [
           {
             "id": "terrain_out",
-            "label": "Terrain DEM",
+            "label": "Terrain",
             "semantic": "surface"
           }
         ]
@@ -399,7 +394,7 @@
       "kind": "aoi",
       "category": "transform",
       "label": "AOI",
-      "role": "Transform · canonical area-of-interest (manual or inferred)",
+      "role": "Transform \u00b7 canonical area-of-interest (manual or inferred)",
       "menu": {
         "enabled": true,
         "order": 87
@@ -408,29 +403,14 @@
         "inputs": [
           {
             "id": "seed_in",
-            "label": "Seed geometry",
-            "semantic": "table"
-          },
-          {
-            "id": "seed_in_2",
-            "label": "Seed geometry 2",
+            "label": "Geometry",
             "semantic": "point_set"
-          },
-          {
-            "id": "seed_in_3",
-            "label": "Seed geometry 3",
-            "semantic": "trajectory_set"
-          },
-          {
-            "id": "seed_in_4",
-            "label": "Seed geometry 4",
-            "semantic": "mesh"
           }
         ],
         "outputs": [
           {
             "id": "aoi_out",
-            "label": "AOI contract",
+            "label": "AOI",
             "semantic": "table"
           }
         ]
@@ -443,7 +423,7 @@
       "kind": "imagery_provider",
       "category": "transform",
       "label": "Imagery provider",
-      "role": "Transform · provider-resolved imagery drape contract",
+      "role": "Transform \u00b7 provider-resolved imagery drape contract",
       "menu": {
         "enabled": true,
         "order": 88
@@ -464,8 +444,8 @@
         "outputs": [
           {
             "id": "imagery_out",
-            "label": "Imagery drape contract",
-            "semantic": "table"
+            "label": "Imagery drape",
+            "semantic": "raster"
           }
         ]
       },
@@ -477,7 +457,7 @@
       "kind": "tilebroker",
       "category": "transform",
       "label": "Tilebroker",
-      "role": "Transform · normalized imagery contract + provider strategy/caching metadata",
+      "role": "Transform \u00b7 normalized imagery contract + provider strategy/caching metadata",
       "menu": {
         "enabled": true,
         "order": 88
@@ -498,8 +478,8 @@
         "outputs": [
           {
             "id": "imagery_out",
-            "label": "Tilebroker imagery contract",
-            "semantic": "table"
+            "label": "Imagery",
+            "semantic": "raster"
           }
         ]
       },
@@ -511,7 +491,7 @@
       "kind": "scene3d_layer_stack",
       "category": "transform",
       "label": "3D layer stack",
-      "role": "Transform · compose ordered scene3d layers + UI capabilities",
+      "role": "Transform \u00b7 compose ordered scene3d layers + UI capabilities",
       "menu": {
         "enabled": true,
         "order": 89
@@ -521,7 +501,7 @@
           {
             "id": "imagery_in",
             "label": "Imagery drape",
-            "semantic": "table"
+            "semantic": "raster"
           },
           {
             "id": "terrain_in",
@@ -552,7 +532,7 @@
         "outputs": [
           {
             "id": "layer_stack_out",
-            "label": "Scene3D layer stack",
+            "label": "Layer stack",
             "semantic": "table"
           }
         ]
@@ -565,7 +545,7 @@
       "kind": "plan_view_2d",
       "category": "visualisation",
       "label": "2D plan map",
-      "role": "Visualisation · 2D plan map (inputs only; Esri basemap)",
+      "role": "Visualisation \u00b7 2D plan map (inputs only; Esri basemap)",
       "menu": {
         "enabled": true,
         "order": 90
@@ -576,48 +556,7 @@
         "quality": "preview"
       },
       "ports": {
-        "inputs": [
-          {
-            "id": "in",
-            "label": "In 1",
-            "semantic": "table"
-          },
-          {
-            "id": "in_2",
-            "label": "In 2",
-            "semantic": "table"
-          },
-          {
-            "id": "in_3",
-            "label": "In 3",
-            "semantic": "table"
-          },
-          {
-            "id": "in_4",
-            "label": "In 4",
-            "semantic": "table"
-          },
-          {
-            "id": "in_5",
-            "label": "In 5",
-            "semantic": "table"
-          },
-          {
-            "id": "in_6",
-            "label": "In 6",
-            "semantic": "table"
-          },
-          {
-            "id": "in_7",
-            "label": "In 7",
-            "semantic": "table"
-          },
-          {
-            "id": "in_8",
-            "label": "In 8",
-            "semantic": "table"
-          }
-        ],
+        "inputs": [],
         "outputs": []
       },
       "framework_group": "visualization",
@@ -627,8 +566,8 @@
     {
       "kind": "plan_view_3d",
       "category": "visualisation",
-      "label": "Cesium display (legacy)",
-      "role": "Visualisation · Cesium terrain + drill traces/segments",
+      "label": "Cesium display (historic archive)",
+      "role": "Visualisation \u00b7 HISTORIC/ARCHIVE ONLY \u2014 Cesium terrain + drill traces/segments",
       "menu": {
         "enabled": true,
         "order": 95
@@ -643,55 +582,45 @@
           {
             "id": "terrain_in",
             "label": "Terrain",
-            "semantic": "surface"
+            "semantic": "surface",
+            "optional": true
           },
           {
             "id": "traces_in",
             "label": "Traces",
-            "semantic": "trajectory_set"
+            "semantic": "trajectory_set",
+            "optional": true
           },
           {
             "id": "segments_in",
-            "label": "Segments",
-            "semantic": "mesh"
+            "label": "Meshes",
+            "semantic": "mesh",
+            "optional": true
           },
           {
             "id": "samples_in",
-            "label": "Samples",
-            "semantic": "table"
+            "label": "Points",
+            "semantic": "point_set",
+            "optional": true
           },
           {
-            "id": "in_5",
-            "label": "In 5",
-            "semantic": "table"
-          },
-          {
-            "id": "in_6",
-            "label": "In 6",
-            "semantic": "table"
-          },
-          {
-            "id": "in_7",
-            "label": "In 7",
-            "semantic": "table"
-          },
-          {
-            "id": "in_8",
-            "label": "In 8",
-            "semantic": "table"
+            "id": "imagery_in",
+            "label": "Imagery",
+            "semantic": "raster",
+            "optional": true
           }
         ],
         "outputs": []
       },
       "framework_group": "visualization",
-      "submenu": "3d_legacy",
+      "submenu": "3d_archive",
       "plugin_source": "core"
     },
     {
       "kind": "cesium_display_node",
       "category": "visualisation",
-      "label": "Cesium display node",
-      "role": "Visualisation · Cesium terrain + drill traces/segments",
+      "label": "Cesium display node (historic archive)",
+      "role": "Visualisation \u00b7 HISTORIC/ARCHIVE ONLY \u2014 Cesium terrain + drill traces/segments",
       "menu": {
         "enabled": true,
         "order": 96
@@ -706,55 +635,45 @@
           {
             "id": "terrain_in",
             "label": "Terrain",
-            "semantic": "surface"
+            "semantic": "surface",
+            "optional": true
           },
           {
             "id": "traces_in",
             "label": "Traces",
-            "semantic": "trajectory_set"
+            "semantic": "trajectory_set",
+            "optional": true
           },
           {
             "id": "segments_in",
-            "label": "Segments",
-            "semantic": "mesh"
+            "label": "Meshes",
+            "semantic": "mesh",
+            "optional": true
           },
           {
             "id": "samples_in",
-            "label": "Samples",
-            "semantic": "table"
+            "label": "Points",
+            "semantic": "point_set",
+            "optional": true
           },
           {
-            "id": "in_5",
-            "label": "In 5",
-            "semantic": "table"
-          },
-          {
-            "id": "in_6",
-            "label": "In 6",
-            "semantic": "table"
-          },
-          {
-            "id": "in_7",
-            "label": "In 7",
-            "semantic": "table"
-          },
-          {
-            "id": "in_8",
-            "label": "In 8",
-            "semantic": "table"
+            "id": "imagery_in",
+            "label": "Imagery",
+            "semantic": "raster",
+            "optional": true
           }
         ],
         "outputs": []
       },
       "framework_group": "visualization",
-      "submenu": "3d_legacy",
+      "submenu": "3d_archive",
       "plugin_source": "core"
     },
     {
       "kind": "threejs_display_node",
       "category": "visualisation",
       "label": "Three.js display node",
-      "role": "Visualisation · JS scene (contract-first layers + drape + drill data)",
+      "role": "Visualisation \u00b7 JS scene (contract-first layers + drape + drill data)",
       "menu": {
         "enabled": true,
         "order": 97
@@ -768,13 +687,15 @@
         "inputs": [
           {
             "id": "in_1",
-            "label": "Input 1",
-            "semantic": "any"
+            "label": "Input",
+            "semantic": "any",
+            "optional": true
           },
           {
             "id": "in_2",
-            "label": "Input 2",
-            "semantic": "any"
+            "label": "Input",
+            "semantic": "any",
+            "optional": true
           }
         ],
         "outputs": []

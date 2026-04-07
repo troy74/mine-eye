@@ -2,6 +2,7 @@ export type RegistryPortSpec = {
   id: string;
   label: string;
   semantic: string;
+  optional?: boolean;
 };
 
 export type RegistryNodeSpec = {

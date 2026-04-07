@@ -11,6 +11,84 @@ body,
   color: #e6edf3;
 }
 
+/* ── Details/summary spacing inside me-panel-body (grid gap) ─────────────── */
+.me-panel-body > details {
+  /* grid gap already handles spacing; but details need their own content
+     to be visually separated from the summary */
+}
+.me-panel-body > details > *:not(summary) {
+  padding-left: 2px;
+}
+
+/* ── me-section-note inside a label: don't add flex column break ─────────── */
+.me-panel label .me-section-note {
+  font-size: 10px;
+  color: #484f58;
+  margin-left: 2px;
+}
+
+/* ── Panel label: input[type="text"] ─────────────────────────────────────── */
+.me-panel label > input[type="text"] {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #e6edf3;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+}
+.me-panel label > input[type="text"]:focus {
+  border-color: #388bfd;
+}
+
+/* ── Disabled select in me-panel ─────────────────────────────────────────── */
+.me-panel select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Context menu separator ──────────────────────────────────────────────── */
+.me-ctx-sep {
+  margin: 4px 4px;
+  border: none;
+  border-top: 1px solid #30363d;
+}
+
+/* ── Panel layer card: dragging state ────────────────────────────────────── */
+.me-layer-card[data-dragging="true"] {
+  opacity: 0.55;
+  border-color: #388bfd;
+}
+
+/* ── Scrollbar styling for panel body ────────────────────────────────────── */
+.me-panel-body::-webkit-scrollbar {
+  width: 5px;
+}
+.me-panel-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.me-panel-body::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 99px;
+}
+.me-panel-body::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* ── me-layer-card-body: nested label rows ───────────────────────────────── */
+.me-layer-card-body label {
+  font-size: 11px;
+  color: #8b949e;
+}
+
+/* ── Two-column label grid (for paired controls like Color/Measure) ──────── */
+.me-col2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 @keyframes mineeye-spin {
   to {
     transform: rotate(360deg);
@@ -54,4 +132,267 @@ body,
 
 .mineeye-node-running {
   animation: mineeye-node-pulse 1.4s ease-in-out infinite;
+}
+
+/* Pipeline node action buttons */
+.me-btn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid #30363d;
+  background: transparent;
+  color: #8b949e;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.5;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+.me-btn:hover:not(:disabled) {
+  background: #21262d;
+  color: #e6edf3;
+  border-color: #484f58;
+}
+.me-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.me-btn-run {
+  color: #58a6ff;
+  border-color: #1f6feb;
+}
+.me-btn-run:hover:not(:disabled) {
+  background: rgba(31, 111, 235, 0.1);
+  color: #79b8ff;
+  border-color: #388bfd;
+}
+.me-btn-preview {
+  color: #3fb950;
+  border-color: #238636;
+}
+.me-btn-preview:hover:not(:disabled) {
+  background: rgba(63, 185, 80, 0.1);
+  color: #56d364;
+  border-color: #2ea043;
+}
+
+@keyframes mineeye-status-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+
+/* ── 3D / 2D viewer panel ───────────────────────────────── */
+.me-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px 8px;
+  border-bottom: 1px solid #21262d;
+  flex-shrink: 0;
+}
+.me-panel-header-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6e7681;
+}
+.me-panel-collapse-btn {
+  background: transparent;
+  border: none;
+  color: #6e7681;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition: color 0.1s, background 0.1s;
+}
+.me-panel-collapse-btn:hover {
+  color: #e6edf3;
+  background: #21262d;
+}
+.me-panel-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 12px 14px;
+  display: grid;
+  gap: 10px;
+  font-size: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Form controls */
+.me-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #8b949e;
+  cursor: pointer;
+}
+.me-panel label:has(input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+.me-panel label > input[type="range"] {
+  width: 100%;
+  accent-color: #388bfd;
+  cursor: pointer;
+  margin: 0;
+}
+.me-panel label > input[type="number"] {
+  width: 64px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #e6edf3;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+}
+.me-panel label > input[type="color"] {
+  width: 34px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid #30363d;
+  background: transparent;
+  cursor: pointer;
+  padding: 1px 2px;
+}
+.me-panel label > select,
+.me-panel > select,
+.me-panel select {
+  font-size: 11px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #e6edf3;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.me-panel textarea {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #e6edf3;
+  font-size: 11px;
+  padding: 4px 6px;
+  font-family: ui-monospace, monospace;
+  resize: vertical;
+}
+
+/* Section headers */
+.me-panel details > summary {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #6e7681;
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  list-style: none;
+  outline: none;
+}
+.me-panel details > summary::-webkit-details-marker { display: none; }
+.me-panel details > summary::before {
+  content: "›";
+  font-size: 14px;
+  color: #484f58;
+  transition: transform 0.15s;
+  display: inline-block;
+  line-height: 1;
+}
+.me-panel details[open] > summary::before { transform: rotate(90deg); }
+
+/* Note / hint text */
+.me-section-note {
+  font-size: 10px;
+  color: #6e7681;
+  line-height: 1.45;
+}
+
+/* Styling sub-header inside layer card */
+.me-style-subheader {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6e7681;
+  padding-top: 4px;
+  border-top: 1px solid #21262d;
+}
+
+/* Layer cards */
+.me-layer-card {
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1117;
+  transition: border-color 0.15s;
+}
+.me-layer-card:hover { border-color: #30363d; }
+.me-layer-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.me-layer-card-body {
+  padding: 8px 10px 10px;
+  border-top: 1px solid #21262d;
+  display: grid;
+  gap: 8px;
+}
+.me-layer-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+}
+.me-drag-handle {
+  color: #484f58;
+  font-size: 11px;
+  padding: 1px 2px;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1;
+}
+.me-layer-vis-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+.me-layer-vis-btn:hover { background: #21262d; }
+.me-layer-expand-btn {
+  background: transparent;
+  border: 1px solid #30363d;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #6e7681;
+  flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+  font-family: inherit;
+}
+.me-layer-expand-btn:hover {
+  background: #21262d;
+  color: #e6edf3;
 }

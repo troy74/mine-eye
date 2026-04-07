@@ -121,6 +121,34 @@ export type ViewerManifestResponse = {
   layers: ViewerManifestLayer[];
 };
 
+export type AiChatReqMessage = {
+  role: "user" | "assistant";
+  text: string;
+  attachments?: AiChatReqAttachment[];
+};
+
+export type AiChatReqAttachment = {
+  name: string;
+  mime: string;
+  size: number;
+  text?: string;
+};
+
+export type AiChatToolEvent = {
+  name: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  summary: string;
+  output_preview?: string | null;
+};
+
+export type AiChatResponse = {
+  model: string;
+  assistant_text: string;
+  tool_events: AiChatToolEvent[];
+  memory_files_used: string[];
+};
+
 export const api = (path: string) => `/api${path}`;
 
 /** One row from `GET /graphs/:id/artifacts` (same paths the worker writes under). */
@@ -437,7 +465,11 @@ export async function patchNodeParams(
       branch_id: opts?.branchId ?? null,
     }),
   });
-  if (!r.ok) throw new Error(`PATCH failed: ${r.status}`);
+  if (!r.ok) {
+    let detail = "";
+    try { detail = await r.text(); } catch { /* ignore */ }
+    throw new Error(`PATCH failed: ${r.status}${detail ? ` — ${detail}` : ""}`);
+  }
   return normalizeNode(await r.json());
 }
 
@@ -549,4 +581,26 @@ export async function fetchViewerManifest(
   });
   if (!r.ok) throw new Error((await r.text()) || `Viewer manifest ${r.status}`);
   return (await r.json()) as ViewerManifestResponse;
+}
+
+export async function aiChat(
+  graphId: string,
+  body: {
+    messages: AiChatReqMessage[];
+    model?: string;
+    user_id?: string;
+    apply_mutations?: boolean;
+    branch_id?: string | null;
+  }
+): Promise<AiChatResponse> {
+  const r = await fetch(api(`/graphs/${graphId}/ai/chat`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(t || `AI chat failed: ${r.status}`);
+  }
+  return (await r.json()) as AiChatResponse;
 }

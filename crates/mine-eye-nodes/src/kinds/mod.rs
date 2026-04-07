@@ -4,6 +4,7 @@
 //! preserving the existing public `run_*` API for compatibility.
 
 pub mod acquisition;
+pub mod tile_cache;
 pub mod data_model;
 pub mod drillhole;
 pub mod imagery_raster;

@@ -69,6 +69,49 @@ To keep frontends efficient and consistent, behavior is split into broker compon
 
 Frontend rule: fetch one brokered contract/manifest and render, rather than recomputing semantics in the UI.
 
+## AI Chat (Current)
+
+AI chat is backend-orchestrated and tool-driven (`services/orchestrator/src/ai_chat.rs`) using OpenRouter (`openai/gpt-5.4` by default).
+
+Key behaviors now implemented:
+
+- graph-first diagnostics via one-shot `graph_audit_bundle`
+- upload-aware tabular inspection/mapping tools
+- direct ingest patching from uploaded files
+- wiring/validation tools with semantic-port checks
+- execution tools from chat (`run_node`, `run_graph`)
+- compact tool reporting in UI (expandable details)
+
+### AI Chat Tool Families
+
+- Graph context: `graph_audit_bundle`, `list_nodes`, `list_edges`, `read_node`, `read_registry_kind`, `registry_capability_matrix`
+- Artifacts: `list_node_artifacts`, `artifact_top_tail`, `json_path_extract`, `csv_profile`, `suggest_measure_fields`, `profile_numeric_distribution`
+- Uploads (chat attachments): `list_uploaded_files`, `uploaded_file_top_tail`, `uploaded_csv_profile`, `suggest_ingest_mapping_from_upload`, `apply_upload_to_ingest_node`
+- Mutations: `add_node`, `patch_node_config`, `wire_nodes`, `unwire_edge`, `preview_graph_diff_for_plan`
+- Execution/readiness: `validate_pipeline_for_goal`, `run_node`, `run_graph`
+
+### AI Memory + Skill/Playbook Docs
+
+AI system prompt context is loaded from:
+
+- `docs/ai-memory/project-context.md`
+- `docs/ai-memory/geology-summary.md`
+- `docs/ai-memory/activities-log.md`
+- `docs/ai-memory/system-prompt-notes.md`
+- `docs/ai-skills/upload-combo-playbooks.md`
+- `docs/ai-skills/node-workflow-fragments.md`
+- `docs/node-operating-matrix.md`
+
+The `docs/ai-skills/*` files are designed as reusable playbook fragments for common upload combinations (for example collar+survey+assay) and node-level workflow nudges.
+
+### Chat UX Notes
+
+- Assistant responses support a dual format:
+  - `<plain>...</plain>` concise operator-facing answer
+  - `<system>...</system>` deeper diagnostics/actions (collapsible in UI)
+- Tool events are rendered as compact expandable bubbles.
+- A `New Chat` button resets chat thread state for the current project while preserving project/graph context.
+
 ## Design Principles
 
 - Backend is source of truth: graph state, node configs, artifacts, branches/revisions, project CRS.

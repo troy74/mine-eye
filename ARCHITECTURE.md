@@ -141,6 +141,7 @@ The preferred architecture is a brokered middleware chain that keeps frontend lo
 - **Spatial broker**: AOI contracts, CRS normalization, bounds provenance, and project CRS policy.
 - **Terrain/imagery broker**: DEM provider/fitting, tilebroker/provider fallback ladders, quality flags.
 - **Artifact broker**: immutable artifact lineage/content hashes and schema/variant metadata.
+- **AI assistant broker** (`services/orchestrator/src/ai_chat.rs`): tool-orchestrated conversational planning/mutation/execution over graph state, artifacts, and uploaded chat files.
 
 Efficiency constraints:
 
@@ -149,7 +150,57 @@ Efficiency constraints:
 - keep UI overrides scoped to explicitly permitted `ui_capabilities` in contracts
 - avoid duplicate “guessing” logic across web/iOS/desktop
 
-## 6. Presentation Layer (Web First, Multi-Client Ready)
+### 5.4 AI Assistant Architecture (Current)
+
+The in-app assistant is implemented as a backend-run tool harness:
+
+- model/provider: OpenRouter with `openai/gpt-5.4` default
+- tool loop: bounded iterative tool-calling with structured tool events
+- mutation control: explicit plan-only vs apply mode
+- branch awareness: branch id is passed for graph mutations
+
+Core tool groups:
+
+- graph audit/introspection
+- artifact profiling/extraction
+- upload-file inspection/mapping
+- graph mutation (add/patch/wire/unwire)
+- execution control (`run_node`, `run_graph`)
+
+The assistant should discover context through tools before asking users for low-level identifiers or mapping keys.
+
+## 6. AI Prompt, Memory, and Playbooks
+
+Prompting is layered:
+
+1. Base persona/behavior system prompt (concise, operator-first, professional exploration tone).
+2. Dynamic session context (user/mutation mode/chat transcript).
+3. Memory and playbook files loaded from repository docs.
+
+Current memory/playbook sources include:
+
+- `docs/ai-memory/*`
+- `docs/ai-skills/upload-combo-playbooks.md`
+- `docs/ai-skills/node-workflow-fragments.md`
+- `docs/node-operating-matrix.md`
+- top-level `README.md` and `ARCHITECTURE.md`
+
+These files are treated as durable project memory + operational skill fragments.
+
+## 7. Chat Interaction Contract
+
+Assistant response contract supports two parts:
+
+- `<plain>...</plain>`: short plain-meaning reply for user-facing guidance
+- `<system>...</system>`: detailed diagnostic/tool narrative (rendered as expandable UI detail)
+
+UI behavior:
+
+- tool events are compact and expandable
+- chat can be reset to a fresh thread via `New Chat`
+- attachments are upload-aware, and tabular content can be profiled/mapped by assistant tools
+
+## 8. Presentation Layer (Web First, Multi-Client Ready)
 
 Current client:
 
@@ -173,7 +224,7 @@ Presentation-layer rules:
 - no client-owned “source of truth”
 - all clients consume same graph/manifest/CRS contracts
 
-## 7. Viewer Architecture
+## 9. Viewer Architecture
 
 Viewer nodes are graph-native visualization nodes, not global singleton panels.
 
@@ -197,7 +248,7 @@ Manifest produced by orchestrator must contain sufficient layer metadata so each
 
 This is the anti-drift mechanism for web/iOS/desktop parity.
 
-## 8. CRS Architecture
+## 10. CRS Architecture
 
 CRS behavior is backend-backed, not UI-local:
 
@@ -216,7 +267,7 @@ UI pattern:
 
 This control model should be shared behavior across clients even if UI widgets differ.
 
-## 9. Execution and State Semantics
+## 11. Execution and State Semantics
 
 Current execution lifecycle in code:
 
@@ -229,7 +280,7 @@ Expected UX semantics:
 - running and failed states should be explicit and actionable
 - node-level run and graph-level run remain first-class controls
 
-## 10. Security and Identity Roadmap (Placeholder Contracts)
+## 12. Security and Identity Roadmap (Placeholder Contracts)
 
 The following are planned architecture components and should be treated as future backend services/contracts:
 
@@ -254,7 +305,7 @@ The following are planned architecture components and should be treated as futur
   - run requests
   - AI-assisted actions
 
-## 11. Optional Additional Encryption (Placeholder)
+## 13. Optional Additional Encryption (Placeholder)
 
 Baseline:
 
@@ -267,7 +318,7 @@ Planned optional controls:
 - encrypted-at-rest columns for sensitive configuration metadata
 - key management abstraction with rotation support
 
-## 12. AI Credits and Organizational Allocation (Placeholder)
+## 14. AI Credits and Organizational Allocation (Placeholder)
 
 Planned model:
 
@@ -283,7 +334,7 @@ Service split recommendation:
 - expose read/write APIs for allocation and usage views
 - keep clients presentation-only for budget visuals and approvals
 
-## 13. Scalability and Evolution
+## 15. Scalability and Evolution
 
 Near-term evolution priorities:
 
@@ -293,12 +344,12 @@ Near-term evolution priorities:
 - keep `kinds` domain modules small and focused; avoid re-accumulating a single monolithic node implementation file
 - continue hardening the Three.js path through scene contracts while preserving legacy Cesium compatibility where required
 
-## 14. Non-Goals (Current Phase)
+## 16. Non-Goals (Current Phase)
 
 - strict backward compatibility for old demo/example workspaces
 - perfect final contract freeze before iterative usability delivery
 - embedding core business logic inside any single frontend
 
-## 15. Guiding Rule
+## 17. Guiding Rule
 
 If a behavior must be consistent across web, iOS, and desktop, it belongs in contracts and services, not in a single UI implementation.

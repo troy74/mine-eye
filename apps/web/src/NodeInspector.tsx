@@ -62,6 +62,7 @@ type Props = {
   onTab: (t: InspectorTab) => void;
   onClose: () => void;
   onOpenEditor?: () => void;
+  onOpenAoiEditor?: (nodeId: string) => void;
   mode?: "sidebar" | "editor";
   onNodeUpdated: (n: ApiNode) => void;
   nodeArtifacts: ArtifactEntry[];
@@ -79,6 +80,7 @@ export function NodeInspector({
   onTab,
   onClose,
   onOpenEditor,
+  onOpenAoiEditor,
   mode = "sidebar",
   onNodeUpdated,
   nodeArtifacts,
@@ -324,6 +326,12 @@ export function NodeInspector({
         : ""
   );
   const [aoiLocked, setAoiLocked] = useState<boolean>(() => Boolean(initialUi.locked));
+  // bbox_epsg is set by the map editor; preserved on save, displayed as info only
+  const [aoiBboxEpsg, setAoiBboxEpsg] = useState<number>(
+    () => (typeof initialUi.bbox_epsg === "number" && Number.isFinite(initialUi.bbox_epsg)
+      ? initialUi.bbox_epsg
+      : 4326)
+  );
   const [tbProviderCatalog, setTbProviderCatalog] = useState<string[]>(() => {
     const configuredCatalog = Array.isArray(initialUi.provider_catalog)
       ? (initialUi.provider_catalog as unknown[]).filter(
@@ -816,6 +824,7 @@ export function NodeInspector({
         .map((x) => Number(x.trim()))
         .filter((x) => Number.isFinite(x));
       ui.bbox = vals.length >= 4 ? vals.slice(0, 4) : undefined;
+      ui.bbox_epsg = aoiBboxEpsg !== 4326 ? aoiBboxEpsg : undefined;
       ui.locked = aoiLocked;
     }
     if (kind === "collar_ingest") {
@@ -889,6 +898,7 @@ export function NodeInspector({
     aoiMarginPct,
     aoiBbox,
     aoiLocked,
+    aoiBboxEpsg,
     isTilebrokerNode,
     tbProviderPrecedence,
     tbProviderCatalog,
@@ -2028,13 +2038,49 @@ export function NodeInspector({
               </label>
               <label style={lab}>
                 <span style={labSpan}>Manual bbox (xmin, ymin, xmax, ymax)</span>
-                <input
-                  type="text"
-                  value={aoiBbox}
-                  onChange={(e) => setAoiBbox(e.target.value)}
-                  placeholder="5.9036, 6.0660, 5.9093, 6.0679"
-                  style={{ ...sel, fontFamily: "inherit" }}
-                />
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="text"
+                    value={aoiBbox}
+                    onChange={(e) => {
+                      setAoiBbox(e.target.value);
+                      // If user edits bbox text directly, reset EPSG to WGS84
+                      setAoiBboxEpsg(4326);
+                    }}
+                    placeholder="5.9036, 6.0660, 5.9093, 6.0679"
+                    style={{ ...sel, fontFamily: "inherit", flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    title="Edit bounding box on map"
+                    onClick={() => onOpenAoiEditor?.(node.id)}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      background: "rgba(247,183,49,0.12)",
+                      border: "1px solid rgba(247,183,49,0.45)",
+                      borderRadius: 6,
+                      color: "#f7b731",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      padding: "5px 10px",
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    ✏️ Edit
+                  </button>
+                  </div>
+                  {aoiBboxEpsg !== 4326 && (
+                    <span style={{ fontSize: 10, color: "#8b949e" }}>
+                      Coordinates in EPSG:{aoiBboxEpsg} — edit on map to change CRS
+                    </span>
+                  )}
+                </div>
               </label>
               <label style={lab}>
                 <input

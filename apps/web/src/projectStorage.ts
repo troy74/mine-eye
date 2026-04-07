@@ -47,3 +47,10 @@ export function upsertProject(p: StoredProject) {
 export function findProjectByGraphId(graphId: string): StoredProject | undefined {
   return loadProjects().find((p) => p.graphId === graphId);
 }
+
+export function deleteProject(localId: string): void {
+  const remaining = loadProjects().filter((p) => p.localId !== localId);
+  saveProjects(remaining);
+  // Clear active pointer if it was pointing at the deleted project
+  if (getActiveProjectId() === localId) setActiveProjectId(null);
+}

@@ -34,6 +34,7 @@ import {
   deleteGraphEdge,
   deleteGraphNode,
   fetchGraph,
+  patchNodeParams,
   runGraph,
   type ApiEdge,
   type ApiNode,
@@ -48,9 +49,9 @@ import {
   edgeColorForApiEdge,
   pickHandleColorForPortWithSemantic,
 } from "./portTypes";
-import { incomingPortIds, outgoingPortIds } from "./nodePortLayout";
+import { DYNAMIC_PORT_GROUPS, dynPortInfo, incomingPortIds, outgoingPortIds } from "./nodePortLayout";
 import { isAcquisitionCsvKind } from "./pipelineSchema";
-import { nodeRole, nodeSpec, portSemantic } from "./nodeRegistry";
+import { nodePorts, nodeRole, nodeSpec, portSemantic } from "./nodeRegistry";
 
 const CAT_ACCENT: Record<string, string> = {
   input: "#238636",
@@ -71,6 +72,7 @@ type ExecTone =
 type PipelineData = {
   kind: string;
   title: string;
+  alias: string | null;
   role: string;
   category: string;
   categoryAccent: string;
@@ -87,6 +89,12 @@ type PipelineData = {
   outgoingPorts: string[];
   portColorsIn: Record<string, string>;
   portColorsOut: Record<string, string>;
+  portLabelsIn: Record<string, string>;
+  portLabelsOut: Record<string, string>;
+  portSemanticsIn: Record<string, string>;
+  portSemanticsOut: Record<string, string>;
+  portOptionalsIn: Record<string, boolean>;
+  portOptionalsOut: Record<string, boolean>;
 };
 
 function computeExecTone(
@@ -193,207 +201,424 @@ function removeNodePosition(graphId: string, nodeId: string) {
   localStorage.setItem(`mineeye:npos:${graphId}`, JSON.stringify(all));
 }
 
+function StatusIndicator({ state, isRunning }: { state: ExecTone; isRunning: boolean }) {
+  if (isRunning) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: "#58a6ff" }}>
+        <span style={{
+          display: "inline-block", width: 7, height: 7, borderRadius: "50%",
+          background: "#58a6ff", flexShrink: 0,
+          animation: "mineeye-status-pulse 0.85s ease-in-out infinite",
+        }} />
+        Running
+      </span>
+    );
+  }
+  const cfg = {
+    current: { color: "#3fb950", label: "Current", hollow: false },
+    stale:   { color: "#d29922", label: "Stale",   hollow: false },
+    error:   { color: "#f85149", label: "Error",   hollow: false },
+    locked:  { color: "#a371f7", label: "Locked",  hollow: false },
+    unset:   { color: "#6e7681", label: "Unset",   hollow: true  },
+  } as const;
+  const c = (cfg as Record<string, { color: string; label: string; hollow: boolean }>)[state]
+    ?? { color: "#6e7681", label: state, hollow: true };
+  return (
+    <span title={c.label} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: c.color }}>
+      <span style={{
+        display: "inline-block", width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+        background: c.hollow ? "transparent" : c.color,
+        border: c.hollow ? `1.5px solid ${c.color}` : "none",
+      }} />
+      {c.label}
+    </span>
+  );
+}
+
+// ── compact icon-button style helper ────────────────────────────────────────
+function iconBtn(opts: {
+  accent: string;
+  active?: boolean;
+  disabled?: boolean;
+  viewer?: boolean;
+}): CSSProperties {
+  const isViewer = opts.viewer === true;
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 24,
+    height: 24,
+    padding: 0,
+    border: `1px solid ${
+      opts.active || isViewer ? opts.accent : "rgba(55,62,70,1)"
+    }`,
+    borderRadius: 5,
+    background: opts.active
+      ? `${opts.accent}30`
+      : isViewer
+        ? `${opts.accent}18`
+        : "rgba(22,27,34,0.75)",
+    color: opts.active || isViewer
+      ? opts.accent
+      : opts.disabled
+        ? "#30363d"
+        : "#8b949e",
+    cursor: opts.disabled ? "default" : "pointer",
+    fontSize: isViewer ? 14 : 12,
+    lineHeight: 1,
+    transition: "border-color 0.1s, color 0.1s, background 0.1s",
+    flexShrink: 0,
+    boxShadow: isViewer ? `0 0 6px ${opts.accent}44` : "none",
+  };
+}
+
+const VIEWER_KINDS = new Set([
+  "plan_view_2d",
+  "plan_view_3d",
+  "cesium_display_node",
+  "threejs_display_node",
+]);
+
+// ── State dot config ─────────────────────────────────────────────────────────
+const STATE_DOT: Record<string, { color: string; label: string }> = {
+  unset:   { color: "#6e7681", label: "Not configured" },
+  stale:   { color: "#d29922", label: "Stale" },
+  current: { color: "#3fb950", label: "Current" },
+  locked:  { color: "#a371f7", label: "Locked" },
+  error:   { color: "#f85149", label: "Error" },
+};
+
+// ── Layout constants — must match the rendered heights exactly ───────────────
+// Top bar:  7px top-pad + 20px row (buttons dominate) + 5px bot-pad = 32px
+// Port row: 17px per row with 6px section padding top + bottom
+const H_TOP = 32;       // height of the top bar
+const H_PORT_PAD = 6;   // padding above/below port rows in their section
+const H_PORT_ROW = 17;  // height of each port row
+
+// Pixel Y from card top (padding edge) to center of port row i
+function portHandleTop(i: number): number {
+  return H_TOP + 1 /* section border */ + H_PORT_PAD + i * H_PORT_ROW + H_PORT_ROW / 2;
+}
+
 function PipelineNode({ data }: NodeProps<PipelineData>) {
   const id = useNodeId();
   const ctx = useContextOptional();
+  const [aliasEdit, setAliasEdit] = useState(false);
+  const [aliasVal, setAliasVal] = useState(data.alias ?? data.title);
+  const [errExpanded, setErrExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!aliasEdit) setAliasVal(data.alias ?? data.title);
+  }, [data.alias, data.title, aliasEdit]);
+
   const nIn = data.incomingPorts.length;
   const nOut = data.outgoingPorts.length;
+  const portRows = Math.max(nIn, nOut);
+  const hasPorts = portRows > 0;
+
   const b = borderStyleForExec(data.nodeState, data.categoryAccent);
+  const hasCustomAlias = data.alias != null && data.alias !== data.title;
+  const displayName = data.alias ?? data.title;
+  const hasFullError = !!data.lastErrorFull && data.lastErrorFull !== data.lastErrorShort;
+  const dotCfg = data.isRunning
+    ? { color: "#58a6ff", label: "Running…" }
+    : STATE_DOT[data.nodeState] ?? { color: "#6e7681", label: data.nodeState };
+
+  function commitAlias() {
+    setAliasEdit(false);
+    const trimmed = aliasVal.trim() || data.title;
+    setAliasVal(trimmed);
+    if (trimmed !== (data.alias ?? data.title) && id) {
+      void ctx?.renameNode(id, trimmed === data.title ? "" : trimmed);
+    }
+  }
 
   return (
     <div
       className={data.isRunning ? "mineeye-node-running" : undefined}
       style={{
-        background: "#21262d",
+        position: "relative",
+        background: "#161b22",
         color: "#e6edf3",
-        border: `${b.width}px ${b.style} ${b.color}`,
+        borderTop: `1px ${b.style} ${b.color}`,
+        borderRight: `1px ${b.style} ${b.color}`,
+        borderBottom: `1px ${b.style} ${b.color}`,
+        borderLeft: `3px solid ${data.categoryAccent}`,
         borderRadius: 10,
-        padding: "10px 12px 10px 10px",
+        minWidth: 200,
+        maxWidth: 270,
         fontSize: 12,
-        minWidth: 188,
-        maxWidth: 280,
       }}
     >
-      {data.incomingPorts.map((port, i) => {
-        const pct = ((i + 1) / (nIn + 1)) * 100;
-        return (
-          <Handle
-            key={`in-${port}`}
-            type="target"
-            position={Position.Left}
-            id={port}
-            isConnectable
+      {/* ── Handles (absolutely positioned at pixel offsets) ─────────── */}
+      {data.incomingPorts.map((port, i) => (
+        <Handle key={`in-${port}`}
+          type="target" position={Position.Left} id={port} isConnectable
+          title={`${data.portLabelsIn[port] ?? port}${data.portSemanticsIn[port] ? ` · ${data.portSemanticsIn[port].replace(/_/g, " ")}` : ""}${data.portOptionalsIn[port] ? " (optional)" : ""}`}
+          style={{
+            top: portHandleTop(i),
+            left: -6,
+            background: data.portColorsIn[port] ?? "#484f58",
+            border: "2px solid #161b22",
+            width: 11, height: 11, borderRadius: "50%",
+            opacity: data.portOptionalsIn[port] ? 0.5 : 1,
+          }}
+        />
+      ))}
+      {data.outgoingPorts.map((port, i) => (
+        <Handle key={`out-${port}`}
+          type="source" position={Position.Right} id={port} isConnectable
+          title={`${data.portLabelsOut[port] ?? port}${data.portSemanticsOut[port] ? ` · ${data.portSemanticsOut[port].replace(/_/g, " ")}` : ""}`}
+          style={{
+            top: portHandleTop(i),
+            right: -6,
+            background: data.portColorsOut[port] ?? "#484f58",
+            border: "2px solid #161b22",
+            width: 11, height: 11, borderRadius: "50%",
+          }}
+        />
+      ))}
+
+      {/* ── TOP BAR: name · status dot · 4 icon buttons ─────────────── */}
+      {/* height = 8 + 22 (button height) + 6 = H_TOP = 36px exactly   */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 3,
+        padding: "7px 8px 5px",
+        boxSizing: "border-box",
+      }}>
+        {/* Editable name */}
+        {aliasEdit ? (
+          <input
+            autoFocus
+            value={aliasVal}
+            onChange={(e) => setAliasVal(e.target.value)}
+            onBlur={commitAlias}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") commitAlias();
+              if (e.key === "Escape") { setAliasEdit(false); setAliasVal(data.alias ?? data.title); }
+            }}
             style={{
-              top: `${pct}%`,
-              background: data.portColorsIn[port] ?? "#484f58",
-              border: "1px solid #0f1419",
-              width: 10,
-              height: 10,
+              flex: 1, minWidth: 0,
+              background: "rgba(56,139,253,0.1)",
+              border: "1px solid #388bfd",
+              borderRadius: 4,
+              color: "#e6edf3", fontSize: 12, fontWeight: 600,
+              padding: "0 5px", height: 20,
+              outline: "none", fontFamily: "inherit",
             }}
           />
-        );
-      })}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <span
-          style={{
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.06em",
-            color: "#0f1419",
-            background: data.categoryAccent,
-            padding: "2px 6px",
-            borderRadius: 4,
-            textTransform: "uppercase",
-          }}
-        >
-          {data.category}
-        </span>
-        {data.isRunning && <span style={{ fontSize: 10, color: "#58a6ff" }}>Running…</span>}
-        {data.nodeState === "error" && (
-          <span style={{ fontSize: 10, color: "#f85149", fontWeight: 600 }}>Error</span>
+        ) : (
+          <span
+            title="Click to rename"
+            onClick={(e) => { e.stopPropagation(); setAliasEdit(true); }}
+            style={{
+              flex: 1, minWidth: 0,
+              fontWeight: 600, fontSize: 12, lineHeight: "20px",
+              letterSpacing: "-0.01em", cursor: "text",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              color: "#e6edf3",
+            }}
+          >
+            {displayName}
+          </span>
         )}
-        {data.nodeState === "stale" && !data.isRunning && (
-          <span style={{ fontSize: 10, color: "#d29922" }}>Stale</span>
-        )}
-        {data.nodeState === "current" && !data.isRunning && (
-          <span style={{ fontSize: 10, color: "#3fb950" }}>Current</span>
-        )}
-        {data.nodeState === "locked" && !data.isRunning && (
-          <span style={{ fontSize: 10, color: "#a371f7" }}>Locked</span>
-        )}
-        {data.nodeState === "unset" && !data.isRunning && (
-          <span style={{ fontSize: 10, color: "#8b949e" }}>Unset</span>
-        )}
+        {/* Status dot */}
+        <span title={dotCfg.label} style={{
+          display: "inline-block", width: 7, height: 7,
+          borderRadius: "50%", flexShrink: 0,
+          background: data.nodeState === "unset" ? "transparent" : dotCfg.color,
+          border: data.nodeState === "unset" ? `1.5px solid ${dotCfg.color}` : "none",
+          animation: data.isRunning ? "mineeye-status-pulse 0.85s ease-in-out infinite" : "none",
+        }} />
+        {/* Icon buttons */}
+        {ctx && id && (<>
+          {data.kind === "aoi" && (
+            <button type="button"
+              title="Edit AOI on map"
+              onClick={(e) => { e.stopPropagation(); ctx.openAoiEditor?.(id); }}
+              style={{
+                ...iconBtn({ accent: "#f7b731" }),
+                fontSize: 13,
+              }}
+            >✏</button>
+          )}
+          <button type="button"
+            title={data.isRunning ? "Running…" : "Run this node and downstream"}
+            disabled={data.isRunning}
+            onClick={(e) => { e.stopPropagation(); void ctx.queueNodeRun(id, { includeManual: true }); }}
+            style={iconBtn({ accent: "#388bfd", disabled: data.isRunning })}
+          >▶</button>
+          <button type="button"
+            title={data.isLocked ? "Locked — click to enable auto-recompute" : "Unlocked — click to lock"}
+            onClick={(e) => { e.stopPropagation(); void ctx.toggleLock(id, data.isLocked); }}
+            style={iconBtn({ accent: "#a371f7", active: data.isLocked })}
+          >{data.isLocked ? "⊗" : "⊙"}</button>
+          <button type="button"
+            title="Edit configuration"
+            onClick={(e) => { e.stopPropagation(); ctx.openInspector(id, "config"); }}
+            style={iconBtn({ accent: "#58a6ff" })}
+          >⚙</button>
+          <button type="button"
+            title="Open viewer / preview"
+            onClick={(e) => { e.stopPropagation(); ctx.openNodeViewer(id); }}
+            style={iconBtn({
+              accent: VIEWER_KINDS.has(data.kind) ? "#db61a2" : "#3fb950",
+              viewer: VIEWER_KINDS.has(data.kind),
+            })}
+          >{VIEWER_KINDS.has(data.kind) ? "👁" : "⊞"}</button>
+        </>)}
       </div>
-      <div style={{ fontWeight: 600, fontSize: 13, lineHeight: 1.3 }}>{data.title}</div>
-      <div style={{ fontSize: 11, opacity: 0.82, marginTop: 5, lineHeight: 1.35 }}>{data.role}</div>
-      {data.nodeState === "error" && data.lastErrorShort && (
-        <div
-          style={{
-            fontSize: 10,
-            color: "#f88",
-            marginTop: 6,
-            lineHeight: 1.35,
-          }}
-          title={data.lastErrorFull ?? undefined}
-        >
-          {data.lastErrorShort}
+
+      {/* ── PORT ROWS (middle section) ───────────────────────────────── */}
+      {hasPorts && (
+        <div style={{
+          borderTop: "1px solid #21262d",
+          padding: `${H_PORT_PAD}px 8px`,
+        }}>
+          {Array.from({ length: portRows }).map((_, rowIdx) => {
+            const inPort = data.incomingPorts[rowIdx];
+            const outPort = data.outgoingPorts[rowIdx];
+            const inColor = inPort ? (data.portColorsIn[inPort] ?? "#484f58") : undefined;
+            const outColor = outPort ? (data.portColorsOut[outPort] ?? "#484f58") : undefined;
+            const inOptional = inPort ? (data.portOptionalsIn[inPort] ?? false) : false;
+            return (
+              <div key={rowIdx} style={{
+                display: "flex", alignItems: "center",
+                height: H_PORT_ROW,
+              }}>
+                {/* Input label — left-aligned, port colour */}
+                <span style={{
+                  flex: 1, minWidth: 0,
+                  fontSize: 7.5, lineHeight: 1,
+                  color: inColor ?? "transparent",
+                  opacity: inOptional ? 0.48 : 0.82,
+                  fontStyle: inOptional ? "italic" : "normal",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  letterSpacing: "0.01em",
+                }}>
+                  {inPort ? (data.portLabelsIn[inPort] ?? inPort.replace(/_/g, " ")) : ""}
+                </span>
+                {/* Output label — right-aligned, port colour */}
+                <span style={{
+                  flex: 1, minWidth: 0,
+                  fontSize: 7.5, lineHeight: 1,
+                  color: outColor ?? "transparent",
+                  opacity: 0.82,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  textAlign: "right",
+                  letterSpacing: "0.01em",
+                }}>
+                  {outPort ? (data.portLabelsOut[outPort] ?? outPort.replace(/_/g, " ")) : ""}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
-      {((data.showCsv && ctx && id) || (ctx && id) || (data.nodeState === "error" && ctx && id)) && (
-        <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {data.showCsv && ctx && id && (
+
+      {/* ── BOTTOM: category · role · error · footer ─────────────────── */}
+      <div style={{
+        borderTop: "1px solid #21262d",
+        padding: "5px 8px 6px",
+      }}>
+        {/* Category + original type when aliased */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+          <span style={{
+            fontSize: 7.5, fontWeight: 700, letterSpacing: "0.08em",
+            textTransform: "uppercase", color: data.categoryAccent, flexShrink: 0,
+          }}>
+            {data.category}
+          </span>
+          {hasCustomAlias && (
             <>
-              <button
-                type="button"
-                style={miniBtn}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  ctx.openInspector(id, "mapping");
-                }}
-              >
-                Map CSV…
-              </button>
-              <button
-                type="button"
-                style={miniBtn}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  ctx.openInspector(id, "summary");
-                }}
-              >
-                Details
-              </button>
+              <span style={{ fontSize: 7.5, color: "#21262d" }}>·</span>
+              <span style={{
+                fontSize: 7.5, color: "#484f58",
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                {data.title}
+              </span>
             </>
           )}
-          {ctx && id && (
-            <button
-              type="button"
-              style={runBtn}
-              title={data.isLocked ? "Run this node now (includes manual nodes for this run)." : "Run this node now"}
-              disabled={data.isRunning}
-              onClick={(e) => {
-                e.stopPropagation();
-                void ctx.queueNodeRun(id, { includeManual: true });
-              }}
-            >
-              Run
-            </button>
-          )}
-          {ctx && id && (
-            <button
-              type="button"
-              style={mapBtn}
-              title="Open node preview"
-              onClick={(e) => {
-                e.stopPropagation();
-                ctx.openNodeViewer(id);
-              }}
-            >
-              Preview
-            </button>
-          )}
-          {data.nodeState === "error" && ctx && id && (
-            <button
-              type="button"
-              style={miniBtn}
-              title="Open full error message"
-              onClick={(e) => {
-                e.stopPropagation();
-                ctx.openInspector(id, "diagnostics");
-              }}
-            >
-              Error details…
-            </button>
-          )}
         </div>
-      )}
-      {data.feeds && (
-        <div
-          style={{
-            fontSize: 10,
-            opacity: 0.65,
-            marginTop: 6,
-            borderTop: "1px solid #30363d",
-            paddingTop: 6,
-            lineHeight: 1.3,
-          }}
-        >
-          In: {data.feeds}
+
+        {/* Role — single truncated line */}
+        <div style={{
+          fontSize: 9.5, color: "#6e7681", lineHeight: 1.3,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {data.role}
         </div>
-      )}
-      <div style={{ fontSize: 10, opacity: 0.55, marginTop: 6 }}>{data.statusLine}</div>
-      {data.hashShort && (
-        <div
-          style={{
-            fontSize: 9,
-            opacity: 0.45,
-            marginTop: 4,
-            fontFamily: "ui-monospace, monospace",
-          }}
-        >
-          {data.hashShort}
-        </div>
-      )}
-      {data.outgoingPorts.map((port, i) => {
-        const pct = ((i + 1) / (nOut + 1)) * 100;
-        return (
-          <Handle
-            key={`out-${port}`}
-            type="source"
-            position={Position.Right}
-            id={port}
-            isConnectable
-            style={{
-              top: `${pct}%`,
-              background: data.portColorsOut[port] ?? "#484f58",
-              border: "1px solid #0f1419",
-              width: 10,
-              height: 10,
-            }}
-          />
-        );
-      })}
+
+        {/* Error (collapsible) */}
+        {data.nodeState === "error" && data.lastErrorShort && (
+          <div style={{
+            marginTop: 5,
+            background: "rgba(248,81,73,0.07)",
+            border: "1px solid rgba(248,81,73,0.18)",
+            borderRadius: 4, overflow: "hidden",
+          }}>
+            <div
+              style={{
+                padding: "3px 6px",
+                display: "flex", alignItems: "flex-start", gap: 4,
+                cursor: hasFullError ? "pointer" : "default",
+              }}
+              onClick={(e) => { e.stopPropagation(); if (hasFullError) setErrExpanded((v) => !v); }}
+            >
+              <span style={{ flex: 1, fontSize: 9, color: "#fca5a5", lineHeight: 1.4 }}>
+                {data.lastErrorShort}
+              </span>
+              {hasFullError && (
+                <span style={{ flexShrink: 0, fontSize: 8.5, color: "#484f58", marginTop: 1 }}>
+                  {errExpanded ? "▴" : "▾"}
+                </span>
+              )}
+            </div>
+            {errExpanded && data.lastErrorFull && (
+              <div style={{
+                padding: "0 6px 5px",
+                fontSize: 8.5, color: "#f78166",
+                whiteSpace: "pre-wrap", wordBreak: "break-word",
+                maxHeight: 150, overflowY: "auto",
+                borderTop: "1px solid rgba(248,81,73,0.12)",
+              }}>
+                {data.lastErrorFull}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Footer: upstream feeds + content hash */}
+        {(data.feeds || data.hashShort) && (
+          <div style={{
+            marginTop: 5, paddingTop: 4,
+            borderTop: "1px solid #1c2128",
+            display: "flex", alignItems: "center",
+            justifyContent: "space-between", gap: 6,
+          }}>
+            {data.feeds && (
+              <div style={{
+                fontSize: 9, color: "#484f58", lineHeight: 1.3,
+                flex: 1, minWidth: 0,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                ← {data.feeds}
+              </div>
+            )}
+            {data.hashShort && (
+              <div style={{
+                fontSize: 8, color: "#30363d",
+                fontFamily: "ui-monospace, monospace", flexShrink: 0,
+              }}>
+                {data.hashShort}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -401,28 +626,6 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
 function useContextOptional() {
   return useContext(GraphInspectorContext);
 }
-
-const miniBtn: CSSProperties = {
-  fontSize: 10,
-  padding: "4px 8px",
-  borderRadius: 6,
-  border: "1px solid #30363d",
-  background: "#0f1419",
-  color: "#58a6ff",
-  cursor: "pointer",
-};
-
-const mapBtn: CSSProperties = {
-  ...miniBtn,
-  color: "#34d399",
-  borderColor: "#1f6f55",
-};
-
-const runBtn: CSSProperties = {
-  ...miniBtn,
-  color: "#58a6ff",
-  borderColor: "#1f6feb",
-};
 
 const menuBtn: CSSProperties = {
   display: "block",
@@ -503,7 +706,8 @@ function incomingFeedLabels(
   for (const e of edges) {
     if (!m.has(e.to_node)) m.set(e.to_node, []);
     const from = byId.get(e.from_node);
-    const title = from?.config.kind.replace(/_/g, " ") ?? e.from_node.slice(0, 8);
+    const fromKind = from?.config.kind ?? "";
+    const title = (fromKind && nodeSpec(fromKind)?.label) || fromKind.replace(/_/g, " ") || e.from_node.slice(0, 8);
     m.get(e.to_node)!.push(`${title} (${e.from_port}→${e.to_port})`);
   }
   const out = new Map<string, string>();
@@ -527,8 +731,10 @@ function toFlowElements(
     const auto = positions.get(node.id) ?? { x: 0, y: 0 };
     const p = saved[node.id] ?? auto;
     const kind = node.config.kind;
-    const title = kind.replace(/_/g, " ");
+    const title = nodeSpec(kind)?.label ?? kind.replace(/_/g, " ");
     const role = nodeRole(kind) ?? `Node · ${kind}`;
+    const rawAlias = node.config?.params?._alias;
+    const alias = typeof rawAlias === "string" && rawAlias.trim() ? rawAlias.trim() : null;
     const incomingPorts = incomingPortIds(node.id, kind, edges);
     const hasOutputArtifact = hasArtifactByNode.has(node.id);
     const hasUpstreamArtifact = edges.some(
@@ -549,6 +755,8 @@ function toFlowElements(
       ? `sha256:${node.content_hash.slice(0, 10)}…`
       : null;
     const outgoingPorts = outgoingPortIds(node.id, kind, edges);
+    const inPortSpecs = nodePorts(kind, "in");
+    const outPortSpecs = nodePorts(kind, "out");
     const portColorsIn = Object.fromEntries(
       incomingPorts.map((p) => [
         p,
@@ -573,6 +781,42 @@ function toFlowElements(
         ),
       ])
     );
+    const portLabelsIn = Object.fromEntries(
+      incomingPorts.map((p) => {
+        const spec = inPortSpecs.find((s) => s.id === p);
+        const dyn = dynPortInfo(kind, p);
+        return [p, spec?.label ?? dyn?.label ?? p.replace(/_/g, " ")];
+      })
+    );
+    const portLabelsOut = Object.fromEntries(
+      outgoingPorts.map((p) => {
+        const spec = outPortSpecs.find((s) => s.id === p);
+        return [p, spec?.label ?? p.replace(/_/g, " ")];
+      })
+    );
+    const portSemanticsIn = Object.fromEntries(
+      incomingPorts.map((p) => {
+        const dyn = dynPortInfo(kind, p);
+        return [p, portSemantic(kind, "in", p) ?? dyn?.semantic ?? ""];
+      })
+    );
+    const portSemanticsOut = Object.fromEntries(
+      outgoingPorts.map((p) => [p, portSemantic(kind, "out", p) ?? ""])
+    );
+    const portOptionalsIn = Object.fromEntries(
+      incomingPorts.map((p) => {
+        const spec = inPortSpecs.find((s) => s.id === p);
+        // dynamic group ports are always optional (none required to connect)
+        const isDyn = dynPortInfo(kind, p) !== null;
+        return [p, spec?.optional ?? isDyn];
+      })
+    );
+    const portOptionalsOut = Object.fromEntries(
+      outgoingPorts.map((p) => {
+        const spec = outPortSpecs.find((s) => s.id === p);
+        return [p, spec?.optional ?? false];
+      })
+    );
     return {
       id: node.id,
       type: "pipeline",
@@ -580,6 +824,7 @@ function toFlowElements(
       data: {
         kind,
         title,
+        alias,
         role,
         category: cat,
         categoryAccent,
@@ -596,6 +841,12 @@ function toFlowElements(
         outgoingPorts,
         portColorsIn,
         portColorsOut,
+        portLabelsIn,
+        portLabelsOut,
+        portSemanticsIn,
+        portSemanticsOut,
+        portOptionalsIn,
+        portOptionalsOut,
       },
     };
   });
@@ -627,6 +878,7 @@ type Props = {
   onPipelineQueued?: () => void;
   onOpenNodeViewer?: (nodeId: string) => void;
   onOpenNodeEditor?: (nodeId: string) => void;
+  onOpenAoiEditor?: (nodeId: string) => void;
   onGraphChanged?: () => void;
 };
 
@@ -646,6 +898,7 @@ function FlowWorkspace({
   onPipelineQueued,
   onOpenNodeViewer,
   onOpenNodeEditor,
+  onOpenAoiEditor,
   onGraphChanged,
 }: {
   graphId: string;
@@ -657,6 +910,7 @@ function FlowWorkspace({
   onPipelineQueued?: () => void;
   onOpenNodeViewer?: (nodeId: string) => void;
   onOpenNodeEditor?: (nodeId: string) => void;
+  onOpenAoiEditor?: (nodeId: string) => void;
   onGraphChanged?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<PipelineData>>([]);
@@ -664,11 +918,14 @@ function FlowWorkspace({
   const [apiNodes, setApiNodes] = useState<ApiNode[]>([]);
   const [workspaceEpsg, setWorkspaceEpsg] = useState(projectEpsg);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu>({ kind: "none" });
-  const [menuClassKey, setMenuClassKey] = useState<string | null>(null);
-  const [menuGroupKey, setMenuGroupKey] = useState<string | null>(null);
-  const [menuClassTop, setMenuClassTop] = useState<number | null>(null);
-  const [menuGroupTop, setMenuGroupTop] = useState<number | null>(null);
+  const [menuFilter, setMenuFilter] = useState<string>("");
+  const menuFilterRef = useRef<HTMLInputElement | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
+  // Cascading menu hover state — refs store viewport Y positions (synchronous), state drives render
+  const [hoveredGroupKey, setHoveredGroupKey] = useState<string | null>(null);
+  const hoveredGroupTop = useRef<number>(0);
+  const [hoveredSubGroupKey, setHoveredSubGroupKey] = useState<string | null>(null);
+  const hoveredSubGroupTop = useRef<number>(0);
   const [viewport, setViewport] = useState<{ w: number; h: number }>(() => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1280,
     h: typeof window !== "undefined" ? window.innerHeight : 800,
@@ -728,9 +985,36 @@ function FlowWorkspace({
     [graphId, onPipelineQueued]
   );
 
+  const renameNode = useCallback(
+    async (nodeId: string, alias: string) => {
+      try {
+        const updated = await patchNodeParams(graphId, nodeId, { _alias: alias || null }, { branchId: activeBranchId });
+        setApiNodes((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [graphId, activeBranchId]
+  );
+
+  const toggleLock = useCallback(
+    async (nodeId: string, isCurrentlyLocked: boolean) => {
+      try {
+        const updated = await patchNodeParams(graphId, nodeId, {}, {
+          branchId: activeBranchId,
+          policy: { recompute: isCurrentlyLocked ? "auto" : "manual" },
+        });
+        setApiNodes((prev) => prev.map((x) => (x.id === updated.id ? updated : x)));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [graphId, activeBranchId]
+  );
+
   const ctxValue = useMemo(
-    () => ({ openInspector, openNodeViewer, queueNodeRun }),
-    [openInspector, openNodeViewer, queueNodeRun]
+    () => ({ openInspector, openNodeViewer, queueNodeRun, renameNode, toggleLock, openAoiEditor: onOpenAoiEditor }),
+    [openInspector, openNodeViewer, queueNodeRun, renameNode, toggleLock, onOpenAoiEditor]
   );
 
   const load = useCallback(async () => {
@@ -772,10 +1056,11 @@ function FlowWorkspace({
 
   useEffect(() => {
     if (ctxMenu.kind === "none") {
-      setMenuClassKey(null);
-      setMenuGroupKey(null);
-      setMenuClassTop(null);
-      setMenuGroupTop(null);
+      setMenuFilter("");
+      setHoveredGroupKey(null);
+      setHoveredSubGroupKey(null);
+    } else if (ctxMenu.kind === "pane") {
+      window.setTimeout(() => menuFilterRef.current?.focus(), 30);
     }
   }, [ctxMenu.kind]);
 
@@ -833,19 +1118,21 @@ function FlowWorkspace({
       const sourceKind = sourceNode?.config.kind ?? "";
       const targetNode = apiNodes.find((n) => n.id === c.target);
       const targetKind = targetNode?.config.kind ?? "";
-      if (targetKind === "threejs_display_node") {
-        const m = /^in_(\d+)$/.exec(to_port);
-        if (m) {
-          const used = new Set<number>();
-          for (const e of edges) {
-            if (e.to !== c.target) continue;
-            const mm = /^in_(\d+)$/.exec(String(e.targetHandle ?? "in"));
-            if (mm) used.add(Math.max(1, Number(mm[1])));
-          }
-          let idx = 1;
-          while (used.has(idx)) idx += 1;
-          to_port = `in_${idx}`;
+      // Auto-route: if the target port belongs to a dynamic group, find the first free slot
+      const dynGroups = DYNAMIC_PORT_GROUPS[targetKind] ?? [];
+      const activeGroup = dynGroups.find(
+        (g) => g.direction === "in" && g.slotIndex(to_port) !== null
+      );
+      if (activeGroup) {
+        const used = new Set<number>();
+        for (const e of edges) {
+          if (e.target !== c.target) continue;
+          const idx = activeGroup.slotIndex(String(e.targetHandle ?? ""));
+          if (idx !== null) used.add(idx);
         }
+        let freeIdx = 0;
+        while (used.has(freeIdx)) freeIdx += 1;
+        to_port = activeGroup.slotId(freeIdx);
       }
       const semantic_type = portSemantic(sourceKind, "out", from_port) ?? "table";
       try {
@@ -863,7 +1150,7 @@ function FlowWorkspace({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [activeBranchId, apiNodes, graphId, load, onGraphChanged]
+    [activeBranchId, apiNodes, edges, graphId, load, onGraphChanged]
   );
 
   const addNodeFromPreset = useCallback(
@@ -978,87 +1265,47 @@ function FlowWorkspace({
       };
     });
   }, [groupedAddNodePresets]);
-  const menuLayout = useMemo(() => {
-    const rootW = 170;
-    const preferredLevel2W = 188;
-    const preferredLevel3W = 196;
-    const pad = 16;
-    const maxRootH = Math.max(180, Math.min(400, viewport.h - 40));
-    const baseLeft =
-      ctxMenu.kind === "none"
-        ? 0
-        : Math.max(pad, Math.min(ctxMenu.x, viewport.w - rootW - pad));
-    const baseTop =
-      ctxMenu.kind === "none"
-        ? 0
-        : Math.max(pad, Math.min(ctxMenu.y, viewport.h - maxRootH - pad));
-
-    const spaceRight = Math.max(0, viewport.w - (baseLeft + rootW) - pad);
-    const spaceLeft = Math.max(0, baseLeft - pad);
-    const level2Right = spaceRight >= 170 || spaceRight >= spaceLeft;
-    const level2W = Math.max(
-      120,
-      Math.min(preferredLevel2W, level2Right ? spaceRight : spaceLeft)
-    );
-    const level2Left = level2Right
-      ? baseLeft + rootW - 2
-      : baseLeft - level2W + 2;
-
-    const canThirdRight = level2Right
-      ? spaceRight - level2W >= 170
-      : spaceRight >= 170;
-    const level3Right = level2Right && canThirdRight;
-    const level3BaseSpace = level3Right ? spaceRight - level2W : spaceLeft;
-    const level3W = Math.max(120, Math.min(preferredLevel3W, level3BaseSpace));
-    const level3Left = level3Right
-      ? level2Left + level2W - 2
-      : level2Left - level3W + 2;
-
-    return {
-      rootW,
-      level2W,
-      level3W,
-      maxRootH,
-      baseLeft,
-      baseTop,
-      level2Left,
-      level3Left,
-      pad,
-      flyTop: baseTop,
-      flyMaxH: Math.max(160, Math.min(340, viewport.h - 30)),
-    };
+  // Single-column add-node menu: position + filtered items
+  const paneMenuLayout = useMemo(() => {
+    const w = 240;
+    const maxH = Math.max(220, Math.min(Math.round(viewport.h * 0.65), viewport.h - 32));
+    const pad = 12;
+    const left = ctxMenu.kind === "none" ? 0
+      : Math.max(pad, Math.min(ctxMenu.x, viewport.w - w - pad));
+    const top = ctxMenu.kind === "none" ? 0
+      : Math.max(pad, Math.min(ctxMenu.y, viewport.h - maxH - pad));
+    return { w, maxH, left, top };
   }, [ctxMenu, viewport.h, viewport.w]);
 
-  const activeClassMenu = useMemo(
-    () => classFlyoutMenus.find((c) => c.key === menuClassKey) ?? null,
-    [classFlyoutMenus, menuClassKey]
-  );
-  const activeGroupMenu = useMemo(() => {
-    if (!activeClassMenu) return null;
-    return (
-      activeClassMenu.groupedItems.find(
-        (g) => `${activeClassMenu.key}:${g.key}` === menuGroupKey
-      ) ?? null
-    );
-  }, [activeClassMenu, menuGroupKey]);
-  const level2Top = useMemo(() => {
-    const desired = menuClassTop ?? menuLayout.flyTop;
-    const minTop = menuLayout.pad;
-    const maxTop = Math.max(
-      minTop,
-      viewport.h - menuLayout.flyMaxH - menuLayout.pad
-    );
-    return Math.max(minTop, Math.min(desired, maxTop));
-  }, [menuClassTop, menuLayout.flyTop, menuLayout.flyMaxH, menuLayout.pad, viewport.h]);
-  const level3Top = useMemo(() => {
-    const desired = menuGroupTop ?? level2Top;
-    const minTop = menuLayout.pad;
-    const maxTop = Math.max(
-      minTop,
-      viewport.h - menuLayout.flyMaxH - menuLayout.pad
-    );
-    return Math.max(minTop, Math.min(desired, maxTop));
-  }, [level2Top, menuGroupTop, menuLayout.flyMaxH, menuLayout.pad, viewport.h]);
+  const nodeEdgeMenuLayout = useMemo(() => {
+    const w = 176;
+    // node/edge menus are short — estimate ~200px max content, keep it near the click
+    const estimatedH = ctxMenu.kind === "edge" ? 60 : 220;
+    const pad = 8;
+    const left = ctxMenu.kind === "none" ? 0
+      : Math.max(pad, Math.min(ctxMenu.x, viewport.w - w - pad));
+    const top = ctxMenu.kind === "none" ? 0
+      : Math.max(pad, Math.min(ctxMenu.y, viewport.h - estimatedH - pad));
+    return { w, maxH: 320, left, top };
+  }, [ctxMenu, viewport.h, viewport.w]);
+
+  const filteredAddNodeItems = useMemo(() => {
+    const q = menuFilter.trim().toLowerCase();
+    if (!q) return classFlyoutMenus; // no filter: return all grouped
+    // Filter: merge all items into flat list, match on label + group
+    return classFlyoutMenus.map((c) => {
+      const allItems = [
+        ...c.directItems,
+        ...c.groupedItems.flatMap((g) => g.items),
+      ].filter(
+        (p) =>
+          p.label.toLowerCase().includes(q) ||
+          p.kind.toLowerCase().includes(q) ||
+          c.label.toLowerCase().includes(q)
+      );
+      return { ...c, directItems: allItems, groupedItems: [] };
+    }).filter((c) => c.directItems.length > 0);
+  }, [classFlyoutMenus, menuFilter]);
 
   const artifactsForSelected = useMemo(
     () =>
@@ -1117,10 +1364,6 @@ function FlowWorkspace({
                   x: e.clientX,
                   y: e.clientY,
                 }) ?? { x: 0, y: 0 };
-              setMenuClassKey(null);
-              setMenuGroupKey(null);
-              setMenuClassTop(null);
-              setMenuGroupTop(null);
               setCtxMenu({
                 kind: "pane",
                 x: e.clientX,
@@ -1163,8 +1406,9 @@ function FlowWorkspace({
               style={{ background: "#161b22" }}
             />
           </ReactFlow>
-          {ctxMenu.kind !== "none" &&
-            createPortal(
+          {ctxMenu.kind !== "none" && (() => {
+            const activeLayout = ctxMenu.kind === "pane" ? paneMenuLayout : nodeEdgeMenuLayout;
+            return createPortal(
               <div
                 ref={ctxMenuRef}
                 style={{ position: "fixed", inset: 0, zIndex: 10000, pointerEvents: "none" }}
@@ -1174,17 +1418,18 @@ function FlowWorkspace({
                   role="menu"
                   style={{
                     position: "fixed",
-                    left: menuLayout.baseLeft,
-                    top: menuLayout.baseTop,
+                    left: activeLayout.left,
+                    top: activeLayout.top,
                     zIndex: 10000,
                     background: "#161b22",
                     border: "1px solid #30363d",
                     borderRadius: 8,
                     padding: 5,
-                    minWidth: menuLayout.rootW - 10,
-                    maxWidth: menuLayout.rootW,
-                    maxHeight: menuLayout.maxRootH,
-                    overflow: "auto",
+                    width: activeLayout.w,
+                    maxHeight: activeLayout.maxH,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
                     boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
                     pointerEvents: "auto",
                   }}
@@ -1192,67 +1437,100 @@ function FlowWorkspace({
                 >
                   {ctxMenu.kind === "pane" ? (
                     <>
-                      <div
-                        style={{
-                          fontSize: 10.5,
-                          fontWeight: 600,
-                          marginBottom: 2,
-                          padding: "2px 6px",
-                          color: "#e6edf3",
-                        }}
-                      >
-                        Add node
-                      </div>
-                      {classFlyoutMenus.map((c) => (
-                        <button
-                          key={c.key}
-                          type="button"
-                          onMouseEnter={(e) => {
-                            setMenuClassKey(c.key);
-                            setMenuGroupKey(null);
-                            setMenuGroupTop(null);
-                            setMenuClassTop(e.currentTarget.getBoundingClientRect().top - 2);
+                      {/* Search filter */}
+                      <div style={{ padding: "4px 4px 3px", flexShrink: 0 }}>
+                        <input
+                          ref={menuFilterRef}
+                          type="text"
+                          value={menuFilter}
+                          onChange={(e) => {
+                            setMenuFilter(e.target.value);
+                            setHoveredGroupKey(null);
+                            setHoveredSubGroupKey(null);
                           }}
-                          onFocus={(e) => {
-                            setMenuClassKey(c.key);
-                            setMenuGroupKey(null);
-                            setMenuGroupTop(null);
-                            setMenuClassTop(e.currentTarget.getBoundingClientRect().top - 2);
-                          }}
-                          onClick={(e) => {
-                            setMenuClassKey(c.key);
-                            setMenuGroupKey(null);
-                            setMenuGroupTop(null);
-                            setMenuClassTop(e.currentTarget.getBoundingClientRect().top - 2);
-                          }}
+                          placeholder="Search nodes…"
                           style={{
-                            ...menuBtn,
-                            background:
-                              menuClassKey === c.key ? "#1f2a37" : menuBtn.background,
-                            marginBottom: 1,
-                            border:
-                              menuClassKey === c.key
-                                ? "1px solid #3b82f6"
-                                : "1px solid transparent",
+                            width: "100%",
+                            background: "#0d1117",
+                            border: "1px solid #30363d",
+                            borderRadius: 5,
+                            color: "#e6edf3",
+                            fontSize: 11,
+                            padding: "5px 8px",
+                            outline: "none",
+                            fontFamily: "inherit",
+                            boxSizing: "border-box",
                           }}
-                        >
-                          <span
-                            style={{
-                              display: "inline-block",
-                              maxWidth: 122,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {c.label}
-                          </span>
-                          <span style={{ float: "right", opacity: 0.7 }}>›</span>
-                        </button>
-                      ))}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") setCtxMenu({ kind: "none" });
+                          }}
+                        />
+                      </div>
+                      {/* Menu body — cascading when no filter, flat when searching */}
+                      <div style={{ overflowY: "auto", flex: 1, paddingTop: 2 }}>
+                        {menuFilter.trim() ? (
+                          /* ── Flat search results ── */
+                          filteredAddNodeItems.length === 0 ? (
+                            <div style={{ fontSize: 11, color: "#484f58", padding: "6px 10px" }}>
+                              No nodes match
+                            </div>
+                          ) : (
+                            filteredAddNodeItems.map((c) => (
+                              <div key={c.key}>
+                                <div style={{
+                                  fontSize: 9.5, fontWeight: 700, letterSpacing: "0.07em",
+                                  textTransform: "uppercase", color: "#484f58",
+                                  padding: "6px 8px 2px", userSelect: "none",
+                                }}>
+                                  {c.label}
+                                </div>
+                                {c.directItems.map((p) => (
+                                  <button key={p.kind} type="button"
+                                    onClick={() => void addNodeFromPreset(p, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
+                                    style={{ ...menuBtn, marginBottom: 1 }}
+                                    title={`${p.frameworkGroup}/${p.submenu}`}
+                                  >
+                                    {p.label}
+                                  </button>
+                                ))}
+                              </div>
+                            ))
+                          )
+                        ) : (
+                          /* ── Cascading L1 group buttons ── */
+                          classFlyoutMenus.map((c) => (
+                            <button
+                              key={c.key}
+                              type="button"
+                              onMouseEnter={(e) => {
+                                // Store Y position synchronously in ref — no timing issue
+                                hoveredGroupTop.current = e.currentTarget.getBoundingClientRect().top;
+                                setHoveredGroupKey(c.key);
+                                setHoveredSubGroupKey(null);
+                              }}
+                              style={{
+                                ...menuBtn,
+                                marginBottom: 1,
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                background: hoveredGroupKey === c.key ? "#1c2638" : menuBtn.background,
+                                border: `1px solid ${hoveredGroupKey === c.key ? "#3b82f6" : "transparent"}`,
+                              }}
+                            >
+                              <span style={{ textTransform: "capitalize" }}>{c.label}</span>
+                              <span style={{ opacity: 0.55, fontSize: 10 }}>›</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
                     </>
                   ) : ctxMenu.kind === "node" ? (
                     <>
+                      {/* Node header label */}
+                      <div style={{ fontSize: 10, color: "#6e7681", padding: "2px 8px 4px", userSelect: "none" }}>
+                        {apiNodes.find((n) => n.id === ctxMenu.nodeId)?.config.kind.replace(/_/g, " ") ?? ctxMenu.nodeId.slice(0, 8)}
+                      </div>
                       <button
                         type="button"
                         onClick={() => {
@@ -1262,15 +1540,50 @@ function FlowWorkspace({
                         }}
                         style={menuBtn}
                       >
-                        Focus node
+                        Focus in canvas
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const id = ctxMenu.nodeId;
+                          setCtxMenu({ kind: "none" });
+                          openInspector(id, "summary");
+                        }}
+                        style={menuBtn}
+                      >
+                        Open inspector
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const id = ctxMenu.nodeId;
+                          setCtxMenu({ kind: "none" });
+                          openNodeViewer(id);
+                        }}
+                        style={menuBtn}
+                      >
+                        Preview output
+                      </button>
+                      <button
+                        type="button"
+                        disabled={apiNodes.find((n) => n.id === ctxMenu.nodeId)?.execution === "running"}
+                        onClick={() => {
+                          const id = ctxMenu.nodeId;
+                          setCtxMenu({ kind: "none" });
+                          void queueNodeRun(id, { includeManual: true });
+                        }}
+                        style={{ ...menuBtn, color: "#58a6ff" }}
+                      >
+                        Run from here
+                      </button>
+                      <div style={{ margin: "4px 4px", borderTop: "1px solid #30363d" }} />
                       <button
                         type="button"
                         onClick={() => {
                           setCtxMenu({ kind: "none" });
                           void persistDeleteNodes([ctxMenu.nodeId]);
                         }}
-                        style={{ ...menuBtn, color: "#f85149" }}
+                        style={{ ...menuBtn, color: "#f85149", marginBottom: 0 }}
                       >
                         Delete node
                       </button>
@@ -1290,131 +1603,118 @@ function FlowWorkspace({
                   )}
                 </div>
 
-                {ctxMenu.kind === "pane" && activeClassMenu ? (
-                  <div
-                    role="menu"
-                    style={{
-                      position: "fixed",
-                      left: menuLayout.level2Left,
-                      top: level2Top,
-                      zIndex: 10001,
-                      background: "#161b22",
-                      border: "1px solid #30363d",
-                      borderRadius: 8,
-                      padding: 5,
-                      minWidth: menuLayout.level2W - 10,
-                      maxWidth: menuLayout.level2W,
-                      maxHeight: menuLayout.flyMaxH,
-                      overflowY: "auto",
-                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-                      pointerEvents: "auto",
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {activeClassMenu.directItems.map((p) => (
-                      <button
-                        key={`${activeClassMenu.key}:${p.kind}`}
-                        type="button"
-                        onClick={() =>
-                          void addNodeFromPreset(p, {
-                            x: ctxMenu.flowX,
-                            y: ctxMenu.flowY,
-                          })
-                        }
-                        style={{ ...menuBtn, marginBottom: 1 }}
-                        title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                    {activeClassMenu.groupedItems.map((g) => {
-                      const gk = `${activeClassMenu.key}:${g.key}`;
-                      return (
+                {/* ── L2 submenu: items for the hovered group ── */}
+                {ctxMenu.kind === "pane" && !menuFilter.trim() && hoveredGroupKey && (() => {
+                  const grp = classFlyoutMenus.find((c) => c.key === hoveredGroupKey);
+                  if (!grp) return null;
+                  const subW = 200;
+                  const subPad = 4;
+                  const rawLeft = paneMenuLayout.left + paneMenuLayout.w + subPad;
+                  const left = Math.min(rawLeft, viewport.w - subW - 8);
+                  const estH = Math.min(
+                    (grp.directItems.length + grp.groupedItems.length) * 28 + 16,
+                    viewport.h * 0.6
+                  );
+                  const top = Math.max(8, Math.min(hoveredGroupTop.current - 4, viewport.h - estH - 8));
+                  return (
+                    <div
+                      role="menu"
+                      style={{
+                        position: "fixed", left, top, zIndex: 10001,
+                        background: "#161b22", border: "1px solid #30363d",
+                        borderRadius: 8, padding: 5, width: subW,
+                        maxHeight: Math.round(viewport.h * 0.6),
+                        overflowY: "auto",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                        pointerEvents: "auto",
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseEnter={() => {/* stay open */}}
+                    >
+                      {grp.directItems.map((p) => (
                         <button
-                          key={gk}
+                          key={p.kind}
+                          type="button"
+                          onClick={() => void addNodeFromPreset(p, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
+                          style={{ ...menuBtn, marginBottom: 1 }}
+                          title={`${p.submenu} (${p.pluginSource})`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                      {grp.groupedItems.map((g) => (
+                        <button
+                          key={g.key}
                           type="button"
                           onMouseEnter={(e) => {
-                            setMenuGroupKey(gk);
-                            setMenuGroupTop(e.currentTarget.getBoundingClientRect().top - 2);
-                          }}
-                          onFocus={(e) => {
-                            setMenuGroupKey(gk);
-                            setMenuGroupTop(e.currentTarget.getBoundingClientRect().top - 2);
-                          }}
-                          onClick={(e) => {
-                            setMenuGroupKey(gk);
-                            setMenuGroupTop(e.currentTarget.getBoundingClientRect().top - 2);
+                            hoveredSubGroupTop.current = e.currentTarget.getBoundingClientRect().top;
+                            setHoveredSubGroupKey(`${hoveredGroupKey}:${g.key}`);
                           }}
                           style={{
                             ...menuBtn,
                             marginBottom: 1,
-                            background: menuGroupKey === gk ? "#1f2a37" : menuBtn.background,
-                            border:
-                              menuGroupKey === gk
-                                ? "1px solid #3b82f6"
-                                : "1px solid transparent",
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            background: hoveredSubGroupKey === `${hoveredGroupKey}:${g.key}` ? "#1c2638" : menuBtn.background,
+                            border: `1px solid ${hoveredSubGroupKey === `${hoveredGroupKey}:${g.key}` ? "#3b82f6" : "transparent"}`,
                           }}
                         >
-                          <span
-                            style={{
-                              display: "inline-block",
-                              maxWidth: 132,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {g.label}
-                          </span>
-                          <span style={{ float: "right", opacity: 0.7 }}>›</span>
+                          <span>{g.label}</span>
+                          <span style={{ opacity: 0.55, fontSize: 10 }}>›</span>
                         </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
+                      ))}
+                    </div>
+                  );
+                })()}
 
-                {ctxMenu.kind === "pane" && activeClassMenu && activeGroupMenu ? (
-                  <div
-                    role="menu"
-                    style={{
-                      position: "fixed",
-                      left: menuLayout.level3Left,
-                      top: level3Top,
-                      zIndex: 10002,
-                      background: "#161b22",
-                      border: "1px solid #30363d",
-                      borderRadius: 8,
-                      padding: 5,
-                      minWidth: menuLayout.level3W - 10,
-                      maxWidth: menuLayout.level3W,
-                      maxHeight: menuLayout.flyMaxH,
-                      overflowY: "auto",
-                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-                      pointerEvents: "auto",
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {activeGroupMenu.items.map((p) => (
-                      <button
-                        key={`${activeClassMenu.key}:${activeGroupMenu.key}:${p.kind}`}
-                        type="button"
-                        onClick={() =>
-                          void addNodeFromPreset(p, {
-                            x: ctxMenu.flowX,
-                            y: ctxMenu.flowY,
-                          })
-                        }
-                        style={{ ...menuBtn, marginBottom: 1 }}
-                        title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
+                {/* ── L3 submenu: items for the hovered sub-group ── */}
+                {ctxMenu.kind === "pane" && !menuFilter.trim() && hoveredGroupKey && hoveredSubGroupKey && (() => {
+                  const grp = classFlyoutMenus.find((c) => c.key === hoveredGroupKey);
+                  if (!grp) return null;
+                  const subGroupKey = hoveredSubGroupKey.replace(`${hoveredGroupKey}:`, "");
+                  const sub = grp.groupedItems.find((g) => g.key === subGroupKey);
+                  if (!sub) return null;
+                  const l2W = 200;
+                  const subW = 190;
+                  const subPad = 4;
+                  const rawLeft = paneMenuLayout.left + paneMenuLayout.w + subPad + l2W + subPad;
+                  const left = Math.min(rawLeft, viewport.w - subW - 8);
+                  const estH = Math.min(sub.items.length * 28 + 12, viewport.h * 0.55);
+                  const top = Math.max(8, Math.min(hoveredSubGroupTop.current - 4, viewport.h - estH - 8));
+                  return (
+                    <div
+                      role="menu"
+                      style={{
+                        position: "fixed", left, top, zIndex: 10002,
+                        background: "#161b22", border: "1px solid #30363d",
+                        borderRadius: 8, padding: 5, width: subW,
+                        maxHeight: Math.round(viewport.h * 0.55),
+                        overflowY: "auto",
+                        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                        pointerEvents: "auto",
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {sub.items.map((p) => (
+                        <button
+                          key={p.kind}
+                          type="button"
+                          onClick={() => void addNodeFromPreset(p, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
+                          style={{ ...menuBtn, marginBottom: 1 }}
+                          title={`${p.frameworkGroup}/${p.submenu} (${p.pluginSource})`}
+                        >
+                          {p.label}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+
               </div>,
               document.body
-            )}
+            );
+          })()}
         </div>
         {selectedNode && (
           <NodeInspector
@@ -1448,6 +1748,7 @@ export function GraphCanvas({
   onPipelineQueued,
   onOpenNodeViewer,
   onOpenNodeEditor,
+  onOpenAoiEditor,
   onGraphChanged,
 }: Props) {
   if (!graphId) {
@@ -1487,6 +1788,7 @@ export function GraphCanvas({
         onPipelineQueued={onPipelineQueued}
         onOpenNodeViewer={onOpenNodeViewer}
         onOpenNodeEditor={onOpenNodeEditor}
+        onOpenAoiEditor={onOpenAoiEditor}
         onGraphChanged={onGraphChanged}
       />
     </ReactFlowProvider>

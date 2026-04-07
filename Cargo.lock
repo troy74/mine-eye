@@ -1100,6 +1100,7 @@ dependencies = [
  "mine-eye-types",
  "proj",
  "reqwest",
+ "serde",
  "serde_json",
  "sha2",
  "thiserror",

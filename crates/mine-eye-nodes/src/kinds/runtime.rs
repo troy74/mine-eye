@@ -7,6 +7,7 @@ use tokio::fs;
 
 use crate::crs_transform::transform_xy;
 use crate::executor::ExecutionContext;
+use crate::kinds::tile_cache::{TileCache, DEM_TTL_S, OPEN_METEO_TTL_S};
 use crate::NodeError;
 
 pub(crate) fn collar_output_crs_mode(job: &JobEnvelope) -> &str {
@@ -1594,57 +1595,6 @@ pub(crate) async fn run_xyz_to_surface_impl(
     })
 }
 
-async fn fetch_open_meteo_elevations(
-    lat_lon: &[(f64, f64)],
-    timeout_ms: u64,
-) -> Vec<Option<f64>> {
-    if lat_lon.is_empty() {
-        return Vec::new();
-    }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(timeout_ms.max(1000)))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-    let mut out: Vec<Option<f64>> = Vec::with_capacity(lat_lon.len());
-    let chunk = 100usize;
-    for part in lat_lon.chunks(chunk) {
-        let lat_csv = part
-            .iter()
-            .map(|p| format!("{:.7}", p.0))
-            .collect::<Vec<_>>()
-            .join(",");
-        let lon_csv = part
-            .iter()
-            .map(|p| format!("{:.7}", p.1))
-            .collect::<Vec<_>>()
-            .join(",");
-        let req = client
-            .get("https://api.open-meteo.com/v1/elevation")
-            .query(&[("latitude", lat_csv), ("longitude", lon_csv)]);
-        let resp = match req.send().await {
-            Ok(r) => r,
-            Err(_) => {
-                out.extend((0..part.len()).map(|_| None));
-                continue;
-            }
-        };
-        let json = match resp.json::<serde_json::Value>().await {
-            Ok(v) => v,
-            Err(_) => {
-                out.extend((0..part.len()).map(|_| None));
-                continue;
-            }
-        };
-        if let Some(arr) = json.get("elevation").and_then(|v| v.as_array()) {
-            for i in 0..part.len() {
-                out.push(arr.get(i).and_then(|v| v.as_f64()));
-            }
-        } else {
-            out.extend((0..part.len()).map(|_| None));
-        }
-    }
-    out
-}
 
 fn bilinear_sample_grid(
     ncols: usize,
@@ -1734,63 +1684,221 @@ fn parse_aai_grid(text: &str) -> Option<(usize, usize, f64, f64, f64, f64, Vec<O
     Some((ncols, nrows, xll, yll, cell, nodata, vals))
 }
 
-async fn fetch_opentopography_elevations(
+
+// ── Cached elevation fetch wrappers ──────────────────────────────────────────
+//
+// These wrappers sit in front of the raw API functions and transparently read
+// from / write to the disk tile cache.  A cache miss falls through to the
+// real HTTP request; the response is stored so subsequent calls with the same
+// logical inputs skip the network entirely.
+
+/// Cache-aware wrapper around `fetch_opentopography_elevations`.
+///
+/// Cache key: `"opentopo:{api_key_prefix8}:{s:.4}:{w:.4}:{n:.4}:{e:.4}"` where
+/// s/w/n/e are the **padded** bbox values (what would be sent to the API),
+/// rounded to 4 decimal places (≈ 11 m at the equator) to absorb tiny
+/// floating-point variations without producing spurious misses.
+///
+/// Cache value: raw AAI Grid text, re-sampled on every cache hit so the caller
+/// receives correctly-sized `Vec<Option<f64>>` for any point set within the bbox.
+async fn fetch_opentopography_cached(
     lat_lon: &[(f64, f64)],
     api_key: &str,
     timeout_ms: u64,
+    cache: &TileCache,
 ) -> Vec<Option<f64>> {
     if lat_lon.is_empty() || api_key.trim().is_empty() {
         return Vec::new();
     }
-    let mut south = f64::INFINITY;
-    let mut north = f64::NEG_INFINITY;
-    let mut west = f64::INFINITY;
-    let mut east = f64::NEG_INFINITY;
-    for (lat, lon) in lat_lon.iter().copied() {
-        south = south.min(lat);
-        north = north.max(lat);
-        west = west.min(lon);
-        east = east.max(lon);
-    }
+
+    // Compute the padded bbox (mirrors the logic inside the raw fetch fn).
+    let (mut south, mut north, mut west, mut east) = {
+        let mut s = f64::INFINITY;
+        let mut n = f64::NEG_INFINITY;
+        let mut w = f64::INFINITY;
+        let mut e = f64::NEG_INFINITY;
+        for &(lat, lon) in lat_lon {
+            s = s.min(lat);
+            n = n.max(lat);
+            w = w.min(lon);
+            e = e.max(lon);
+        }
+        (s, n, w, e)
+    };
     if !south.is_finite() || !north.is_finite() || !west.is_finite() || !east.is_finite() {
         return vec![None; lat_lon.len()];
     }
     let pad_lat = ((north - south).abs() * 0.01).max(1e-5);
     let pad_lon = ((east - west).abs() * 0.01).max(1e-5);
-    let south = (south - pad_lat).max(-90.0);
-    let north = (north + pad_lat).min(90.0);
-    let west = (west - pad_lon).max(-180.0);
-    let east = (east + pad_lon).min(180.0);
+    south = (south - pad_lat).max(-90.0);
+    north = (north + pad_lat).min(90.0);
+    west  = (west  - pad_lon).max(-180.0);
+    east  = (east  + pad_lon).min(180.0);
 
+    // Use only the first 8 hex chars of the API key hash (never log the key).
+    let key_tag = {
+        use sha2::{Digest, Sha256};
+        let h = hex::encode(Sha256::digest(api_key.as_bytes()));
+        h[..8].to_string()
+    };
+    let cache_key = format!(
+        "opentopo:{key_tag}:{:.4}:{:.4}:{:.4}:{:.4}",
+        south, west, north, east
+    );
+
+    // ── Cache hit: re-sample the stored AAI grid for the requested points ──
+    if let Some(raw) = cache.get("dem", &cache_key).await {
+        if let Ok(text) = std::str::from_utf8(&raw) {
+            if let Some((ncols, nrows, xll, yll, cell, _nodata, vals)) = parse_aai_grid(text) {
+                let sampled: Vec<Option<f64>> = lat_lon
+                    .iter()
+                    .map(|(lat, lon)| {
+                        bilinear_sample_grid(ncols, nrows, xll, yll, cell, &vals, *lon, *lat)
+                    })
+                    .collect();
+                // Only trust the hit if we got a reasonable number of values
+                if sampled.iter().filter(|v| v.is_some()).count() > 0 {
+                    return sampled;
+                }
+            }
+        }
+    }
+
+    // ── Cache miss: perform the real HTTP fetch ────────────────────────────
+    //
+    // We re-implement the fetch here (duplicating a bit of code from the
+    // private `fetch_opentopography_elevations`) so we can intercept the raw
+    // AAI text before it is parsed — that text is what we cache.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms.max(1000)))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
-    let req = client
+
+    let text = match client
         .get("https://portal.opentopography.org/API/globaldem")
         .query(&[
             ("demtype", "COP30"),
-            ("south", &format!("{south:.8}")),
-            ("north", &format!("{north:.8}")),
-            ("west", &format!("{west:.8}")),
-            ("east", &format!("{east:.8}")),
+            ("south",  &format!("{south:.8}")),
+            ("north",  &format!("{north:.8}")),
+            ("west",   &format!("{west:.8}")),
+            ("east",   &format!("{east:.8}")),
             ("outputFormat", "AAIGrid"),
             ("API_Key", api_key),
-        ]);
-    let text = match req.send().await {
+        ])
+        .send()
+        .await
+    {
         Ok(resp) => match resp.text().await {
             Ok(t) => t,
             Err(_) => return vec![None; lat_lon.len()],
         },
         Err(_) => return vec![None; lat_lon.len()],
     };
-    let Some((ncols, nrows, xll, yll, cell, _nodata, vals)) = parse_aai_grid(&text) else {
-        return vec![None; lat_lon.len()];
+
+    // Cache the raw AAI text (only if it actually parsed successfully).
+    let result = if let Some((ncols, nrows, xll, yll, cell, _nodata, vals)) = parse_aai_grid(&text) {
+        let sampled: Vec<Option<f64>> = lat_lon
+            .iter()
+            .map(|(lat, lon)| bilinear_sample_grid(ncols, nrows, xll, yll, cell, &vals, *lon, *lat))
+            .collect();
+        // Store the raw text so future runs with the same bbox skip the fetch.
+        cache.put("dem", &cache_key, text.as_bytes(), DEM_TTL_S).await;
+        sampled
+    } else {
+        vec![None; lat_lon.len()]
     };
-    lat_lon
-        .iter()
-        .map(|(lat, lon)| bilinear_sample_grid(ncols, nrows, xll, yll, cell, &vals, *lon, *lat))
-        .collect()
+
+    result
+}
+
+/// Cache-aware wrapper around `fetch_open_meteo_elevations`.
+///
+/// Each 100-point batch is cached independently.  Cache key:
+/// `"open-meteo:{hash_of_rounded_lat_lons}"` where lat/lon values are rounded
+/// to 4 decimal places before hashing.
+async fn fetch_open_meteo_cached(
+    lat_lon: &[(f64, f64)],
+    timeout_ms: u64,
+    cache: &TileCache,
+) -> Vec<Option<f64>> {
+    if lat_lon.is_empty() {
+        return Vec::new();
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms.max(1000)))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+
+    let mut out: Vec<Option<f64>> = Vec::with_capacity(lat_lon.len());
+    let chunk = 100usize;
+
+    for part in lat_lon.chunks(chunk) {
+        // Build a stable, rounded string for the cache key.
+        let rounded_key: String = part
+            .iter()
+            .map(|(lat, lon)| format!("{:.4},{:.4}", lat, lon))
+            .collect::<Vec<_>>()
+            .join("|");
+        let cache_key = format!("open-meteo:{rounded_key}");
+
+        // ── Cache hit ──────────────────────────────────────────────────────
+        if let Some(raw) = cache.get("dem", &cache_key).await {
+            if let Ok(v) = serde_json::from_slice::<Vec<Option<f64>>>(&raw) {
+                if v.len() == part.len() {
+                    out.extend(v);
+                    continue;
+                }
+            }
+        }
+
+        // ── Cache miss: real HTTP request ──────────────────────────────────
+        let lat_csv = part
+            .iter()
+            .map(|p| format!("{:.7}", p.0))
+            .collect::<Vec<_>>()
+            .join(",");
+        let lon_csv = part
+            .iter()
+            .map(|p| format!("{:.7}", p.1))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let resp = match client
+            .get("https://api.open-meteo.com/v1/elevation")
+            .query(&[("latitude", lat_csv), ("longitude", lon_csv)])
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                out.extend((0..part.len()).map(|_| None));
+                continue;
+            }
+        };
+        let json = match resp.json::<serde_json::Value>().await {
+            Ok(v) => v,
+            Err(_) => {
+                out.extend((0..part.len()).map(|_| None));
+                continue;
+            }
+        };
+        let batch: Vec<Option<f64>> = if let Some(arr) = json.get("elevation").and_then(|v| v.as_array()) {
+            (0..part.len())
+                .map(|i| arr.get(i).and_then(|v| v.as_f64()))
+                .collect()
+        } else {
+            vec![None; part.len()]
+        };
+
+        // Persist for future runs.
+        if let Ok(bytes) = serde_json::to_vec(&batch) {
+            cache.put("dem", &cache_key, &bytes, OPEN_METEO_TTL_S).await;
+        }
+        out.extend(batch);
+    }
+
+    out
 }
 
 /// Fetch DEM elevations for inferred AOI using a public API; fallback to XYZ-IDW when network unavailable.
@@ -1988,18 +2096,24 @@ pub(crate) async fn run_dem_fetch_impl(
         .ok()
         .or_else(|| std::env::var("OPENTOPOGRAPHY_API_KEY").ok())
         .unwrap_or_default();
+
+    // Construct the tile cache from the artifact root.  All elevation
+    // responses are stored under {artifact_root}/../tile-cache/dem/ and
+    // survive across pipeline re-runs, avoiding redundant API calls.
+    let tile_cache = TileCache::from_artifact_root(ctx.artifact_root);
+
     let mut provider_name = "open_meteo_elevation_api";
     let fetched = if !ot_key.trim().is_empty() {
-        let ot = fetch_opentopography_elevations(&request_pts, &ot_key, timeout_ms).await;
+        let ot = fetch_opentopography_cached(&request_pts, &ot_key, timeout_ms, &tile_cache).await;
         let ok = ot.iter().filter(|v| v.is_some()).count();
         if ok > 0 {
             provider_name = "opentopography_globaldem_cop30";
             ot
         } else {
-            fetch_open_meteo_elevations(&request_pts, timeout_ms).await
+            fetch_open_meteo_cached(&request_pts, timeout_ms, &tile_cache).await
         }
     } else {
-        fetch_open_meteo_elevations(&request_pts, timeout_ms).await
+        fetch_open_meteo_cached(&request_pts, timeout_ms, &tile_cache).await
     };
     let mut fetch_iter = fetched.into_iter();
     let mut grid_values: Vec<Option<f64>> = Vec::with_capacity(nx * ny);
