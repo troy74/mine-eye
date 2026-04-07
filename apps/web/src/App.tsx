@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SignInButton, SignUpButton, UserButton, useAuth, useUser } from "@clerk/clerk-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { AoiBboxEditor } from "./AoiBboxEditor";
 import { extractBboxAndEpsg, toWgs84Bbox, type AoiBbox } from "./aoiBounds";
 import { GraphCanvas } from "./GraphCanvas";
@@ -39,6 +40,7 @@ import {
   deleteProject,
   getActiveProjectId,
   loadProjects,
+  setProjectStorageScope,
   setActiveProjectId,
   upsertProject,
   type StoredProject,
@@ -82,7 +84,7 @@ function collectWorkspaceUsedEpsg(nodes: ApiNode[]): number[] {
   return [...out.values()].sort((a, b) => a - b);
 }
 
-export default function App() {
+function AuthenticatedApp({ authUserId }: { authUserId: string }) {
   const [projects, setProjects] = useState<StoredProject[]>(loadProjects);
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(null);
   const [graphId, setGraphId] = useState<string | null>(null);
@@ -287,7 +289,7 @@ export default function App() {
         );
       } else {
         setStatus(
-          `Queued ${nq} job(s)${ns ? `; ${ns} skipped (manual)` : ""}. Run worker, then refresh.`
+          `Queued ${nq} job(s)${ns ? `; ${ns} skipped (manual)` : ""}. Run worker if needed, then refresh.`
         );
       }
       refreshAll();
@@ -326,7 +328,7 @@ export default function App() {
       setEditorTabs({});
       setPendingProjectEpsg(null);
       setStatus(
-        "Demo graph ready. Queue pipeline run, start worker, then refresh. Project saved in this browser."
+        "Demo graph ready. Use Run pipeline, start worker if needed, then refresh. Project saved in this browser."
       );
       setGraphRefreshToken((t) => t + 1);
       void refreshArtifacts(data.graph_id);
@@ -344,13 +346,13 @@ export default function App() {
     try {
       const ws = await createWorkspace({
         name: name.trim(),
-        owner_user_id: "local",
+        owner_user_id: authUserId,
         project_crs: { epsg: 4326, wkt: null },
       });
       const g = await createGraph(ws.id, {
         name: `${name.trim()} · graph`,
         workspace_id: ws.id,
-        owner_user_id: "local",
+        owner_user_id: authUserId,
       });
       const sp: StoredProject = {
         localId: crypto.randomUUID(),
@@ -411,7 +413,7 @@ export default function App() {
     let cancelled = false;
     const run = async () => {
       try {
-        await checkoutGraphBranch(graphId, activeBranchId, { created_by: "local" });
+        await checkoutGraphBranch(graphId, activeBranchId, { created_by: authUserId });
         if (!cancelled) refreshAll();
       } catch (e) {
         if (!cancelled) {
@@ -423,7 +425,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeBranchId, graphId, refreshAll]);
+  }, [activeBranchId, authUserId, graphId, refreshAll]);
 
   const onCreateBranch = useCallback(
     async (name: string) => {
@@ -431,26 +433,26 @@ export default function App() {
       const base = branches.find((b) => b.id === activeBranchId) ?? branches[0];
       await createGraphBranch(graphId, {
         name,
-        created_by: "local",
+        created_by: authUserId,
         base_revision_id: base?.head_revision_id ?? null,
         status: "draft",
       });
       await refreshBranching(graphId);
     },
-    [activeBranchId, branches, graphId, refreshBranching]
+    [activeBranchId, authUserId, branches, graphId, refreshBranching]
   );
 
   const onCommitCurrentToBranch = useCallback(
     async (branchId: string, event: string) => {
       if (!graphId) return;
       await commitCurrentToBranch(graphId, branchId, {
-        created_by: "local",
+        created_by: authUserId,
         event,
         details: { from_ui: true },
       });
       await refreshBranching(graphId);
     },
-    [graphId, refreshBranching]
+    [authUserId, graphId, refreshBranching]
   );
 
   const onPromoteBranch = useCallback(
@@ -459,7 +461,7 @@ export default function App() {
       const res = await executeGraphPromotion(graphId, {
         source_branch_id: sourceBranchId,
         target_branch_id: targetBranchId,
-        created_by: "local",
+        created_by: authUserId,
         apply_to_graph: true,
       });
       if (res.status === "conflict") {
@@ -470,7 +472,7 @@ export default function App() {
       await refreshBranching(graphId);
       refreshAll();
     },
-    [graphId, refreshAll, refreshBranching]
+    [authUserId, graphId, refreshAll, refreshBranching]
   );
 
   const onDiffRevisions = useCallback(
@@ -681,33 +683,116 @@ export default function App() {
   }, [applyProjectCrs, pendingProjectEpsg, workspaceId]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className="mineeye-app-shell" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header
+        className="mineeye-topbar"
         style={{
-          padding: "12px 16px",
+          padding: "10px 18px",
           borderBottom: "1px solid #30363d",
           display: "flex",
-          gap: 12,
+          justifyContent: "space-between",
           alignItems: "center",
-          flexWrap: "wrap",
+          gap: 16,
+          background:
+            "linear-gradient(180deg, rgba(13,17,23,0.98) 0%, rgba(15,20,25,0.98) 100%)",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.16)",
         }}
       >
-        <strong>mine-eye</strong>
-        {graphId && (
-          <>
-            <button
-              type="button"
-              onClick={() => void queuePipelineRun()}
-              disabled={runBusy}
-            >
-              {runBusy ? "Queuing…" : "Queue pipeline run"}
-            </button>
-            <button type="button" onClick={refreshAll}>
-              Refresh graph + artifacts
-            </button>
-          </>
-        )}
-        <span style={{ opacity: 0.85, fontSize: 14 }}>{status}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0, flex: 1 }}>
+          <strong
+            className="mineeye-wordmark"
+            style={{
+              fontSize: 20,
+              fontWeight: 800,
+              letterSpacing: "-0.03em",
+              color: "#f0f6fc",
+              whiteSpace: "nowrap",
+            }}
+          >
+            mine-eye
+          </strong>
+          <div
+            className="mineeye-status-pill"
+            style={{
+              minWidth: 0,
+              maxWidth: "min(820px, 100%)",
+              padding: "6px 12px",
+              borderRadius: 999,
+              border: "1px solid rgba(56,139,253,0.16)",
+              background: "rgba(88,166,255,0.06)",
+              color: "#a5d6ff",
+              fontSize: 12,
+              lineHeight: 1.3,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {status || (graphId ? "Workspace ready." : "Choose a project or seed a demo graph.")}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <button
+            type="button"
+            title="Settings"
+            aria-label="Settings"
+            className="mineeye-topbar-icon-btn"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 10,
+              border: "1px solid #30363d",
+              background: "#161b22",
+              color: "#c9d1d9",
+              display: "grid",
+              placeItems: "center",
+              cursor: "default",
+              padding: 0,
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+              <path
+                d="M6.7 1.3h2.6l.4 1.9a5 5 0 0 1 1.2.5l1.7-1 1.8 1.8-1 1.7c.2.4.4.8.5 1.2l1.9.4v2.6l-1.9.4a5 5 0 0 1-.5 1.2l1 1.7-1.8 1.8-1.7-1a5 5 0 0 1-1.2.5l-.4 1.9H6.7l-.4-1.9a5 5 0 0 1-1.2-.5l-1.7 1-1.8-1.8 1-1.7a5 5 0 0 1-.5-1.2l-1.9-.4V7.3l1.9-.4a5 5 0 0 1 .5-1.2l-1-1.7 1.8-1.8 1.7 1a5 5 0 0 1 1.2-.5l.4-1.9Z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.1"
+                strokeLinejoin="round"
+              />
+              <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.1" />
+            </svg>
+          </button>
+          <div
+            className="mineeye-avatar-btn"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: "50%",
+              border: "1px solid rgba(88,166,255,0.35)",
+              background: "linear-gradient(180deg, #1f6feb 0%, #1b4f9c 100%)",
+              color: "#f0f6fc",
+              display: "grid",
+              placeItems: "center",
+              overflow: "hidden",
+              boxShadow: "0 8px 20px rgba(0, 0, 0, 0.18)",
+            }}
+          >
+            <UserButton
+              appearance={{
+                elements: {
+                  avatarBox: {
+                    width: "100%",
+                    height: "100%",
+                  },
+                  userButtonTrigger: {
+                    width: "100%",
+                    height: "100%",
+                    borderRadius: "999px",
+                  },
+                },
+              }}
+            />
+          </div>
+        </div>
       </header>
       <div
         style={{
@@ -724,6 +809,7 @@ export default function App() {
               onClick={() => setSidebarCollapsed(true)}
               title="Minimize project panel (Ctrl/Cmd+B)"
               aria-label="Minimize project panel"
+              className="mineeye-sidebar-toggle"
               style={{
                 position: "absolute",
                 top: 8,
@@ -773,6 +859,7 @@ export default function App() {
           </div>
         ) : (
           <div
+            className="mineeye-shell-rail"
             style={{
               borderRight: "1px solid #30363d",
               background: "#0f1419",
@@ -789,6 +876,7 @@ export default function App() {
               onClick={() => setSidebarCollapsed(false)}
               title="Expand project panel (Ctrl/Cmd+B)"
               aria-label="Expand project panel"
+              className="mineeye-sidebar-toggle"
               style={{
                 width: 28,
                 height: 28,
@@ -807,6 +895,7 @@ export default function App() {
               </svg>
             </button>
             <div
+              className="mineeye-shell-rail-label"
               style={{
                 writingMode: "vertical-rl",
                 transform: "rotate(180deg)",
@@ -820,9 +909,10 @@ export default function App() {
             </div>
           </div>
         )}
-        <div style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
+        <div className="mineeye-main-surface" style={{ display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
           <div
             role="tablist"
+            className="mineeye-main-tabs"
             style={{
               display: "flex",
               gap: 0,
@@ -832,6 +922,7 @@ export default function App() {
             }}
           >
             <div
+              className="mineeye-workspace-tab-shell"
               style={{
                 display: "flex",
                 alignItems: "stretch",
@@ -843,7 +934,7 @@ export default function App() {
             >
               <button
                 type="button"
-                className={`mineeye-play ${runBusy ? "mineeye-play-running" : ""}`}
+                className={`mineeye-play mineeye-play-primary ${runBusy ? "mineeye-play-running" : ""}`}
                 disabled={!graphId || runBusy}
                 title={
                   runBusy
@@ -852,7 +943,7 @@ export default function App() {
                 }
                 aria-label="Queue pipeline run"
                 onClick={() => void queuePipelineRun()}
-                style={{ alignSelf: "center", marginLeft: 8, marginRight: 2 }}
+                style={{ alignSelf: "center", marginLeft: 8, marginRight: 4 }}
               >
                 <svg
                   className="mineeye-play-icon"
@@ -862,6 +953,26 @@ export default function App() {
                   aria-hidden
                 >
                   <polygon points="2,1 12,7 2,13" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="mineeye-play mineeye-play-secondary"
+                disabled={!graphId}
+                title="Refresh graph, artifacts, and branch state"
+                aria-label="Refresh graph and artifacts"
+                onClick={refreshAll}
+                style={{ alignSelf: "center", marginRight: 6 }}
+              >
+                <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden>
+                  <path
+                    d="M13.5 3.5V6h-2.5M2.5 12.5V10H5m7.8-2A4.8 4.8 0 0 0 4.4 4.8M3.2 8A4.8 4.8 0 0 0 11.6 11.2"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
                 </svg>
               </button>
               <TabButton
@@ -1164,6 +1275,82 @@ export default function App() {
   );
 }
 
+function SignedOutScreen() {
+  const cardStyle = {
+    width: "min(460px, calc(100vw - 32px))",
+    borderRadius: 24,
+    border: "1px solid rgba(88,166,255,0.2)",
+    background: "linear-gradient(180deg, rgba(13,17,23,0.94), rgba(22,27,34,0.94))",
+    boxShadow: "0 24px 60px rgba(1, 4, 9, 0.45)",
+    padding: 28,
+  } satisfies CSSProperties;
+
+  const buttonStyle = {
+    border: "1px solid rgba(88,166,255,0.28)",
+    borderRadius: 12,
+    padding: "10px 14px",
+    background: "rgba(33, 38, 45, 0.92)",
+    color: "#e6edf3",
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: "pointer",
+  } satisfies CSSProperties;
+
+  return (
+    <div className="mineeye-app-shell" style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 16 }}>
+      <div style={cardStyle}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
+          <div style={{ width: 12, height: 12, borderRadius: 999, background: "#3fb950", boxShadow: "0 0 20px rgba(63,185,80,0.6)" }} />
+          <div>
+            <div className="mineeye-wordmark" style={{ fontSize: 30, fontWeight: 800, color: "#f0f6fc" }}>
+              mine-eye
+            </div>
+            <div style={{ color: "#8b949e", fontSize: 14 }}>
+              Sign in to access your workspaces and 3D analysis tools.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <SignInButton mode="modal">
+            <button type="button" style={{ ...buttonStyle, background: "linear-gradient(180deg, #2ea043 0%, #238636 100%)", borderColor: "rgba(46,160,67,0.45)" }}>
+              Sign in
+            </button>
+          </SignInButton>
+          <SignUpButton mode="modal">
+            <button type="button" style={buttonStyle}>
+              Create account
+            </button>
+          </SignUpButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const { isLoaded, isSignedIn, userId, orgId } = useAuth();
+  const { user } = useUser();
+  const resolvedUserId = user?.id ?? userId ?? null;
+  const resolvedOrgId = resolvedUserId ? (orgId ?? `personal:${resolvedUserId}`) : null;
+  setProjectStorageScope(
+    resolvedUserId && resolvedOrgId ? `${resolvedOrgId}:${resolvedUserId}` : null
+  );
+
+  if (!isLoaded) {
+    return (
+      <div className="mineeye-app-shell" style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
+        <div style={{ color: "#8b949e", fontSize: 14 }}>Loading authentication…</div>
+      </div>
+    );
+  }
+
+  if (!isSignedIn || !resolvedUserId) {
+    return <SignedOutScreen />;
+  }
+
+  return <AuthenticatedApp authUserId={resolvedUserId} />;
+}
+
 function TabButton({
   active,
   onClick,
@@ -1182,6 +1369,7 @@ function TabButton({
     <div
       role="tab"
       aria-selected={active}
+      className={`mineeye-tab ${active ? "mineeye-tab-active" : ""}${suppressBorder ? " mineeye-tab-embedded" : ""}`}
       style={{
         display: "flex",
         alignItems: "center",
@@ -1196,6 +1384,7 @@ function TabButton({
       <button
         type="button"
         onClick={onClick}
+        className="mineeye-tab-button"
         style={{
           padding: "10px 14px",
           border: "none",
@@ -1214,6 +1403,7 @@ function TabButton({
           type="button"
           onClick={onClose}
           title="Close tab"
+          className="mineeye-tab-close"
           style={{
             border: "none",
             background: "transparent",
@@ -1223,7 +1413,7 @@ function TabButton({
             fontSize: 14,
           }}
         >
-          x
+          ×
         </button>
       )}
     </div>

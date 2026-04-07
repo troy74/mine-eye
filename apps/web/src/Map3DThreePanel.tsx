@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { TrackballControls } from "@react-three/drei";
+import { Text, TrackballControls } from "@react-three/drei";
 import * as THREE from "three";
 import {
   api,
@@ -372,6 +372,287 @@ const DEFAULT_LAYER_STYLE: LayerVizStyle = {
   hmGridSize: 256,
   hmPower: 2,
 };
+
+type ContourJoinPoint = {
+  x: number;
+  y: number;
+  z: number;
+  hasExplicitZ: boolean;
+};
+
+type ContourPolyline = {
+  level: number | null;
+  sourceLayerId?: string;
+  points: ContourJoinPoint[];
+  closed: boolean;
+};
+
+const immutableArtifactTextCache = new Map<string, string>();
+const immutableArtifactTextInflight = new Map<string, Promise<string>>();
+
+function defaultLayerStyleForId(layerId: string): LayerVizStyle {
+  const isContourLayer = layerId === "contours" || layerId.startsWith("contours__");
+  return {
+    ...DEFAULT_LAYER_STYLE,
+    ...(isContourLayer ? { showLabels: true, labelSize: 12 } : {}),
+  };
+}
+
+function contourPointDistanceSq(a: ContourJoinPoint, b: ContourJoinPoint): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return dx * dx + dy * dy;
+}
+
+function contourPointLerp(a: ContourJoinPoint, b: ContourJoinPoint, t: number): ContourJoinPoint {
+  return {
+    x: a.x * (1 - t) + b.x * t,
+    y: a.y * (1 - t) + b.y * t,
+    z: a.z * (1 - t) + b.z * t,
+    hasExplicitZ: a.hasExplicitZ && b.hasExplicitZ,
+  };
+}
+
+function dedupeContourPoints(points: ContourJoinPoint[], tolSq: number): ContourJoinPoint[] {
+  if (points.length <= 1) return points.slice();
+  const out: ContourJoinPoint[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    if (contourPointDistanceSq(out[out.length - 1], points[i]) > tolSq) out.push(points[i]);
+  }
+  return out;
+}
+
+function contourJoinTolerance(segments: Segment3D[]): number {
+  if (segments.length === 0) return 1e-6;
+  const lengths = segments
+    .map((s) => Math.hypot(s.to[0] - s.from[0], s.to[1] - s.from[1]))
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+  let xmin = Infinity;
+  let xmax = -Infinity;
+  let ymin = Infinity;
+  let ymax = -Infinity;
+  for (const s of segments) {
+    xmin = Math.min(xmin, s.from[0], s.to[0]);
+    xmax = Math.max(xmax, s.from[0], s.to[0]);
+    ymin = Math.min(ymin, s.from[1], s.to[1]);
+    ymax = Math.max(ymax, s.from[1], s.to[1]);
+  }
+  const span = Math.max(1e-6, xmax - xmin, ymax - ymin);
+  const p10 = lengths.length > 0 ? percentile(lengths, 10) : 0;
+  return Math.max(span * 1e-6, p10 * 0.12, 1e-6);
+}
+
+function stitchContourSegments(segments: Segment3D[]): ContourPolyline[] {
+  if (segments.length === 0) return [];
+  const grouped = new Map<string, Segment3D[]>();
+  for (const seg of segments) {
+    const levelKey =
+      typeof seg.contourLevel === "number" && Number.isFinite(seg.contourLevel)
+        ? seg.contourLevel.toFixed(6)
+        : "na";
+    const key = `${seg.sourceLayerId ?? ""}::${levelKey}`;
+    const list = grouped.get(key);
+    if (list) list.push(seg);
+    else grouped.set(key, [seg]);
+  }
+
+  const out: ContourPolyline[] = [];
+  for (const group of grouped.values()) {
+    const tol = contourJoinTolerance(group);
+    const tolSq = tol * tol;
+    const entries = group.map((seg) => ({
+      used: false,
+      sourceLayerId: seg.sourceLayerId,
+      level:
+        typeof seg.contourLevel === "number" && Number.isFinite(seg.contourLevel)
+          ? seg.contourLevel
+          : null,
+      a: {
+        x: seg.from[0],
+        y: seg.from[1],
+        z: seg.from[2],
+        hasExplicitZ: seg.hasExplicitZ !== false,
+      },
+      b: {
+        x: seg.to[0],
+        y: seg.to[1],
+        z: seg.to[2],
+        hasExplicitZ: seg.hasExplicitZ !== false,
+      },
+    }));
+
+    const tryExtend = (poly: ContourJoinPoint[], atHead: boolean): boolean => {
+      const target = atHead ? poly[0] : poly[poly.length - 1];
+      let bestIdx = -1;
+      let bestDist = Number.POSITIVE_INFINITY;
+      let matchOn: "a" | "b" | null = null;
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (entry.used) continue;
+        const dA = contourPointDistanceSq(target, entry.a);
+        if (dA <= tolSq && dA < bestDist) {
+          bestIdx = i;
+          bestDist = dA;
+          matchOn = "a";
+        }
+        const dB = contourPointDistanceSq(target, entry.b);
+        if (dB <= tolSq && dB < bestDist) {
+          bestIdx = i;
+          bestDist = dB;
+          matchOn = "b";
+        }
+      }
+      if (bestIdx < 0 || !matchOn) return false;
+      const entry = entries[bestIdx];
+      entry.used = true;
+      const matched = matchOn === "a" ? entry.a : entry.b;
+      const other = matchOn === "a" ? entry.b : entry.a;
+      const snapped = contourPointLerp(target, matched, 0.5);
+      if (atHead) {
+        poly[0] = snapped;
+        poly.unshift(other);
+      } else {
+        poly[poly.length - 1] = snapped;
+        poly.push(other);
+      }
+      return true;
+    };
+
+    for (let i = 0; i < entries.length; i++) {
+      if (entries[i].used) continue;
+      entries[i].used = true;
+      const poly: ContourJoinPoint[] = [entries[i].a, entries[i].b];
+      while (true) {
+        const tailExtended = tryExtend(poly, false);
+        const headExtended = tryExtend(poly, true);
+        if (!tailExtended && !headExtended) break;
+      }
+      let closed = false;
+      let points = dedupeContourPoints(poly, tolSq);
+      if (points.length > 2 && contourPointDistanceSq(points[0], points[points.length - 1]) <= tolSq) {
+        points = points.slice(0, -1);
+        closed = true;
+      }
+      if (points.length >= 2) {
+        out.push({
+          level: entries[i].level,
+          sourceLayerId: entries[i].sourceLayerId,
+          points,
+          closed,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function smoothContourPolyline(
+  points: ContourJoinPoint[],
+  closed: boolean,
+  passes: number
+): ContourJoinPoint[] {
+  let current = points.slice();
+  for (let pass = 0; pass < passes; pass++) {
+    if (current.length < 3) break;
+    if (closed) {
+      const next: ContourJoinPoint[] = [];
+      for (let i = 0; i < current.length; i++) {
+        const a = current[i];
+        const b = current[(i + 1) % current.length];
+        next.push(contourPointLerp(a, b, 0.25), contourPointLerp(a, b, 0.75));
+      }
+      current = next;
+    } else {
+      const next: ContourJoinPoint[] = [current[0]];
+      for (let i = 0; i < current.length - 1; i++) {
+        const a = current[i];
+        const b = current[i + 1];
+        next.push(contourPointLerp(a, b, 0.25), contourPointLerp(a, b, 0.75));
+      }
+      next.push(current[current.length - 1]);
+      current = next;
+    }
+  }
+  return current;
+}
+
+function polylineLength(points: THREE.Vector3[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += points[i - 1].distanceTo(points[i]);
+  return total;
+}
+
+function samplePolylineAtDistance(
+  points: THREE.Vector3[],
+  distance: number
+): { point: THREE.Vector3; tangent: THREE.Vector3 } | null {
+  if (points.length < 2) return null;
+  let remaining = Math.max(0, distance);
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const segLen = a.distanceTo(b);
+    if (segLen <= 1e-9) continue;
+    if (remaining <= segLen || i === points.length - 1) {
+      const t = Math.max(0, Math.min(1, remaining / segLen));
+      return {
+        point: a.clone().lerp(b, t),
+        tangent: b.clone().sub(a).normalize(),
+      };
+    }
+    remaining -= segLen;
+  }
+  return null;
+}
+
+function normalizeContourLabelAngle(angle: number): number {
+  let out = angle;
+  if (out > Math.PI / 2 || out < -Math.PI / 2) out += Math.PI;
+  while (out <= -Math.PI) out += Math.PI * 2;
+  while (out > Math.PI) out -= Math.PI * 2;
+  return out;
+}
+
+function formatContourLabel(level: number): string {
+  if (!Number.isFinite(level)) return "";
+  const rounded = Math.round(level);
+  return `${Object.is(rounded, -0) ? 0 : rounded} m`;
+}
+
+function sameStringArray(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+async function fetchArtifactTextCached(url: string): Promise<string> {
+  const resolved = api(url);
+  const immutableKey = /(?:\?|&)h=/.test(resolved) ? resolved : null;
+  if (immutableKey) {
+    const cached = immutableArtifactTextCache.get(immutableKey);
+    if (cached !== undefined) return cached;
+    const inFlight = immutableArtifactTextInflight.get(immutableKey);
+    if (inFlight) return inFlight;
+    const request = fetch(resolved, { cache: "force-cache" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const txt = await r.text();
+        immutableArtifactTextCache.set(immutableKey, txt);
+        return txt;
+      })
+      .finally(() => {
+        immutableArtifactTextInflight.delete(immutableKey);
+      });
+    immutableArtifactTextInflight.set(immutableKey, request);
+    return request;
+  }
+  const r = await fetch(resolved, { cache: "no-store" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.text();
+}
 
 const PALETTE_GRADIENT: Record<string, string> = {
   inferno: "linear-gradient(to right, #000004, #420a68, #932667, #dd513a, #fca50a, #fcffa4)",
@@ -913,6 +1194,77 @@ function sampleTerrainZ(grid: TerrainGrid | null, x: number, y: number): number 
   return z0 * (1 - fy) + z1 * fy;
 }
 
+function buildDrapedOverlayGeometry({
+  xmin,
+  xmax,
+  ymin,
+  ymax,
+  segX,
+  segY,
+  groundTerrainGrid,
+  toLocal,
+  zLift,
+}: {
+  xmin: number;
+  xmax: number;
+  ymin: number;
+  ymax: number;
+  segX: number;
+  segY: number;
+  groundTerrainGrid: TerrainGrid | null;
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+  zLift: number;
+}): THREE.BufferGeometry | null {
+  if (!groundTerrainGrid) return null;
+  if (!(xmax > xmin) || !(ymax > ymin)) return null;
+  const sx = Math.max(1, Math.trunc(segX));
+  const sy = Math.max(1, Math.trunc(segY));
+  const positions = new Float32Array((sx + 1) * (sy + 1) * 3);
+  const uvs = new Float32Array((sx + 1) * (sy + 1) * 2);
+
+  for (let iy = 0; iy <= sy; iy++) {
+    const worldY = ymin + (iy / sy) * (ymax - ymin);
+    const sampleY = Math.max(groundTerrainGrid.ymin, Math.min(groundTerrainGrid.ymax, worldY));
+    for (let ix = 0; ix <= sx; ix++) {
+      const worldX = xmin + (ix / sx) * (xmax - xmin);
+      const sampleX = Math.max(groundTerrainGrid.xmin, Math.min(groundTerrainGrid.xmax, worldX));
+      const idx = iy * (sx + 1) + ix;
+      const terrainZ = sampleTerrainZ(groundTerrainGrid, sampleX, sampleY) ?? 0;
+      const p = toLocal(worldX, worldY, terrainZ + zLift);
+      positions[idx * 3 + 0] = p.x;
+      positions[idx * 3 + 1] = p.y;
+      positions[idx * 3 + 2] = p.z;
+      uvs[idx * 2 + 0] = ix / sx;
+      uvs[idx * 2 + 1] = 1 - iy / sy;
+    }
+  }
+
+  const triCount = sx * sy * 2;
+  const indices = new Uint32Array(triCount * 3);
+  let w = 0;
+  for (let iy = 0; iy < sy; iy++) {
+    for (let ix = 0; ix < sx; ix++) {
+      const i00 = iy * (sx + 1) + ix;
+      const i10 = i00 + 1;
+      const i01 = i00 + (sx + 1);
+      const i11 = i01 + 1;
+      indices[w++] = i00;
+      indices[w++] = i01;
+      indices[w++] = i10;
+      indices[w++] = i10;
+      indices[w++] = i01;
+      indices[w++] = i11;
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geom.setIndex(new THREE.BufferAttribute(indices, 1));
+  geom.computeVertexNormals();
+  return geom;
+}
+
 function resolvePointZ(point: Point3D, grid: TerrainGrid | null): number | null {
   if (point.hasExplicitZ !== false && Number.isFinite(point.z)) return point.z;
   const sampled = sampleTerrainZ(grid, point.x, point.y);
@@ -1142,10 +1494,160 @@ function SegmentTube({
   );
 }
 
+function ContourLayer3D({
+  layerId,
+  segs,
+  style,
+  toLocal,
+  sceneScale,
+  lift,
+  groundTerrainGrid,
+  radius,
+  opacity,
+  fixedColor,
+}: {
+  layerId: string;
+  segs: Segment3D[];
+  style: LayerVizStyle;
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+  sceneScale: number;
+  lift: number;
+  groundTerrainGrid: TerrainGrid | null;
+  radius: number;
+  opacity: number;
+  fixedColor?: string;
+}) {
+  const renderData = useMemo(() => {
+    const stitched = stitchContourSegments(segs);
+    if (stitched.length === 0) return { lines: [], labels: [] } as const;
+
+    const contourLevels = stitched
+      .map((poly) => poly.level)
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    const clMin = contourLevels.length ? Math.min(...contourLevels) : 0;
+    const clMax = contourLevels.length ? Math.max(...contourLevels) : 1;
+    const clRange = clMax - clMin || 1;
+    const stopsToUse =
+      style.colorStops?.length >= 2
+        ? style.colorStops
+        : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno;
+    const zLift = Math.max(0.01, sceneScale * 0.00018) + lift;
+    const labelFontSize = Math.max(sceneScale * 0.004, sceneScale * 0.012 * (style.labelSize / 12));
+    const labelHover = Math.max(radius * 2.8, labelFontSize * 0.32, sceneScale * 0.0003);
+
+    const lines: Array<{ id: string; color: string; points: THREE.Vector3[] }> = [];
+    const labels: Array<{
+      id: string;
+      text: string;
+      color: string;
+      position: THREE.Vector3;
+      rotationY: number;
+      fontSize: number;
+    }> = [];
+
+    stitched.forEach((poly, idx) => {
+      const passes = poly.points.length >= 8 ? 2 : poly.points.length >= 4 ? 1 : 0;
+      const smoothed = passes > 0 ? smoothContourPolyline(poly.points, poly.closed, passes) : poly.points;
+      const localPoints = smoothed.map((p) => {
+        const z = p.hasExplicitZ ? p.z : sampleTerrainZ(groundTerrainGrid, p.x, p.y) ?? p.z;
+        return toLocal(p.x, p.y, z + zLift);
+      });
+      const dedupedLocal: THREE.Vector3[] = [];
+      for (const pt of localPoints) {
+        const prev = dedupedLocal[dedupedLocal.length - 1];
+        if (!prev || prev.distanceToSquared(pt) > 1e-10) dedupedLocal.push(pt);
+      }
+      if (poly.closed && dedupedLocal.length > 2) {
+        const first = dedupedLocal[0];
+        const last = dedupedLocal[dedupedLocal.length - 1];
+        if (first.distanceToSquared(last) > 1e-10) dedupedLocal.push(first.clone());
+      }
+      if (dedupedLocal.length < 2) return;
+
+      const t =
+        typeof poly.level === "number"
+          ? Math.max(0, Math.min(1, (poly.level - clMin) / clRange))
+          : 0.5;
+      const lineColor = fixedColor ?? interpolateStopsColor(stopsToUse, t);
+      lines.push({ id: `${layerId}-line-${idx}`, color: lineColor, points: dedupedLocal });
+
+      if (!style.showLabels || typeof poly.level !== "number") return;
+      const labelText = formatContourLabel(poly.level);
+      if (!labelText) return;
+      const totalLength = polylineLength(dedupedLocal);
+      const estimatedWidth = Math.max(labelFontSize * 2.4, labelText.length * labelFontSize * 0.62);
+      if (totalLength < estimatedWidth * 1.8) return;
+      const idealSpacing = Math.max(estimatedWidth * 5, sceneScale * 0.18);
+      const labelCount = Math.min(3, Math.max(1, Math.floor(totalLength / idealSpacing)));
+      for (let labelIdx = 0; labelIdx < labelCount; labelIdx++) {
+        const sample = samplePolylineAtDistance(
+          dedupedLocal,
+          (totalLength * (labelIdx + 1)) / (labelCount + 1)
+        );
+        if (!sample) continue;
+        const tangent = sample.tangent.clone();
+        tangent.y = 0;
+        if (tangent.lengthSq() <= 1e-8) continue;
+        tangent.normalize();
+        const position = sample.point.clone();
+        position.y += labelHover;
+        labels.push({
+          id: `${layerId}-label-${idx}-${labelIdx}`,
+          text: labelText,
+          color: lineColor,
+          position,
+          rotationY: normalizeContourLabelAngle(Math.atan2(tangent.z, tangent.x)),
+          fontSize: labelFontSize,
+        });
+      }
+    });
+
+    return { lines, labels };
+  }, [fixedColor, groundTerrainGrid, layerId, lift, opacity, radius, sceneScale, segs, style, toLocal]);
+
+  return (
+    <group key={`layer-contours-${layerId}`}>
+      {renderData.lines.map((line) => (
+        <group key={line.id}>
+          {line.points.slice(1).map((to, i) => (
+            <SegmentTube
+              key={`${line.id}-seg-${i}`}
+              from={line.points[i]}
+              to={to}
+              radius={radius}
+              color={line.color}
+              opacity={opacity}
+            />
+          ))}
+        </group>
+      ))}
+      {renderData.labels.map((label) => (
+        <group
+          key={label.id}
+          position={[label.position.x, label.position.y, label.position.z]}
+          rotation={[0, label.rotationY, 0]}
+        >
+          <Text
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={label.fontSize}
+            color={label.color}
+            anchorX="center"
+            anchorY="middle"
+            outlineWidth={label.fontSize * 0.1}
+            outlineColor="#0d1117"
+          >
+            {label.text}
+          </Text>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 // ── 3-D IDW terrain heatmap ───────────────────────────────────────────────────
 // Computes an Inverse-Distance-Weighted grid from scattered assay points and
-// renders it as a flat canvas-textured plane, draped just above the terrain —
-// exactly the same approach as the 2-D Leaflet version.
+// renders it as a canvas-textured overlay draped onto the terrain mesh when
+// available, otherwise falls back to a flat plane.
 function HeatmapLayer3D({
   layerId,
   pts,
@@ -1224,11 +1726,26 @@ function HeatmapLayer3D({
     ctx.putImageData(img, 0, 0);
     const tex = new THREE.CanvasTexture(canvas);
     tex.flipY = false; // canvas yi=0=north; without this Three.js would reverse it
-    return { tex, xMin, xMax, yMin, yMax };
+    return { tex, xMin, xMax, yMin, yMax, gridSize: n };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pts, style.attributeKey, style.colorStops, style.palette, style.hmGridSize, style.hmPower, domain.lo, domain.hi]);
 
   useEffect(() => () => { result?.tex.dispose(); }, [result]);
+  const drapedGeom = useMemo(() => {
+    if (!result) return null;
+    return buildDrapedOverlayGeometry({
+      xmin: result.xMin,
+      xmax: result.xMax,
+      ymin: result.yMin,
+      ymax: result.yMax,
+      segX: Math.max(16, Math.min(192, result.gridSize - 1)),
+      segY: Math.max(16, Math.min(192, result.gridSize - 1)),
+      groundTerrainGrid,
+      toLocal,
+      zLift: lift + Math.max(0.04, sceneScale * 0.0003),
+    });
+  }, [groundTerrainGrid, lift, result, sceneScale, toLocal]);
+  useEffect(() => () => { drapedGeom?.dispose(); }, [drapedGeom]);
 
   if (!result) return null;
   const { tex, xMin, xMax, yMin, yMax } = result;
@@ -1252,6 +1769,23 @@ function HeatmapLayer3D({
   const elevation = maxTerrainZ + lift + Math.max(1, sceneScale * 0.0012);
   const center = toLocal(cx, cy, elevation);
 
+  if (drapedGeom) {
+    return (
+      <mesh key={`hm3d-${layerId}`} geometry={drapedGeom} renderOrder={5}>
+        <meshBasicMaterial
+          map={tex}
+          transparent
+          opacity={style.opacity * 0.82}
+          depthWrite={false}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-2}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    );
+  }
+
   return (
     <mesh
       key={`hm3d-${layerId}`}
@@ -1273,7 +1807,7 @@ function HeatmapLayer3D({
 
 // ── Pre-computed surface heatmap from assay_heatmap pipeline node ─────────────
 // Grid values are the measure (e.g. Au ppm), stored south→north (row 0 = ymin).
-// Rendered as a canvas-textured horizontal plane draped above terrain.
+// Rendered as a canvas-textured overlay draped onto terrain when available.
 function SurfaceHeatmapLayer3D({
   heatmapSurface,
   style,
@@ -1331,6 +1865,21 @@ function SurfaceHeatmapLayer3D({
   }, [heatmapSurface, style.colorStops, style.palette, style.rampNormMode, style.fixedMin, style.fixedMax]);
 
   useEffect(() => () => { result?.tex.dispose(); }, [result]);
+  const drapedGeom = useMemo(() => {
+    if (!result) return null;
+    return buildDrapedOverlayGeometry({
+      xmin: result.xmin,
+      xmax: result.xmax,
+      ymin: result.ymin,
+      ymax: result.ymax,
+      segX: Math.max(16, Math.min(192, heatmapSurface.grid.nx - 1)),
+      segY: Math.max(16, Math.min(192, heatmapSurface.grid.ny - 1)),
+      groundTerrainGrid,
+      toLocal,
+      zLift: lift + Math.max(0.04, sceneScale * 0.0003),
+    });
+  }, [groundTerrainGrid, heatmapSurface.grid.nx, heatmapSurface.grid.ny, lift, result, sceneScale, toLocal]);
+  useEffect(() => () => { drapedGeom?.dispose(); }, [drapedGeom]);
 
   if (!result) return null;
   const { tex, xmin, xmax, ymin, ymax } = result;
@@ -1349,6 +1898,23 @@ function SurfaceHeatmapLayer3D({
 
   const elevation = maxTerrainZ + lift + Math.max(1, sceneScale * 0.0012);
   const center = toLocal(cx, cy, elevation);
+
+  if (drapedGeom) {
+    return (
+      <mesh geometry={drapedGeom} renderOrder={5}>
+        <meshBasicMaterial
+          map={tex}
+          transparent
+          opacity={style.opacity * 0.85}
+          depthWrite={false}
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-2}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    );
+  }
 
   return (
     <mesh
@@ -1388,6 +1954,14 @@ function EsriDrape({
   onLoadSuccess?: (resolvedUrl: string) => void;
 }) {
   const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  const onLoadFailureRef = useRef(onLoadFailure);
+  const onLoadSuccessRef = useRef(onLoadSuccess);
+  useEffect(() => {
+    onLoadFailureRef.current = onLoadFailure;
+  }, [onLoadFailure]);
+  useEffect(() => {
+    onLoadSuccessRef.current = onLoadSuccess;
+  }, [onLoadSuccess]);
   useEffect(() => {
     const candidates = urls
       .map((u) => u.trim())
@@ -1408,7 +1982,7 @@ function EsriDrape({
           prev?.dispose();
           return null;
         });
-        onLoadFailure?.(candidates);
+        onLoadFailureRef.current?.(candidates);
         return;
       }
       const loader = new THREE.TextureLoader();
@@ -1425,7 +1999,7 @@ function EsriDrape({
             prev?.dispose();
             return tex;
           });
-          onLoadSuccess?.(candidates[idx]);
+          onLoadSuccessRef.current?.(candidates[idx]);
         },
         undefined,
         () => {
@@ -1441,7 +2015,7 @@ function EsriDrape({
         return null;
       });
     };
-  }, [onLoadFailure, onLoadSuccess, urls]);
+  }, [urls]);
 
   if (!texture) return null;
   if (geometry) {
@@ -1809,6 +2383,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const savedRef = useRef<string>("");
   const saveTidRef = useRef<number | null>(null);
   const autoRefitSigRef = useRef<string>("");
+  const lastSceneLoadSigRef = useRef<string>("");
+  const sceneLoadInFlightRef = useRef<string>("");
+
+  const setDrapeUrlsStable = useCallback((next: string[]) => {
+    setDrapeUrls((prev) => (sameStringArray(prev, next) ? prev : next));
+  }, []);
 
   const inputLinks = useMemo(() => (viewerNodeId ? upstreamSourcesForViewer(edges, viewerNodeId) : []), [edges, viewerNodeId]);
 
@@ -2034,9 +2614,20 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   useEffect(() => {
     if (!graphId || !viewerNodeId) return;
     let cancelled = false;
+    const source = manifestArtifacts.length ? manifestArtifacts : artifacts.filter((a) => inputLinks.includes(a.node_id));
+    const sourceSig = source
+      .map((a) => `${a.node_id}:${a.key}:${a.content_hash}`)
+      .sort((a, b) => a.localeCompare(b))
+      .join("|");
+    const manifestSig = manifestLayers
+      .map((ml) => `${ml.source_node_id ?? ""}:${ml.source_node_kind ?? ""}:${ml.artifact_key}:${ml.content_hash}:${ml.to_port ?? ""}`)
+      .sort((a, b) => a.localeCompare(b))
+      .join("|");
+    const loadSig = `${graphId}|${viewerNodeId}|${sourceSig}|${manifestSig}`;
     void (async () => {
-      const source = manifestArtifacts.length ? manifestArtifacts : artifacts.filter((a) => inputLinks.includes(a.node_id));
       if (source.length === 0) {
+        lastSceneLoadSigRef.current = loadSig;
+        sceneLoadInFlightRef.current = "";
         setContractImagery(null);
         setContractLayerStack(null);
         setSceneData({
@@ -2056,6 +2647,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         setStatus(inputLinks.length ? "No upstream 3D artifacts yet. Queue run, run worker, then refresh." : "No compatible inputs wired into this 3D viewer.");
         return;
       }
+      if (lastSceneLoadSigRef.current === loadSig || sceneLoadInFlightRef.current === loadSig) {
+        return;
+      }
+      sceneLoadInFlightRef.current = loadSig;
 
       const manifestByArtifact = new Map<string, ViewerManifestLayer>();
       for (const ml of manifestLayers) manifestByArtifact.set(`${ml.artifact_key}:${ml.content_hash}`, ml);
@@ -2085,9 +2680,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
       for (const art of source) {
         try {
-          const r = await fetch(api(art.url), { cache: "no-store" });
-          if (!r.ok) continue;
-          const txt = await r.text();
+          const txt = await fetchArtifactTextCached(art.url);
           try {
             const raw = JSON.parse(txt) as unknown;
             const maybeImagery = parseImageryContract(raw);
@@ -2217,6 +2810,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         }
       }
       if (cancelled) return;
+      lastSceneLoadSigRef.current = loadSig;
+      if (sceneLoadInFlightRef.current === loadSig) sceneLoadInFlightRef.current = "";
       setContractImagery(imageryContract);
       setContractLayerStack(layerStackContract);
       const orderedTerrain = terrainCandidates
@@ -2244,6 +2839,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     })();
     return () => {
       cancelled = true;
+      if (sceneLoadInFlightRef.current === loadSig) sceneLoadInFlightRef.current = "";
     };
   }, [artifacts, graphId, inputLinks, manifestArtifacts, manifestLayers, viewerNodeId]);
 
@@ -2256,7 +2852,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const newStyles: Record<string, LayerVizStyle> = { ...p.layerStyles };
       for (const sl of sceneData.sourceLayers) {
         if (!newStyles[sl.id]?.attributeKey?.trim()) {
-          newStyles[sl.id] = { ...(newStyles[sl.id] ?? DEFAULT_LAYER_STYLE), attributeKey: firstMeasure };
+          newStyles[sl.id] = { ...(newStyles[sl.id] ?? defaultLayerStyleForId(sl.id)), attributeKey: firstMeasure };
         }
       }
       return { ...p, layerStyles: newStyles };
@@ -2426,7 +3022,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     (layerId: string): LayerVizStyle => {
       // Each layer ID gets its own independent style — no cross-layer fallback.
       const s = ui.layerStyles[layerId];
-      return { ...DEFAULT_LAYER_STYLE, ...(s ?? {}) };
+      return { ...defaultLayerStyleForId(layerId), ...(s ?? {}) };
     },
     [ui.layerStyles]
   );
@@ -2435,7 +3031,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     (layerId: string, patch: Partial<LayerVizStyle>) => {
       setUi((p) => {
         const prev = p.layerStyles[layerId] ?? {
-          ...DEFAULT_LAYER_STYLE,
+          ...defaultLayerStyleForId(layerId),
         };
         return {
           ...p,
@@ -2512,7 +3108,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
   useEffect(() => {
     if (!ui.showDrape) {
-      setDrapeUrls([]);
+      setDrapeUrlsStable([]);
       setDrapeStatus("Drape off.");
       setDrapeLoadError(null);
       return;
@@ -2547,7 +3143,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           .filter((u, i, arr) => u.length > 0 && arr.indexOf(u) === i)
           .flatMap((u) => imageryUrlCandidates(u))
           .filter((u, i, arr) => arr.indexOf(u) === i);
-        setDrapeUrls(fromContract);
+        setDrapeUrlsStable(fromContract);
         setDrapeStatus(
           `${contractImagery?.provider_label ?? "Contract imagery"} drape active${
             quality ? ` (${quality})` : ""
@@ -2561,7 +3157,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       );
     }
     if (!groundTerrainGrid) {
-      setDrapeUrls([]);
+      setDrapeUrlsStable([]);
       setDrapeStatus("Imagery drape flat fallback only (no terrain DEM input wired).");
       setDrapeLoadError(null);
       return;
@@ -2569,7 +3165,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     const { xmin, xmax, ymin, ymax } = drapeBounds;
     const hasFiniteBounds = [xmin, xmax, ymin, ymax].every((v) => Number.isFinite(v));
     if (!hasFiniteBounds) {
-      setDrapeUrls([]);
+      setDrapeUrlsStable([]);
       setDrapeStatus("Imagery drape unavailable (invalid bounds).");
       setDrapeLoadError(null);
       return;
@@ -2625,7 +3221,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         xmin >= -180 && xmax <= 180 && ymin >= -90 && ymax <= 90;
       if (rawLooksGeographic) {
         if (!cancelled) {
-          setDrapeUrls(buildImageryUrls(xmin, ymin, xmax, ymax));
+          setDrapeUrlsStable(buildImageryUrls(xmin, ymin, xmax, ymax));
           setDrapeLoadError(null);
           setDrapeStatus(
             projectEpsg === 4326
@@ -2657,7 +3253,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         const pt = await convertCornerToWgs84(x, y);
         if (!pt) {
           if (!cancelled) {
-            setDrapeUrls([]);
+            setDrapeUrlsStable([]);
             setDrapeStatus(
               projectEpsg === 4326
                 ? "Imagery drape unavailable (EPSG:4326 is out-of-range for lon/lat; set correct project CRS)."
@@ -2677,7 +3273,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const latMax = Math.max(...lats);
       if (lonMin < -180 || lonMax > 180 || latMin < -90 || latMax > 90) {
         if (!cancelled) {
-          setDrapeUrls([]);
+          setDrapeUrlsStable([]);
           setDrapeStatus(
             `Imagery drape unavailable (reprojected bounds outside WGS84 extent; EPSG:${projectEpsg}).`
           );
@@ -2686,7 +3282,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         return;
       }
       if (!cancelled) {
-        setDrapeUrls(buildImageryUrls(lonMin, latMin, lonMax, latMax));
+        setDrapeUrlsStable(buildImageryUrls(lonMin, latMin, lonMax, latMax));
         setDrapeLoadError(null);
         setDrapeStatus(`${currentImageryProvider.label} drape active.`);
       }
@@ -2696,7 +3292,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       cancelled = true;
       window.clearTimeout(tid);
     };
-  }, [contractImagery, currentImageryProvider, drapeBounds, groundTerrainGrid, projectEpsg, ui.imageryProvider, ui.showDrape]);
+  }, [contractImagery, currentImageryProvider, drapeBounds, groundTerrainGrid, projectEpsg, setDrapeUrlsStable, ui.imageryProvider, ui.showDrape]);
 
 
   const localDrillSegments = useMemo(
@@ -3059,39 +3655,20 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                   if (segs.length === 0) return null;
                   const contourColor = thisContourStyle.attributeKey ? undefined : (ui.contourColor);
                   const r = Math.max(0.01, sceneScale * 0.00015 * Math.max(0.25, ui.contourWidth));
-                  const zLift = Math.max(0.01, sceneScale * 0.00018) + layerLift(layerId);
-                  // Build elevation domain for color ramp if attributeKey is set (or always for z-based coloring)
-                  const contourLevels = segs.map(s => s.contourLevel).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-                  const clMin = contourLevels.length ? Math.min(...contourLevels) : 0;
-                  const clMax = contourLevels.length ? Math.max(...contourLevels) : 1;
-                  const clRange = clMax - clMin || 1;
                   return (
-                    <group key={`layer-contours-${layerId}`}>
-                      {segs.map((s, i) => {
-                        const az = s.hasExplicitZ
-                          ? s.from[2]
-                          : sampleTerrainZ(groundTerrainGrid, s.from[0], s.from[1]) ?? s.from[2];
-                        const bz = s.hasExplicitZ
-                          ? s.to[2]
-                          : sampleTerrainZ(groundTerrainGrid, s.to[0], s.to[1]) ?? s.to[2];
-                        const a = toLocal(s.from[0], s.from[1], az + zLift);
-                        const b = toLocal(s.to[0], s.to[1], bz + zLift);
-                        // Color by elevation level using the layer's color ramp
-                        const t = typeof s.contourLevel === "number" ? Math.max(0, Math.min(1, (s.contourLevel - clMin) / clRange)) : 0.5;
-                        const stopsToUse = thisContourStyle.colorStops?.length >= 2 ? thisContourStyle.colorStops : PALETTE_STOPS[thisContourStyle.palette] ?? PALETTE_STOPS.inferno;
-                        const lineColor = contourColor ?? interpolateStopsColor(stopsToUse, t);
-                        return (
-                          <SegmentTube
-                            key={`contour-${i}`}
-                            from={a}
-                            to={b}
-                            radius={r}
-                            color={lineColor}
-                            opacity={ui.contourOpacity}
-                          />
-                        );
-                      })}
-                    </group>
+                    <ContourLayer3D
+                      key={`layer-contours-${layerId}`}
+                      layerId={layerId}
+                      segs={segs}
+                      style={thisContourStyle}
+                      toLocal={toLocal}
+                      sceneScale={sceneScale}
+                      lift={layerLift(layerId)}
+                      groundTerrainGrid={groundTerrainGrid}
+                      radius={r}
+                      opacity={ui.contourOpacity}
+                      fixedColor={contourColor}
+                    />
                   );
                 }
                 if (baseType === "assay_points") {
@@ -3461,6 +4038,31 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                       }
                                     />
                                   </label>
+                                  <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={style.showLabels}
+                                      onChange={(e) => setLayerStyle(layerId, { showLabels: e.target.checked })}
+                                    />
+                                    Inline elevation labels
+                                  </label>
+                                  {style.showLabels ? (
+                                    <label>
+                                      Label size
+                                      <input
+                                        type="range"
+                                        min={8}
+                                        max={20}
+                                        step={1}
+                                        value={style.labelSize}
+                                        onChange={(e) =>
+                                          setLayerStyle(layerId, {
+                                            labelSize: Math.max(8, Math.min(20, Number(e.target.value) || 12)),
+                                          })
+                                        }
+                                      />
+                                    </label>
+                                  ) : null}
                                 </>
                               ) : null}
                               {lBaseType === "heatmap_surface" ? (

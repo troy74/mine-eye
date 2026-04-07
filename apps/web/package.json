@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@clerk/clerk-react": "^5.61.4",
     "@react-three/drei": "^10.0.0",
     "@react-three/fiber": "^9.0.0",
     "@xyflow/react": "^12.10.2",

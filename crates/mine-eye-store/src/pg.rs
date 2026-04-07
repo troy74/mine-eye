@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use mine_eye_graph::{EdgeRef, GraphSnapshot};
 use mine_eye_types::{
-    BranchPromotionRecord, BranchPromotionStatus, BranchStatus, CacheState, CrsRecord,
-    ExecutionState, GraphBranch, GraphMeta, GraphRevision, LineageMeta, NodeCategory, NodeConfig,
-    NodeExecutionPolicy, NodeRecord, OwnerRef, PortBinding, SemanticPortType,
+    AuthContextRef, BranchPromotionRecord, BranchPromotionStatus, BranchStatus, CacheState,
+    CrsRecord, ExecutionState, GraphBranch, GraphMeta, GraphRevision, LineageMeta, NodeCategory,
+    NodeConfig, NodeExecutionPolicy, NodeRecord, OwnerRef, PortBinding, SemanticPortType,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -173,20 +173,58 @@ impl PgStore {
         Ok(())
     }
 
+    pub async fn ensure_auth_context(&self, auth: &AuthContextRef) -> Result<(), StoreError> {
+        sqlx::query(r#"INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO NOTHING"#)
+            .bind(&auth.user_id)
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO organizations (id, name, created_by_user_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name
+            "#,
+        )
+        .bind(&auth.organization_id)
+        .bind(auth.default_organization_name())
+        .bind(&auth.user_id)
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO organization_memberships (organization_id, user_id, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (organization_id, user_id) DO UPDATE
+            SET role = EXCLUDED.role
+            "#,
+        )
+        .bind(&auth.organization_id)
+        .bind(&auth.user_id)
+        .bind(auth.organization_role.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn create_workspace(
         &self,
         name: &str,
         owner: OwnerRef,
+        organization_id: &str,
         project_crs: Option<serde_json::Value>,
     ) -> Result<Uuid, StoreError> {
         let id = Uuid::new_v4();
         let owner_v = serde_json::to_value(&owner)?;
         sqlx::query(
-            r#"INSERT INTO workspaces (id, name, owner, project_crs) VALUES ($1, $2, $3, $4)"#,
+            r#"INSERT INTO workspaces (id, name, owner, organization_id, project_crs) VALUES ($1, $2, $3, $4, $5)"#,
         )
         .bind(id)
         .bind(name)
         .bind(owner_v)
+        .bind(organization_id)
         .bind(project_crs)
         .execute(&self.pool)
         .await?;
@@ -210,6 +248,45 @@ impl PgStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn workspace_belongs_to_organization(
+        &self,
+        workspace_id: Uuid,
+        organization_id: &str,
+    ) -> Result<bool, StoreError> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT TRUE
+            FROM workspaces
+            WHERE id = $1 AND organization_id = $2
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(organization_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn graph_belongs_to_organization(
+        &self,
+        graph_id: Uuid,
+        organization_id: &str,
+    ) -> Result<bool, StoreError> {
+        let row: Option<(bool,)> = sqlx::query_as(
+            r#"
+            SELECT TRUE
+            FROM graphs g
+            JOIN workspaces w ON w.id = g.workspace_id
+            WHERE g.id = $1 AND w.organization_id = $2
+            "#,
+        )
+        .bind(graph_id)
+        .bind(organization_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     pub async fn create_graph(
@@ -779,10 +856,10 @@ impl PgStore {
     pub async fn graph_workspace_meta(
         &self,
         graph_id: Uuid,
-    ) -> Result<Option<(Uuid, Option<CrsRecord>)>, StoreError> {
-        let row: Option<(Uuid, Option<serde_json::Value>)> = sqlx::query_as(
+    ) -> Result<Option<(Uuid, String, Option<CrsRecord>)>, StoreError> {
+        let row: Option<(Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
             r#"
-            SELECT g.workspace_id, w.project_crs
+            SELECT g.workspace_id, w.organization_id, w.project_crs
             FROM graphs g
             JOIN workspaces w ON w.id = g.workspace_id
             WHERE g.id = $1
@@ -792,14 +869,14 @@ impl PgStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        let Some((workspace_id, crs_json)) = row else {
+        let Some((workspace_id, organization_id, crs_json)) = row else {
             return Ok(None);
         };
         let project_crs = match crs_json {
             Some(v) => Some(serde_json::from_value(v)?),
             None => None,
         };
-        Ok(Some((workspace_id, project_crs)))
+        Ok(Some((workspace_id, organization_id, project_crs)))
     }
 
     /// Deep-merge `params_patch` into `node.config.params`, optionally replace policy.

@@ -36,6 +36,8 @@ pub struct GraphMeta {
     pub workspace_id: Uuid,
     pub name: String,
     pub owner: OwnerRef,
+    pub organization_id: String,
+    pub created_by_user_id: String,
     pub status: WorkspaceStatus,
     pub lock: LockState,
     pub approval: Option<ApprovalRecord>,

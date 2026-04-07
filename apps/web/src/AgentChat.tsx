@@ -1,3 +1,4 @@
+import { useUser } from "@clerk/clerk-react";
 import {
   useCallback,
   useEffect,
@@ -53,6 +54,8 @@ type Props = {
 };
 
 export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId = null }: Props) {
+  const { user } = useUser();
+  const authUserId = user?.id ?? "web-user";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [draft, setDraft] = useState("");
@@ -202,7 +205,7 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
             })) ?? [],
         })),
         apply_mutations: applyMutations,
-        user_id: "web-user",
+        user_id: authUserId,
         branch_id: activeBranchId,
       });
       const assistant: ChatMessage = {
@@ -232,7 +235,7 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
     } finally {
       setSending(false);
     }
-  }, [activeBranchId, applyMutations, draft, graphId, messages, pendingAttachments, projectLocalId, sending]);
+  }, [activeBranchId, applyMutations, authUserId, draft, graphId, messages, pendingAttachments, projectLocalId, sending]);
 
   const disabled = !projectLocalId || !graphId || sending;
   const title = useMemo(

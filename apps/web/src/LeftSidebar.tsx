@@ -77,6 +77,76 @@ export function LeftSidebar({
 
   return (
     <aside style={aside}>
+      <div style={projectCard}>
+        <div style={projectCardHeader}>
+          <div>
+            <div style={sectionLabel}>Project</div>
+            <div style={projectCardTitle}>{active?.name ?? "No project selected"}</div>
+          </div>
+          {active && <div style={projectLiveBadge}>Live</div>}
+        </div>
+        <select
+          style={sel}
+          value={activeLocalId ?? ""}
+          onChange={(e) => {
+            const id = e.target.value;
+            const p = projects.find((x) => x.localId === id);
+            if (p) onSelectProject(p);
+          }}
+        >
+          <option value="" disabled>
+            Select project…
+          </option>
+          {projects.map((p) => (
+            <option key={p.localId} value={p.localId}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <button type="button" style={{ ...btn, flex: 1 }} onClick={onNewProject}>
+            New project…
+          </button>
+          <button type="button" style={{ ...btn, flex: 1 }} onClick={onSeedDemo}>
+            Seed demo
+          </button>
+        </div>
+        {active ? (
+          <>
+            <div style={projectMetaRow}>
+              <span style={projectMetaChip}>Graph {active.graphId.slice(0, 8)}…</span>
+              {graphId ? <span style={projectMetaChip}>EPSG:{projectEpsg}</span> : null}
+            </div>
+            <button
+              type="button"
+              style={{
+                ...btn,
+                marginTop: 10,
+                color: "#f85149",
+                borderColor: "rgba(248,81,73,0.3)",
+                width: "100%",
+                background: "rgba(248,81,73,0.06)",
+              }}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `Delete "${active.name}" from your local project list?\n\nThis only removes it from your browser — the graph and data on the server are unaffected.`
+                  )
+                ) {
+                  onDeleteProject(active.localId);
+                }
+              }}
+            >
+              Delete project…
+            </button>
+          </>
+        ) : (
+          <div style={{ ...hint, margin: "10px 0 0" }}>
+            Create a project or seed a demo graph to start working.
+          </div>
+        )}
+      </div>
+
       {/* ── Tab bar ──────────────────────────────────────────────────────── */}
       <div style={tabBar}>
         <button
@@ -84,7 +154,15 @@ export function LeftSidebar({
           style={tab === "chat" ? tabBtnActive : tabBtn}
           onClick={() => setTab("chat")}
         >
-          <span style={{ fontSize: 14, lineHeight: 1 }}>💬</span>
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+            <path
+              d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3.5 2v-2H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+          </svg>
           <span>AI Chat</span>
         </button>
         <button
@@ -92,7 +170,16 @@ export function LeftSidebar({
           style={tab === "project" ? tabBtnActive : tabBtn}
           onClick={() => setTab("project")}
         >
-          <span style={{ fontSize: 14, lineHeight: 1 }}>⚙</span>
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+            <path
+              d="M6.7 1.3h2.6l.4 1.9a5 5 0 0 1 1.2.5l1.7-1 1.8 1.8-1 1.7c.2.4.4.8.5 1.2l1.9.4v2.6l-1.9.4a5 5 0 0 1-.5 1.2l1 1.7-1.8 1.8-1.7-1a5 5 0 0 1-1.2.5l-.4 1.9H6.7l-.4-1.9a5 5 0 0 1-1.2-.5l-1.7 1-1.8-1.8 1-1.7a5 5 0 0 1-.5-1.2l-1.9-.4V7.3l1.9-.4a5 5 0 0 1 .5-1.2l-1-1.7 1.8-1.8 1.7 1a5 5 0 0 1 1.2-.5l.4-1.9Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+              strokeLinejoin="round"
+            />
+            <circle cx="8" cy="8" r="2.1" fill="none" stroke="currentColor" strokeWidth="1" />
+          </svg>
           <span>Project</span>
           {active && (
             <span style={{ marginLeft: "auto", fontSize: 9, color: "#3fb950", fontWeight: 700 }}>
@@ -117,64 +204,6 @@ export function LeftSidebar({
       {/* ── Project tab ──────────────────────────────────────────────────── */}
       {tab === "project" && (
         <div style={{ ...tabContent, overflowY: "auto", padding: "10px 12px 16px", gap: 0 }}>
-
-          {/* Project selector */}
-          <div style={sectionLabel}>Project</div>
-          <select
-            style={sel}
-            value={activeLocalId ?? ""}
-            onChange={(e) => {
-              const id = e.target.value;
-              const p = projects.find((x) => x.localId === id);
-              if (p) onSelectProject(p);
-            }}
-          >
-            <option value="" disabled>
-              Select project…
-            </option>
-            {projects.map((p) => (
-              <option key={p.localId} value={p.localId}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <div style={{ display: "flex", gap: 6, marginTop: 7 }}>
-            <button type="button" style={btn} onClick={onNewProject}>
-              New project…
-            </button>
-            <button type="button" style={btn} onClick={onSeedDemo}>
-              Seed demo
-            </button>
-          </div>
-          {active && (
-            <div style={{ marginTop: 6, fontSize: 10, color: "#484f58", wordBreak: "break-all" }}>
-              Graph <code style={{ color: "#6e7681" }}>{active.graphId.slice(0, 8)}…</code>
-            </div>
-          )}
-          {active && (
-            <button
-              type="button"
-              style={{
-                ...btn,
-                marginTop: 10,
-                color: "#f85149",
-                borderColor: "rgba(248,81,73,0.3)",
-                width: "100%",
-              }}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Delete "${active.name}" from your local project list?\n\nThis only removes it from your browser — the graph and data on the server are unaffected.`
-                  )
-                ) {
-                  onDeleteProject(active.localId);
-                }
-              }}
-            >
-              Delete project…
-            </button>
-          )}
-
           {/* CRS */}
           {graphId && (
             <>
@@ -417,11 +446,67 @@ const aside: CSSProperties = {
   fontSize: 13,
 };
 
+const projectCard: CSSProperties = {
+  flexShrink: 0,
+  margin: "10px 12px 0",
+  padding: "12px",
+  borderRadius: 12,
+  border: "1px solid rgba(56,139,253,0.18)",
+  background:
+    "linear-gradient(180deg, rgba(22,27,34,0.98) 0%, rgba(13,17,23,0.98) 100%)",
+  boxShadow: "0 10px 28px rgba(0,0,0,0.18)",
+};
+
+const projectCardHeader: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: 10,
+  marginBottom: 8,
+};
+
+const projectCardTitle: CSSProperties = {
+  fontSize: 15,
+  fontWeight: 700,
+  color: "#e6edf3",
+  lineHeight: 1.2,
+};
+
+const projectLiveBadge: CSSProperties = {
+  padding: "3px 7px",
+  borderRadius: 999,
+  background: "rgba(63,185,80,0.12)",
+  border: "1px solid rgba(63,185,80,0.28)",
+  color: "#3fb950",
+  fontSize: 10,
+  fontWeight: 700,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+};
+
+const projectMetaRow: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+  marginTop: 10,
+};
+
+const projectMetaChip: CSSProperties = {
+  padding: "3px 8px",
+  borderRadius: 999,
+  background: "#11161d",
+  border: "1px solid #30363d",
+  color: "#8b949e",
+  fontSize: 10,
+  lineHeight: 1.2,
+};
+
 const tabBar: CSSProperties = {
   display: "flex",
   flexShrink: 0,
   borderBottom: "1px solid #21262d",
   background: "#0d1117",
+  marginTop: 10,
 };
 
 const tabBase: CSSProperties = {

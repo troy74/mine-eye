@@ -93,6 +93,7 @@ export type ApiNode = {
 export type GraphResponse = {
   graph_id: string;
   workspace_id?: string;
+  organization_id?: string;
   project_crs?: { epsg?: number; wkt?: string | null } | null;
   nodes: ApiNode[];
   edges: ApiEdge[];
@@ -256,6 +257,8 @@ export async function fetchGraph(graphId: string): Promise<GraphResponse> {
     graph_id: String(raw.graph_id ?? graphId),
     workspace_id:
       raw.workspace_id != null ? String(raw.workspace_id) : undefined,
+    organization_id:
+      raw.organization_id != null ? String(raw.organization_id) : undefined,
     project_crs,
     nodes,
     edges,

@@ -7,8 +7,93 @@ body,
   height: 100%;
   margin: 0;
   font-family: system-ui, sans-serif;
-  background: #0f1419;
+  background:
+    radial-gradient(circle at top, rgba(56, 139, 253, 0.12) 0%, rgba(56, 139, 253, 0) 34%),
+    linear-gradient(180deg, #0b1118 0%, #0f1419 18%, #0c1117 100%);
   color: #e6edf3;
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+.mineeye-app-shell {
+  background:
+    radial-gradient(circle at top, rgba(88, 166, 255, 0.08) 0%, rgba(88, 166, 255, 0) 36%),
+    linear-gradient(180deg, rgba(11, 17, 24, 0.92) 0%, rgba(15, 20, 25, 0.96) 18%, #0c1117 100%);
+}
+
+.mineeye-topbar {
+  position: relative;
+  backdrop-filter: blur(14px);
+}
+
+.mineeye-topbar::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(88, 166, 255, 0.24), transparent);
+}
+
+.mineeye-wordmark {
+  text-shadow: 0 0 24px rgba(88, 166, 255, 0.14);
+}
+
+.mineeye-status-pill {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 10px 24px rgba(7, 28, 56, 0.18);
+}
+
+.mineeye-topbar-icon-btn,
+.mineeye-avatar-btn,
+.mineeye-sidebar-toggle,
+.mineeye-tab-close,
+.mineeye-tab-button,
+.mineeye-play {
+  transition:
+    transform 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.mineeye-topbar-icon-btn:hover,
+.mineeye-avatar-btn:hover,
+.mineeye-sidebar-toggle:hover {
+  transform: translateY(-1px);
+  border-color: #484f58;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.18);
+}
+
+.mineeye-shell-rail {
+  background:
+    linear-gradient(180deg, rgba(13, 17, 23, 0.98) 0%, rgba(15, 20, 25, 0.98) 100%);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.02);
+}
+
+.mineeye-shell-rail-label {
+  color: #7d8590;
+}
+
+.mineeye-main-surface {
+  background:
+    linear-gradient(180deg, rgba(15, 20, 25, 0.98) 0%, rgba(13, 17, 23, 0.96) 100%);
+}
+
+.mineeye-main-tabs {
+  padding: 0 8px;
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.mineeye-workspace-tab-shell {
+  margin-right: 4px;
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 /* ── Details/summary spacing inside me-panel-body (grid gap) ─────────────── */
@@ -119,11 +204,36 @@ body,
   color: #e6edf3;
   cursor: pointer;
   flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.mineeye-play:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: #484f58;
+  background: #2a313a;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+}
+
+.mineeye-play-primary {
+  background: linear-gradient(180deg, #238636 0%, #1c6d2d 100%);
+  border-color: rgba(63, 185, 80, 0.45);
+}
+
+.mineeye-play-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #2ea043 0%, #238636 100%);
+  border-color: rgba(86, 211, 100, 0.55);
+}
+
+.mineeye-play-secondary {
+  background: #161b22;
+  color: #9ecbff;
 }
 
 .mineeye-play:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .mineeye-play-running .mineeye-play-icon {
@@ -132,6 +242,38 @@ body,
 
 .mineeye-node-running {
   animation: mineeye-node-pulse 1.4s ease-in-out infinite;
+}
+
+.mineeye-tab {
+  margin-top: 6px;
+  border-radius: 10px 10px 0 0;
+}
+
+.mineeye-tab:hover:not(.mineeye-tab-active) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mineeye-tab-active {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.mineeye-tab-embedded {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.mineeye-tab-button:hover {
+  color: #f0f6fc !important;
+}
+
+.mineeye-tab-close {
+  border-radius: 999px;
+  line-height: 1;
+}
+
+.mineeye-tab-close:hover {
+  background: rgba(248, 81, 73, 0.12) !important;
+  color: #ffb4a8 !important;
 }
 
 /* Pipeline node action buttons */

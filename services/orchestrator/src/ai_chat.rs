@@ -1349,7 +1349,7 @@ async fn tool_run_graph(
         .graph_workspace_meta(graph_id)
         .await
         .map_err(|e| e.to_string())?
-        .and_then(|(_, crs)| crs);
+        .and_then(|(_, _, crs)| crs);
 
     let plan = scheduler.plan(
         &snapshot,
@@ -2334,13 +2334,13 @@ fn validate_wire_against_registry(
     let out_sem = normalize_semantic(&out_port.semantic);
     let in_sem = normalize_semantic(&in_port.semantic);
 
-    if req_sem != out_sem {
+    if out_sem != "any" && req_sem != out_sem {
         return Err(format!(
             "semantic_type '{}' does not match source port semantic '{}' ({}.{})",
             semantic_type, out_port.semantic, from_kind, from_port
         ));
     }
-    if req_sem != in_sem {
+    if in_sem != "any" && req_sem != in_sem {
         return Err(format!(
             "semantic_type '{}' does not match target port semantic '{}' ({}.{})",
             semantic_type, in_port.semantic, to_kind, to_port

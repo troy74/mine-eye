@@ -5,6 +5,7 @@ mod crs;
 mod domain;
 mod envelope;
 mod graph_meta;
+mod identity;
 mod lineage;
 mod node;
 mod policy;
@@ -20,6 +21,10 @@ pub use domain::{
 };
 pub use envelope::{ArtifactRef, JobEnvelope, JobResult, JobStatus};
 pub use graph_meta::{ApprovalRecord, GraphMeta, LockState, OwnerRef, WorkspaceStatus};
+pub use identity::{
+    personal_organization_id, AuthContextRef, OrganizationMembership, OrganizationRecord,
+    OrganizationRole, UserRecord,
+};
 pub use lineage::LineageMeta;
 pub use node::{CacheState, ExecutionState, NodeCategory, NodeConfig, NodeRecord, PortBinding};
 pub use policy::{NodeExecutionPolicy, PropagationPolicy, QualityPolicy, RecomputePolicy};

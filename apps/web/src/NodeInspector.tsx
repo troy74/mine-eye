@@ -1337,7 +1337,7 @@ export function NodeInspector({
               </p>
             )}
             <p style={{ opacity: 0.7, marginTop: 14, fontSize: 11 }}>
-              After saving, use <strong>Queue pipeline run</strong> in the header (or{" "}
+              After saving, use <strong>Run pipeline</strong> in the workspace tab (or{" "}
               <strong>Output</strong> → queue from this node). The worker must be running to
               rebuild artifacts.
             </p>

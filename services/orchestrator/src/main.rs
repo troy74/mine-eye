@@ -2,14 +2,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::{delete, get, patch, post};
-use axum::{Json, Router};
+use axum::routing::{delete, get, get_service, patch, post};
+use axum::{Extension, Json, Router};
 use async_stream::stream;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 mod ai_chat;
 mod ingest_synth;
 mod viewer_manifest;
@@ -19,13 +24,16 @@ use mine_eye_graph::propagate_stale;
 use mine_eye_scheduler::{collect_dirty_nodes, Scheduler};
 use mine_eye_store::{JobQueue, PgJobQueue, PgStore, StoreError};
 use mine_eye_types::{
-    ArtifactRef, BranchPromotionStatus, BranchStatus, CacheState, CrsRecord, ExecutionState,
-    GraphMeta, LineageMeta, LockState, NodeCategory, NodeConfig, NodeExecutionPolicy, NodeRecord,
-    OwnerRef, PropagationPolicy, QualityPolicy, RecomputePolicy, SemanticPortType, WorkspaceStatus,
+    personal_organization_id, ArtifactRef, AuthContextRef, BranchPromotionStatus, BranchStatus,
+    CacheState, CrsRecord, ExecutionState, GraphMeta, LineageMeta, LockState, NodeCategory,
+    NodeConfig, NodeExecutionPolicy, NodeRecord, OrganizationRole, OwnerRef, PropagationPolicy,
+    QualityPolicy, RecomputePolicy, SemanticPortType, WorkspaceStatus,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::services::ServeDir;
 use uuid::Uuid;
 use viewer_manifest::ViewerManifest;
@@ -36,6 +44,340 @@ struct AppState {
     jobs: Arc<PgJobQueue>,
     scheduler: Arc<Scheduler>,
     artifact_root: PathBuf,
+    clerk_http: reqwest::Client,
+    clerk_jwks_cache: Arc<RwLock<ClerkJwksCache>>,
+    clerk_authorized_parties: Arc<Vec<String>>,
+}
+
+type AuthContext = AuthContextRef;
+
+#[derive(Clone, Debug, Default)]
+struct ClerkJwksCache {
+    fetched_at: Option<Instant>,
+    source_url: Option<String>,
+    keys: HashMap<String, ClerkRsaKey>,
+}
+
+#[derive(Clone, Debug)]
+struct ClerkRsaKey {
+    n: String,
+    e: String,
+}
+
+#[derive(Deserialize)]
+struct ClerkJwksResponse {
+    keys: Vec<ClerkJwk>,
+}
+
+#[derive(Deserialize)]
+struct ClerkJwk {
+    kid: String,
+    n: Option<String>,
+    e: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClerkOrganizationClaim {
+    id: String,
+    slg: Option<String>,
+    rol: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClerkClaims {
+    sub: String,
+    azp: Option<String>,
+    #[serde(rename = "iss")]
+    _iss: Option<String>,
+    sts: Option<String>,
+    o: Option<ClerkOrganizationClaim>,
+    #[serde(rename = "exp")]
+    _exp: usize,
+    #[serde(rename = "nbf")]
+    _nbf: Option<usize>,
+}
+
+fn default_authorized_parties() -> Vec<String> {
+    match env::var("CLERK_AUTHORIZED_PARTIES") {
+        Ok(value) => {
+            let parsed = value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            if parsed.is_empty() {
+                vec![
+                    "http://localhost:5173".into(),
+                    "http://127.0.0.1:5173".into(),
+                    "http://localhost:5174".into(),
+                    "http://127.0.0.1:5174".into(),
+                    "http://localhost:3000".into(),
+                    "http://127.0.0.1:3000".into(),
+                ]
+            } else {
+                parsed
+            }
+        }
+        Err(_) => vec![
+            "http://localhost:5173".into(),
+            "http://127.0.0.1:5173".into(),
+            "http://localhost:5174".into(),
+            "http://127.0.0.1:5174".into(),
+            "http://localhost:3000".into(),
+            "http://127.0.0.1:3000".into(),
+        ],
+    }
+}
+
+fn extract_session_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    if let Some(value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        if let Some(token) = value.strip_prefix("Bearer ") {
+            let trimmed = token.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+    for cookie in cookie_header.split(';') {
+        let mut parts = cookie.trim().splitn(2, '=');
+        let name = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        if name == "__session" && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+#[derive(Debug, Deserialize)]
+struct UnverifiedClerkClaims {
+    iss: Option<String>,
+}
+
+fn parse_unverified_issuer(token: &str) -> Result<Option<String>, (StatusCode, String)> {
+    let payload = token
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid Clerk token payload".into()))?;
+    let decoded = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk token payload: {e}")))?;
+    let claims = serde_json::from_slice::<UnverifiedClerkClaims>(&decoded)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk token claims: {e}")))?;
+    Ok(claims.iss)
+}
+
+fn jwks_url_from_frontend_api(frontend_api: &str) -> Result<String, (StatusCode, String)> {
+    let url = reqwest::Url::parse(frontend_api)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk issuer URL: {e}")))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk issuer host".into()))?;
+    let host_allowed = host.ends_with(".clerk.accounts.dev")
+        || host.ends_with(".clerk.com")
+        || host == "clerk.accounts.dev"
+        || host == "clerk.com";
+    if !host_allowed {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "untrusted Clerk issuer host; set CLERK_JWKS_URL for custom domains".into(),
+        ));
+    }
+    Ok(format!(
+        "{}/.well-known/jwks.json",
+        frontend_api.trim_end_matches('/')
+    ))
+}
+
+fn resolve_clerk_jwks_url(token: &str) -> Result<String, (StatusCode, String)> {
+    if let Ok(url) = env::var("CLERK_JWKS_URL") {
+        let trimmed = url.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    if let Ok(frontend_api) = env::var("CLERK_FRONTEND_API_URL") {
+        let trimmed = frontend_api.trim();
+        if !trimmed.is_empty() {
+            return jwks_url_from_frontend_api(trimmed);
+        }
+    }
+    let iss = parse_unverified_issuer(token)?
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk issuer claim".into()))?;
+    jwks_url_from_frontend_api(&iss)
+}
+
+async fn refresh_clerk_jwks(
+    state: &AppState,
+    jwks_url: &str,
+) -> Result<(), (StatusCode, String)> {
+    let jwks = state
+        .clerk_http
+        .get(jwks_url)
+        .send()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("failed to fetch Clerk JWKS: {e}")))?
+        .error_for_status()
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("failed to fetch Clerk JWKS: {e}")))?
+        .json::<ClerkJwksResponse>()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("invalid Clerk JWKS payload: {e}")))?;
+
+    let mut next_keys = HashMap::new();
+    for key in jwks.keys {
+        let Some(n) = key.n else { continue };
+        let Some(e) = key.e else { continue };
+        next_keys.insert(key.kid, ClerkRsaKey { n, e });
+    }
+    if next_keys.is_empty() {
+        return Err((StatusCode::BAD_GATEWAY, "Clerk JWKS did not contain any RSA keys".into()));
+    }
+
+    let mut cache = state.clerk_jwks_cache.write().await;
+    cache.keys = next_keys;
+    cache.fetched_at = Some(Instant::now());
+    cache.source_url = Some(jwks_url.to_string());
+    Ok(())
+}
+
+async fn cached_clerk_key(
+    state: &AppState,
+    jwks_url: &str,
+    kid: &str,
+) -> Result<ClerkRsaKey, (StatusCode, String)> {
+    let needs_refresh = {
+        let cache = state.clerk_jwks_cache.read().await;
+        let expired = cache
+            .fetched_at
+            .map(|fetched_at| fetched_at.elapsed() > Duration::from_secs(600))
+            .unwrap_or(true);
+        expired || cache.source_url.as_deref() != Some(jwks_url) || !cache.keys.contains_key(kid)
+    };
+
+    if needs_refresh {
+        refresh_clerk_jwks(state, jwks_url).await?;
+    }
+
+    let cache = state.clerk_jwks_cache.read().await;
+    cache
+        .keys
+        .get(kid)
+        .cloned()
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown Clerk signing key".into()))
+}
+
+async fn verify_clerk_token(
+    state: &AppState,
+    token: &str,
+) -> Result<AuthContext, (StatusCode, String)> {
+    let header = decode_header(token)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid session token header: {e}")))?;
+    if header.alg != Algorithm::RS256 {
+        return Err((StatusCode::UNAUTHORIZED, "unsupported Clerk token algorithm".into()));
+    }
+    let kid = header
+        .kid
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk key id".into()))?;
+    let jwks_url = resolve_clerk_jwks_url(token)?;
+    let rsa_key = cached_clerk_key(state, &jwks_url, &kid).await?;
+    let decoding_key = DecodingKey::from_rsa_components(&rsa_key.n, &rsa_key.e)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk decoding key: {e}")))?;
+
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.validate_aud = false;
+
+    let claims = decode::<ClerkClaims>(token, &decoding_key, &validation)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid session token: {e}")))?
+        .claims;
+
+    if matches!(claims.sts.as_deref(), Some("pending")) {
+        return Err((StatusCode::UNAUTHORIZED, "session is pending organization activation".into()));
+    }
+
+    if let Some(azp) = claims.azp.as_deref() {
+        if !state.clerk_authorized_parties.iter().any(|allowed| allowed == azp) {
+            return Err((StatusCode::UNAUTHORIZED, "invalid authorized party".into()));
+        }
+    }
+
+    if claims.sub.trim().is_empty() {
+        return Err((StatusCode::UNAUTHORIZED, "missing Clerk user id".into()));
+    }
+
+    let user_id = claims.sub;
+    if let Some(org) = claims.o {
+        let organization_id = org.id.trim().to_string();
+        if organization_id.is_empty() {
+            return Ok(AuthContext::personal(user_id));
+        }
+        return Ok(AuthContext {
+            user_id,
+            organization_id,
+            organization_role: OrganizationRole::new(org.rol.unwrap_or_else(|| "member".into())),
+            organization_slug: org.slg,
+        });
+    }
+
+    Ok(AuthContext {
+        organization_id: personal_organization_id(&user_id),
+        organization_role: OrganizationRole::owner(),
+        organization_slug: None,
+        user_id,
+    })
+}
+
+async fn require_auth(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    let token = extract_session_token(request.headers())
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk session".into()))?;
+    let auth = verify_clerk_token(&state, &token).await?;
+    state
+        .store
+        .ensure_auth_context(&auth)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    request.extensions_mut().insert(auth);
+    Ok(next.run(request).await)
+}
+
+async fn require_workspace_access(
+    state: &AppState,
+    auth: &AuthContext,
+    workspace_id: Uuid,
+) -> Result<(), (StatusCode, String)> {
+    let allowed = state
+        .store
+        .workspace_belongs_to_organization(workspace_id, &auth.organization_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if allowed {
+        Ok(())
+    } else {
+        Err((StatusCode::NOT_FOUND, "workspace not found".into()))
+    }
+}
+
+async fn require_graph_access(
+    state: &AppState,
+    auth: &AuthContext,
+    graph_id: Uuid,
+) -> Result<(), (StatusCode, String)> {
+    let allowed = state
+        .store
+        .graph_belongs_to_organization(graph_id, &auth.organization_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if allowed {
+        Ok(())
+    } else {
+        Err((StatusCode::NOT_FOUND, "graph not found".into()))
+    }
 }
 
 #[tokio::main]
@@ -71,6 +413,11 @@ async fn main() -> anyhow::Result<()> {
         jobs,
         scheduler: Arc::new(Scheduler::default()),
         artifact_root: PathBuf::from(&artifact_root),
+        clerk_http: reqwest::Client::builder()
+            .user_agent("mine-eye-orchestrator/auth")
+            .build()?,
+        clerk_jwks_cache: Arc::new(RwLock::new(ClerkJwksCache::default())),
+        clerk_authorized_parties: Arc::new(default_authorized_parties()),
     };
 
     let cors = CorsLayer::new()
@@ -79,8 +426,14 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(Any);
 
     let artifact_dir = PathBuf::from(&artifact_root);
-    let app = Router::new()
-        .route("/health", get(health))
+    let immutable_files = get_service(
+        ServeDir::new(artifact_dir.clone()).append_index_html_on_directories(false),
+    )
+    .layer(SetResponseHeaderLayer::if_not_present(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    ));
+    let protected = Router::new()
         .route("/registry/nodes", get(get_node_registry))
         .route("/epsg/search", get(search_epsg))
         .route("/workspaces", post(create_workspace))
@@ -137,10 +490,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/ai/suggestions/{id}/confirm", post(ai_confirm))
         .route("/demo/seed", post(demo_seed))
-        .nest_service(
-            "/files",
-            ServeDir::new(artifact_dir.clone()).append_index_html_on_directories(false),
-        )
+        .nest_service("/files", immutable_files)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_auth,
+        ));
+    let app = Router::new()
+        .route("/health", get(health))
+        .merge(protected)
         .layer(cors)
         .with_state(state);
 
@@ -344,7 +701,8 @@ fn parse_epsg_hits_from_html(html: &str) -> Vec<EpsgHit> {
 #[derive(Deserialize)]
 struct CreateWorkspaceReq {
     name: String,
-    owner_user_id: String,
+    #[serde(rename = "owner_user_id", default)]
+    _owner_user_id: Option<String>,
     project_crs: Option<CrsRecord>,
 }
 
@@ -360,10 +718,11 @@ struct UpdateWorkspaceCrsReq {
 
 async fn create_workspace(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Json(body): Json<CreateWorkspaceReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
     let owner = OwnerRef {
-        user_id: body.owner_user_id,
+        user_id: auth.user_id.clone(),
     };
     let crs = body
         .project_crs
@@ -373,7 +732,7 @@ async fn create_workspace(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let id = s
         .store
-        .create_workspace(&body.name, owner, crs)
+        .create_workspace(&body.name, owner, &auth.organization_id, crs)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(IdResp { id }))
@@ -381,9 +740,11 @@ async fn create_workspace(
 
 async fn update_workspace_project_crs(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(ws_id): Path<Uuid>,
     Json(body): Json<UpdateWorkspaceCrsReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    require_workspace_access(&s, &auth, ws_id).await?;
     let crs = serde_json::to_value(body.project_crs)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     s.store
@@ -397,26 +758,30 @@ async fn update_workspace_project_crs(
 struct CreateGraphReq {
     name: String,
     workspace_id: Uuid,
-    owner_user_id: String,
+    #[serde(rename = "owner_user_id", default)]
+    _owner_user_id: Option<String>,
 }
 
 async fn create_graph(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(ws_id): Path<Uuid>,
     Json(body): Json<CreateGraphReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
     if body.workspace_id != ws_id {
         return Err((StatusCode::BAD_REQUEST, "workspace mismatch".into()));
     }
+    require_workspace_access(&s, &auth, ws_id).await?;
     let graph_id = Uuid::new_v4();
-    let owner_user_id = body.owner_user_id.clone();
     let meta = GraphMeta {
         graph_id,
         workspace_id: ws_id,
         name: body.name.clone(),
         owner: OwnerRef {
-            user_id: owner_user_id.clone(),
+            user_id: auth.user_id.clone(),
         },
+        organization_id: auth.organization_id.clone(),
+        created_by_user_id: auth.user_id.clone(),
         status: WorkspaceStatus::Draft,
         lock: LockState::Unlocked,
         approval: None,
@@ -432,7 +797,7 @@ async fn create_graph(
             graph_id,
             "main",
             None,
-            &owner_user_id,
+            &auth.user_id,
             BranchStatus::Promoted,
         )
         .await
@@ -442,7 +807,7 @@ async fn create_graph(
             graph_id,
             main_branch_id,
             None,
-            &owner_user_id,
+            &auth.user_id,
             serde_json::json!({ "event": "graph_created" }),
         )
         .await
@@ -736,22 +1101,25 @@ fn diff_graph_states(from: &GraphState, to: &GraphState) -> serde_json::Value {
 struct CreateBranchReq {
     name: String,
     base_revision_id: Option<Uuid>,
-    created_by: String,
+    #[serde(rename = "created_by", default)]
+    _created_by: Option<String>,
     status: Option<BranchStatus>,
 }
 
 async fn create_graph_branch(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     Json(body): Json<CreateBranchReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let id = s
         .store
         .create_branch(
             graph_id,
             &body.name,
             body.base_revision_id,
-            &body.created_by,
+            &auth.user_id,
             body.status.unwrap_or(BranchStatus::Draft),
         )
         .await
@@ -761,8 +1129,10 @@ async fn create_graph_branch(
 
 async fn list_graph_branches(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let rows = s
         .store
         .list_branches(graph_id)
@@ -782,9 +1152,11 @@ struct ListRevisionsQuery {
 
 async fn list_graph_revisions(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     axum::extract::Query(q): axum::extract::Query<ListRevisionsQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let rows = s
         .store
         .list_revisions(graph_id, q.branch_id)
@@ -799,8 +1171,10 @@ async fn list_graph_revisions(
 
 async fn diff_graph_revisions(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, from_revision_id, to_revision_id)): Path<(Uuid, Uuid, Uuid)>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let revs = s
         .store
         .list_revisions(graph_id, None)
@@ -829,20 +1203,23 @@ async fn diff_graph_revisions(
 
 #[derive(Deserialize)]
 struct CommitCurrentReq {
-    created_by: String,
+    #[serde(rename = "created_by", default)]
+    _created_by: Option<String>,
     event: Option<String>,
     details: Option<serde_json::Value>,
 }
 
 async fn commit_current_to_branch(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, branch_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<CommitCurrentReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let rev = commit_graph_revision(
         &s.store,
         graph_id,
-        &body.created_by,
+        &auth.user_id,
         body.event
             .as_deref()
             .unwrap_or("manual_branch_commit"),
@@ -856,14 +1233,17 @@ async fn commit_current_to_branch(
 
 #[derive(Deserialize)]
 struct CheckoutBranchReq {
-    created_by: Option<String>,
+    #[serde(rename = "created_by", default)]
+    _created_by: Option<String>,
 }
 
 async fn checkout_graph_branch(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, branch_id)): Path<(Uuid, Uuid)>,
-    Json(body): Json<CheckoutBranchReq>,
+    Json(_body): Json<CheckoutBranchReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let branches = s
         .store
         .list_branches(graph_id)
@@ -894,11 +1274,10 @@ async fn checkout_graph_branch(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let actor = body.created_by.unwrap_or_else(|| "system".to_string());
     let _ = commit_graph_revision(
         &s.store,
         graph_id,
-        &actor,
+        &auth.user_id,
         "checkout_branch",
         Some(branch_id),
         serde_json::json!({ "branch_id": branch_id, "head_revision_id": head_id }),
@@ -925,14 +1304,17 @@ struct RecordPromotionReq {
     promoted_revision_id: Option<Uuid>,
     status: BranchPromotionStatus,
     conflict_report: Option<serde_json::Value>,
-    created_by: String,
+    #[serde(rename = "created_by", default)]
+    _created_by: Option<String>,
 }
 
 async fn record_graph_promotion(
     State(s): State<AppState>,
-    Path(_graph_id): Path<Uuid>,
+    Extension(auth): Extension<AuthContext>,
+    Path(graph_id): Path<Uuid>,
     Json(body): Json<RecordPromotionReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let id = s
         .store
         .record_branch_promotion(
@@ -942,7 +1324,7 @@ async fn record_graph_promotion(
             body.promoted_revision_id,
             body.status,
             body.conflict_report,
-            &body.created_by,
+            &auth.user_id,
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -951,8 +1333,10 @@ async fn record_graph_promotion(
 
 async fn list_graph_promotions(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let rows = s
         .store
         .list_branch_promotions(graph_id)
@@ -969,15 +1353,18 @@ async fn list_graph_promotions(
 struct ExecutePromotionReq {
     source_branch_id: Uuid,
     target_branch_id: Uuid,
-    created_by: String,
+    #[serde(rename = "created_by", default)]
+    _created_by: Option<String>,
     apply_to_graph: Option<bool>,
 }
 
 async fn execute_graph_promotion(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     Json(body): Json<ExecutePromotionReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let branches = s
         .store
         .list_branches(graph_id)
@@ -1044,7 +1431,7 @@ async fn execute_graph_promotion(
                     None,
                     BranchPromotionStatus::Conflict,
                     Some(conflict_report.clone()),
-                    &body.created_by,
+                    &auth.user_id,
                 )
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1063,7 +1450,7 @@ async fn execute_graph_promotion(
             graph_id,
             target.id,
             target_head,
-            &body.created_by,
+            &auth.user_id,
             serde_json::json!({
                 "event": if is_fast_forward { "branch_promote_fast_forward" } else { "branch_promote_three_way" },
                 "details": {
@@ -1097,7 +1484,7 @@ async fn execute_graph_promotion(
             Some(promoted_rev),
             BranchPromotionStatus::Succeeded,
             None,
-            &body.created_by,
+            &auth.user_id,
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1114,6 +1501,7 @@ async fn execute_graph_promotion(
 struct GraphView {
     graph_id: Uuid,
     workspace_id: Option<Uuid>,
+    organization_id: Option<String>,
     project_crs: Option<CrsRecord>,
     nodes: Vec<NodeRecord>,
     edges: Vec<mine_eye_graph::EdgeRef>,
@@ -1121,8 +1509,10 @@ struct GraphView {
 
 async fn get_graph(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
 ) -> Result<Json<GraphView>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let snap = s
         .store
         .load_graph(graph_id)
@@ -1133,13 +1523,14 @@ async fn get_graph(
         .graph_workspace_meta(graph_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let (workspace_id, project_crs) = match ws {
-        Some((id, crs)) => (Some(id), crs),
-        None => (None, None),
+    let (workspace_id, organization_id, project_crs) = match ws {
+        Some((id, org_id, crs)) => (Some(id), Some(org_id), crs),
+        None => (None, None, None),
     };
     Ok(Json(GraphView {
         graph_id,
         workspace_id,
+        organization_id,
         project_crs,
         nodes: snap.nodes.into_values().collect(),
         edges: snap.edges,
@@ -1157,9 +1548,11 @@ struct AddNodeReq {
 
 async fn add_node(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     Json(body): Json<AddNodeReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let category = match body.category.as_str() {
         "input" => NodeCategory::Input,
         "transform" => NodeCategory::Transform,
@@ -1194,7 +1587,7 @@ async fn add_node(
     commit_graph_revision(
         &s.store,
         graph_id,
-        "system",
+        &auth.user_id,
         "add_node",
         body.branch_id,
         serde_json::json!({ "node_id": id, "kind": node.config.kind }),
@@ -1213,9 +1606,11 @@ struct PatchNodeParamsReq {
 
 async fn patch_node_params(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, node_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<PatchNodeParamsReq>,
 ) -> Result<Json<NodeRecord>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let node = s
         .store
         .patch_node_config(graph_id, node_id, body.params, body.policy)
@@ -1227,7 +1622,7 @@ async fn patch_node_params(
     commit_graph_revision(
         &s.store,
         graph_id,
-        "system",
+        &auth.user_id,
         "patch_node_params",
         body.branch_id,
         serde_json::json!({ "node_id": node_id }),
@@ -1256,8 +1651,10 @@ fn stable_graph_sig(snap: &mine_eye_graph::GraphSnapshot, arts: &[ArtifactEntry]
 
 async fn graph_events(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
-) -> Sse<impl futures_core::Stream<Item = Result<Event, std::convert::Infallible>>> {
+) -> Result<Sse<impl futures_core::Stream<Item = Result<Event, std::convert::Infallible>>>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let stream = stream! {
         let mut last_sig = String::new();
         loop {
@@ -1293,7 +1690,7 @@ async fn graph_events(
             tokio::time::sleep(Duration::from_millis(900)).await;
         }
     };
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10))))
 }
 
 #[derive(Deserialize)]
@@ -1308,9 +1705,11 @@ struct AddEdgeReq {
 
 async fn add_edge(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     Json(body): Json<AddEdgeReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let eid = s
         .store
         .add_edge(
@@ -1326,7 +1725,7 @@ async fn add_edge(
     commit_graph_revision(
         &s.store,
         graph_id,
-        "system",
+        &auth.user_id,
         "add_edge",
         body.branch_id,
         serde_json::json!({
@@ -1343,9 +1742,11 @@ async fn add_edge(
 
 async fn delete_node(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, node_id)): Path<(Uuid, Uuid)>,
     axum::extract::Query(q): axum::extract::Query<BranchMutationQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     s.store
         .delete_node(graph_id, node_id)
         .await
@@ -1356,7 +1757,7 @@ async fn delete_node(
     commit_graph_revision(
         &s.store,
         graph_id,
-        "system",
+        &auth.user_id,
         "delete_node",
         q.branch_id,
         serde_json::json!({ "node_id": node_id }),
@@ -1368,9 +1769,11 @@ async fn delete_node(
 
 async fn delete_edge(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, edge_id)): Path<(Uuid, Uuid)>,
     axum::extract::Query(q): axum::extract::Query<BranchMutationQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     s.store
         .delete_edge(graph_id, edge_id)
         .await
@@ -1381,7 +1784,7 @@ async fn delete_edge(
     commit_graph_revision(
         &s.store,
         graph_id,
-        "system",
+        &auth.user_id,
         "delete_edge",
         q.branch_id,
         serde_json::json!({ "edge_id": edge_id }),
@@ -1403,9 +1806,11 @@ struct RunGraphReq {
 
 async fn run_graph(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     Json(body): Json<RunGraphReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let snapshot = s
         .store
         .load_graph(graph_id)
@@ -1426,7 +1831,7 @@ async fn run_graph(
         .graph_workspace_meta(graph_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .and_then(|(_, crs)| crs);
+        .and_then(|(_, _, crs)| crs);
 
     let plan = s
         .scheduler
@@ -1499,8 +1904,10 @@ struct ArtifactEntry {
 
 async fn list_artifacts(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
 ) -> Result<Json<Vec<ArtifactEntry>>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let snap = s
         .store
         .load_graph(graph_id)
@@ -1527,8 +1934,10 @@ async fn list_artifacts(
 
 async fn get_viewer_manifest(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path((graph_id, viewer_node_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<ViewerManifest>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let snap = s
         .store
         .load_graph(graph_id)
@@ -1555,8 +1964,10 @@ struct AiSuggestReq {
 
 async fn list_ai_suggestions(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let rows = s
         .store
         .list_ai_suggestions(graph_id)
@@ -1578,9 +1989,11 @@ async fn list_ai_suggestions(
 
 async fn ai_suggest(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
     Json(body): Json<AiSuggestReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
     let id = s
         .store
         .insert_ai_suggestion(graph_id, &body.kind, body.payload)
@@ -1591,9 +2004,12 @@ async fn ai_suggest(
 
 async fn ai_chat(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
-    Json(body): Json<ai_chat::AiChatRequest>,
+    Json(mut body): Json<ai_chat::AiChatRequest>,
 ) -> Result<Json<ai_chat::AiChatResponse>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
+    body.user_id = Some(auth.user_id.clone());
     let resp = ai_chat::run_ai_chat(
         s.store.clone(),
         s.jobs.clone(),
@@ -1608,16 +2024,18 @@ async fn ai_chat(
 
 #[derive(Deserialize)]
 struct AiConfirmReq {
-    user_id: String,
+    #[serde(rename = "user_id", default)]
+    _user_id: Option<String>,
 }
 
 async fn ai_confirm(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-    Json(body): Json<AiConfirmReq>,
+    Json(_body): Json<AiConfirmReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     s.store
-        .confirm_ai_suggestion(id, &body.user_id)
+        .confirm_ai_suggestion(id, &auth.user_id)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(StatusCode::NO_CONTENT)
@@ -1626,14 +2044,16 @@ async fn ai_confirm(
 /// Seeds demo: collars + surveys -> desurvey; desurvey + assays -> drillhole model.
 async fn demo_seed(
     State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let ws = s
         .store
         .create_workspace(
             "demo",
             OwnerRef {
-                user_id: "demo".into(),
+                user_id: auth.user_id.clone(),
             },
+            &auth.organization_id,
             Some(serde_json::to_value(CrsRecord::epsg(4326)).unwrap()),
         )
         .await
@@ -1645,8 +2065,10 @@ async fn demo_seed(
         workspace_id: ws,
         name: "demo-graph".into(),
         owner: OwnerRef {
-            user_id: "demo".into(),
+            user_id: auth.user_id.clone(),
         },
+        organization_id: auth.organization_id.clone(),
+        created_by_user_id: auth.user_id.clone(),
         status: WorkspaceStatus::Draft,
         lock: LockState::Unlocked,
         approval: None,
