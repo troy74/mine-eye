@@ -16,6 +16,12 @@
 - Worker: executes node kinds, writes artifacts, updates execution/cache state.
 - Nodes crate: domain-specific node implementations for acquisition, spatial, surface, imagery, etc.
 
+## Identity and Access
+- Web app uses Clerk sign-in; authenticated state gates the main app shell.
+- Orchestrator verifies Clerk tokens and derives request `AuthContext` (`organization_id`, `user_id`, role).
+- Workspace and graph access are organization-scoped; personal accounts map to `personal:{user_id}` org ids.
+- Persistence includes users, organizations, and organization memberships; workspaces are organization-owned.
+
 ## AI Assistant Scope
 - Assist with geoscience workflow planning and graph authoring.
 - Use backend tools for inspecting/updating graph definitions.

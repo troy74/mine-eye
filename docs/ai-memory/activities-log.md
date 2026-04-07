@@ -1,5 +1,15 @@
 # Activities Log (AI Context)
 
+## 2026-04-08
+- Established Clerk-backed authentication and organization isolation across web + orchestrator:
+  - web shell now requires sign-in (`ClerkProvider`, signed-out screen, user menu).
+  - orchestrator verifies Clerk RS256 session tokens with JWKS caching and authorized-party checks.
+  - request-scoped `AuthContext` is enforced on API routes with workspace/graph organization checks.
+  - added identity persistence migration (`users`, `organizations`, `organization_memberships`, `workspaces.organization_id`).
+- Improved viewer/workspace UX in web:
+  - refreshed sidebar/inspector/3D panel interactions.
+  - tightened project-local storage scoping per authenticated org/user context.
+
 ## 2026-04-07
 - AOI map initialization bug investigated and patched:
   - fixed artifact fetch path to use `api(artifact.url)` in web app.

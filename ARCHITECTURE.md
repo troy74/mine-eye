@@ -280,30 +280,50 @@ Expected UX semantics:
 - running and failed states should be explicit and actionable
 - node-level run and graph-level run remain first-class controls
 
-## 12. Security and Identity Roadmap (Placeholder Contracts)
+## 12. Security and Identity (Current)
 
-The following are planned architecture components and should be treated as future backend services/contracts:
+### 12.1 Authentication
 
-### 10.1 Authentication
+Implemented:
 
-- token/session-based identity for all mutating API endpoints
-- standardized request identity context (`user_id`, `org_id`, role/scopes)
+- orchestrator runs an auth middleware (`require_auth`) over API routes.
+- Clerk session/JWT tokens are accepted via `Authorization: Bearer ...` or `__session` cookie.
+- RS256 verification uses Clerk JWKS with cache/refresh behavior.
+- authorized-party checks use `CLERK_AUTHORIZED_PARTIES` with localhost defaults.
 
-### 10.2 Authorization
+### 12.2 Authorization and Tenant Isolation
 
-- policy checks at service boundary:
-  - workspace/project access
-  - branch promotion rights
-  - run/execute rights
-  - viewer/artifact read rights
+Implemented:
 
-### 10.3 Auditability
+- every request gets an `AuthContext` (`organization_id`, `user_id`, organization role).
+- access guards enforce that:
+  - workspace belongs to caller organization
+  - graph belongs to caller organization
+- personal users are normalized to deterministic organization ids (`personal:{user_id}`).
+- graph/workspace mutations and run endpoints operate under organization-scoped checks.
 
-- immutable audit events for:
-  - graph mutations
-  - promotions
-  - run requests
-  - AI-assisted actions
+### 12.3 Identity Persistence Model
+
+Implemented:
+
+- relational identity tables:
+  - `users`
+  - `organizations`
+  - `organization_memberships`
+- `workspaces.organization_id` is required and FK-backed.
+- graph metadata includes `organization_id` and `created_by_user_id`.
+- store bootstrap ensures user/org/membership rows exist for authenticated callers.
+
+### 12.4 Auditability (Current + Next)
+
+Current:
+
+- graph revisions preserve actor identity (`created_by`) for branch/mutation history.
+- AI mutation confirmations are linked to authenticated users.
+
+Next:
+
+- expanded immutable audit event streams for promotion/run/AI policy actions.
 
 ## 13. Optional Additional Encryption (Placeholder)
 

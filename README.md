@@ -194,6 +194,23 @@ npm run dev
 
 Default web URL: `http://localhost:5174`
 
+### 5) Configure Clerk auth (required)
+
+The web app requires Clerk at startup and will throw if no publishable key is present.
+
+Set one of these in your shell or `.env.dev`:
+
+- `VITE_CLERK_PUBLISHABLE_KEY`
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+
+Orchestrator verifies Clerk session tokens/JWTs and enforces organization-scoped access for workspaces and graphs.
+
+Optional orchestrator env overrides:
+
+- `CLERK_AUTHORIZED_PARTIES` (comma-separated `azp` allow-list; localhost defaults are built in)
+- `CLERK_FRONTEND_API_URL` (derive JWKS endpoint)
+- `CLERK_JWKS_URL` (explicit JWKS endpoint; useful for custom domains)
+
 ## Core Runtime Flows
 
 - Graph edits in web call orchestrator graph endpoints.
@@ -245,20 +262,25 @@ This ordering keeps AOI, terrain, and imagery explicit and reproducible.
 
 This codebase is in active early development. Compatibility with old example workspaces is not guaranteed unless explicitly stated.
 
-## Security/Auth and AI Governance Placeholders
+## Security/Auth and AI Governance
 
-These are intentionally scaffolded as architecture requirements for upcoming phases:
+Current implementation:
 
-- **Authentication/authorization**:
-  - move toward token-based auth and per-request identity context in orchestrator
-  - support role/scope checks (user, org, workspace/project permissions)
-- **Encryption options**:
-  - baseline TLS in transit
-  - optional envelope encryption at rest for sensitive artifacts/config metadata
-- **AI usage governance**:
-  - per-org and per-suballocation AI credit ledgers
-  - policy checks before AI actions (budget, role, allowed tool scope)
-  - auditable AI action logs linked to graph/project context
+- **Authentication**:
+  - Clerk-backed session/JWT verification in orchestrator middleware.
+  - web app is wrapped in `ClerkProvider` and gates app shell behind sign-in.
+- **Authorization**:
+  - request-scoped `AuthContext` (`organization_id`, `user_id`, role) is required on API routes.
+  - workspace/graph access is checked against organization ownership before reads/mutations/runs.
+  - personal users are mapped to deterministic personal org ids (`personal:{user_id}`).
+- **Identity persistence**:
+  - database tables for `users`, `organizations`, and `organization_memberships`.
+  - workspace rows now carry `organization_id`; graph metadata stores organization and creator ids.
+
+Remaining roadmap items:
+
+- optional envelope encryption for sensitive artifact/config classes
+- AI budget/credit policy service (org/suballocation controls, metering, and guardrails)
 
 See [ARCHITECTURE.md](/Users/troytravlos/mine-eye/ARCHITECTURE.md) for proposed component boundaries and service-level responsibilities.
 
