@@ -78,6 +78,7 @@ type BlockVoxel = {
   dz: number;
   aboveCutoff?: boolean;
   belowCutoffOpacity?: number;
+  cutoffGrade?: number;
   epsg?: number;
   measures?: Record<string, number | string>;
   sourceLayerId?: string;
@@ -960,6 +961,7 @@ function parseSceneJson(
     rawMeasures?: unknown,
     aboveCutoff?: boolean,
     belowCutoffOpacity?: number,
+    cutoffGrade?: number,
     epsg?: number
   ) => {
     const x = n(xv);
@@ -981,6 +983,7 @@ function parseSceneJson(
       dz,
       aboveCutoff,
       belowCutoffOpacity,
+      cutoffGrade,
       epsg,
       measures: Object.keys(parsedMeasures).length ? parsedMeasures : undefined,
     });
@@ -1058,6 +1061,9 @@ function parseSceneJson(
     const defaultBelowCutoffOpacity = styleDefaults
       ? n(styleDefaults.below_cutoff_opacity)
       : null;
+    const defaultCutoffGrade = styleDefaults
+      ? n(styleDefaults.cutoff_grade)
+      : null;
     if (Array.isArray(blocks)) {
       for (const row of blocks) {
         if (!row || typeof row !== "object" || Array.isArray(row)) continue;
@@ -1076,6 +1082,7 @@ function parseSceneJson(
           attrs,
           typeof r.above_cutoff === "boolean" ? r.above_cutoff : undefined,
           n(r.below_cutoff_opacity) ?? defaultBelowCutoffOpacity ?? undefined,
+          n(r.cutoff_grade) ?? defaultCutoffGrade ?? undefined,
           artifactEpsg
         );
       }
@@ -1611,24 +1618,29 @@ function BlockVoxelLayer3D({
     color: string;
   };
   const aboveRef = useRef<THREE.InstancedMesh>(null);
-  const belowRef = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
-  const { above, below } = useMemo(() => {
+  const above = useMemo(() => {
     const resolvedAbove: RenderVoxel[] = [];
-    const resolvedBelow: RenderVoxel[] = [];
     const attrKey = style.attributeKey.trim();
     for (const v of voxels) {
+      const raw = attrKey.length > 0 ? (v.measures?.[attrKey] ?? null) : null;
+      const numericRaw = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+      const passesCutoff =
+        typeof v.aboveCutoff === "boolean"
+          ? v.aboveCutoff
+          : numericRaw === null || typeof v.cutoffGrade !== "number"
+            ? true
+            : numericRaw >= v.cutoffGrade;
+      if (!passesCutoff) continue;
       const pos = toLocal(v.x, v.y, v.z + lift);
       const sx = Math.max(0.1, v.dx);
       const sy = Math.max(0.1, v.dz);
       const sz = Math.max(0.1, v.dy);
-      const raw = attrKey.length > 0 ? (v.measures?.[attrKey] ?? null) : null;
       const color = colorForMeasure(raw, domain);
-      const target = v.aboveCutoff === false ? resolvedBelow : resolvedAbove;
-      target.push({ position: pos, scale: [sx, sy, sz], color });
+      resolvedAbove.push({ position: pos, scale: [sx, sy, sz], color });
     }
-    return { above: resolvedAbove, below: resolvedBelow };
+    return resolvedAbove;
   }, [colorForMeasure, domain, lift, style.attributeKey, toLocal, voxels]);
 
   useLayoutEffect(() => {
@@ -1646,50 +1658,19 @@ function BlockVoxelLayer3D({
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }, [above, dummy]);
 
-  useLayoutEffect(() => {
-    if (!belowRef.current) return;
-    const mesh = belowRef.current;
-    for (let i = 0; i < below.length; i++) {
-      const item = below[i];
-      dummy.position.copy(item.position);
-      dummy.scale.set(item.scale[0], item.scale[1], item.scale[2]);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-      mesh.setColorAt(i, new THREE.Color(item.color));
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [below, dummy]);
-
   const aboveOpacity = Math.max(0.05, style.opacity);
-  const suggestedBelowOpacity =
-    voxels.find((v) => typeof v.belowCutoffOpacity === "number")?.belowCutoffOpacity ?? 0.14;
-  const belowOpacity = Math.max(
-    0.002,
-    style.opacity * Math.max(0, Math.min(1, suggestedBelowOpacity))
-  );
 
   return (
     <group>
       {above.length > 0 ? (
         <instancedMesh ref={aboveRef} args={[undefined, undefined, above.length]}>
           <boxGeometry args={[1, 1, 1]} />
-          <meshLambertMaterial
+          <meshBasicMaterial
             vertexColors
             transparent
             opacity={aboveOpacity}
-            depthWrite={true}
-          />
-        </instancedMesh>
-      ) : null}
-      {below.length > 0 ? (
-        <instancedMesh ref={belowRef} args={[undefined, undefined, below.length]}>
-          <boxGeometry args={[1, 1, 1]} />
-          <meshLambertMaterial
-            vertexColors
-            transparent
-            opacity={belowOpacity}
-            depthWrite={false}
+            depthWrite
+            toneMapped={false}
           />
         </instancedMesh>
       ) : null}
