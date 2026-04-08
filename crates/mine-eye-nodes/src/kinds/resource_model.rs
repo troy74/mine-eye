@@ -693,8 +693,49 @@ pub async fn run_block_grade_model(
         "points": centers_rows
     });
 
+    let grade_histogram = compute_bins(&grade_values);
+    let cutoff_share_blocks_pct = if total > 0 {
+        (above_cutoff_blocks as f64 / total as f64) * 100.0
+    } else {
+        0.0
+    };
+    let cutoff_share_tonnage_pct = if total_tonnage > 0.0 {
+        (above_cutoff_tonnage / total_tonnage) * 100.0
+    } else {
+        0.0
+    };
+
     let report_payload = json!({
+        "schema_id": "report.block_resource.v2",
         "type": "block_resource_report",
+        "semantic_summary": {
+            "title": "Block Grade Model Resource Summary",
+            "element_field": element_field,
+            "grade_unit": params.grade_unit,
+            "cutoff_grade": params.cutoff_grade,
+            "block_size_m": { "x": dx, "y": dy, "z": dz },
+            "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
+            "estimated_blocks": render_blocks.len(),
+            "above_cutoff_blocks": above_cutoff_blocks,
+            "above_cutoff_share_blocks_pct": cutoff_share_blocks_pct,
+            "above_cutoff_tonnage_t": above_cutoff_tonnage,
+            "above_cutoff_share_tonnage_pct": cutoff_share_tonnage_pct,
+            "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
+            "total_tonnage_t": total_tonnage,
+            "total_contained_metal_oz": total_contained_metal_oz,
+            "mean_grade": mean_grade,
+            "min_grade": min_grade,
+            "max_grade": max_grade,
+            "key_parameters": {
+                "estimation_method": params.estimation_method,
+                "idw_power": params.idw_power,
+                "search_radius_m": params.search_radius_m,
+                "min_samples": params.min_samples,
+                "max_samples": params.max_samples,
+                "clip_mode": params.clip_mode,
+                "sg_constant": params.sg_constant
+            }
+        },
         "summary": {
             "cutoff_grade": params.cutoff_grade,
             "sg_constant": params.sg_constant,
@@ -725,7 +766,7 @@ pub async fn run_block_grade_model(
             "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
             "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
         },
-        "grade_histogram": compute_bins(&grade_values),
+        "grade_histogram": grade_histogram,
         "notes": [
             "contained_unscaled is grade*tonnage in source grade units. contained_metal_t applies grade_unit_factor_to_fraction.",
             "Topography clipping currently uses block-center test against the best available surface_grid.",

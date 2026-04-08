@@ -1,5 +1,8 @@
+use std::env;
+
 use mine_eye_types::{JobEnvelope, JobResult, JobStatus};
-use serde_json::Value;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use serde_json::{json, Value};
 
 use crate::executor::ExecutionContext;
 use crate::NodeError;
@@ -11,134 +14,193 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn value_inline(v: &Value) -> String {
+fn n(v: &Value) -> Option<f64> {
     match v {
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.clone(),
-        _ => serde_json::to_string(v).unwrap_or_else(|_| "<invalid-json>".into()),
+        Value::Number(x) => x.as_f64().filter(|k| k.is_finite()),
+        Value::String(s) => s.trim().parse::<f64>().ok().filter(|k| k.is_finite()),
+        _ => None,
     }
 }
 
-fn looks_like_image_url(s: &str) -> bool {
-    let t = s.trim();
-    let lower = t.to_ascii_lowercase();
-    (lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("/files/"))
-        && (lower.ends_with(".png")
-            || lower.ends_with(".jpg")
-            || lower.ends_with(".jpeg")
-            || lower.ends_with(".webp")
-            || lower.ends_with(".gif")
-            || lower.ends_with(".svg"))
+fn render_simple_html_from_markdown(title: &str, markdown: &str) -> String {
+    let mut body = String::new();
+    body.push_str(&format!("<h1>{}</h1>", escape_html(title)));
+    for line in markdown.lines() {
+        let t = line.trim_end();
+        if let Some(rest) = t.strip_prefix("# ") {
+            body.push_str(&format!("<h1>{}</h1>", escape_html(rest)));
+        } else if let Some(rest) = t.strip_prefix("## ") {
+            body.push_str(&format!("<h2>{}</h2>", escape_html(rest)));
+        } else if let Some(rest) = t.strip_prefix("### ") {
+            body.push_str(&format!("<h3>{}</h3>", escape_html(rest)));
+        } else if let Some(rest) = t.strip_prefix("- ") {
+            body.push_str(&format!("<li>{}</li>", escape_html(rest)));
+        } else if t.is_empty() {
+            body.push_str("<br/>");
+        } else {
+            body.push_str(&format!("<p>{}</p>", escape_html(t)));
+        }
+    }
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><style>body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.5;color:#0f172a}}h1,h2,h3{{margin-top:1em;margin-bottom:.4em}}p{{margin:.35em 0}}li{{margin:.15em 0}}code{{background:#f3f4f6;padding:1px 4px;border-radius:4px}}</style></head><body>{}</body></html>",
+        escape_html(title),
+        body
+    )
 }
 
-fn render_markdown_block(
-    key: &str,
-    v: &Value,
-    level: usize,
-    out: &mut String,
-    image_urls: &mut Vec<String>,
-) {
-    let h = "#".repeat(level.clamp(1, 6));
-    match v {
-        Value::Object(map) => {
-            out.push_str(&format!("\n{} {}\n\n", h, key));
-            for (k, vv) in map {
-                match vv {
-                    Value::Object(_) | Value::Array(_) => render_markdown_block(k, vv, level + 1, out, image_urls),
-                    Value::String(s) if looks_like_image_url(s) => {
-                        image_urls.push(s.clone());
-                        out.push_str(&format!("- **{}**\n\n  ![{}]({})\n\n", k, k, s));
-                    }
-                    _ => {
-                        out.push_str(&format!("- **{}**: {}\n", k, value_inline(vv)));
-                    }
-                }
-            }
-            out.push('\n');
-        }
-        Value::Array(arr) => {
-            out.push_str(&format!("\n{} {}\n\n", h, key));
-            if arr.iter().all(|x| !x.is_object() && !x.is_array()) {
-                for vv in arr {
-                    out.push_str(&format!("- {}\n", value_inline(vv)));
-                }
-                out.push('\n');
-                return;
-            }
-            for (i, vv) in arr.iter().enumerate() {
-                render_markdown_block(&format!("{} #{}", key, i + 1), vv, (level + 1).clamp(1, 6), out, image_urls);
-            }
-        }
-        Value::String(s) if looks_like_image_url(s) => {
-            image_urls.push(s.clone());
-            out.push_str(&format!("\n{} {}\n\n![{}]({})\n\n", h, key, key, s));
-        }
-        _ => {
-            out.push_str(&format!("\n{} {}\n\n{}\n\n", h, key, value_inline(v)));
-        }
+fn fmt_num(x: Option<f64>, digits: usize) -> String {
+    match x {
+        Some(v) => format!("{:.1$}", v, digits),
+        None => "n/a".to_string(),
     }
 }
 
-fn render_html_block(key: &str, v: &Value, level: usize, out: &mut String) {
-    let tag = format!("h{}", level.clamp(1, 6));
-    out.push_str(&format!("<{tag}>{}</{tag}>", escape_html(key)));
-    match v {
-        Value::Object(map) => {
-            out.push_str("<ul>");
-            for (k, vv) in map {
-                match vv {
-                    Value::Object(_) | Value::Array(_) => {
-                        out.push_str("<li>");
-                        render_html_block(k, vv, (level + 1).clamp(1, 6), out);
-                        out.push_str("</li>");
-                    }
-                    Value::String(s) if looks_like_image_url(s) => {
-                        out.push_str(&format!(
-                            "<li><strong>{}</strong><div><img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto;border-radius:8px;border:1px solid #e5e7eb\"/></div></li>",
-                            escape_html(k),
-                            escape_html(s),
-                            escape_html(k)
-                        ));
-                    }
-                    _ => {
-                        out.push_str(&format!(
-                            "<li><strong>{}</strong>: {}</li>",
-                            escape_html(k),
-                            escape_html(&value_inline(vv))
-                        ));
-                    }
-                }
-            }
-            out.push_str("</ul>");
-        }
-        Value::Array(arr) => {
-            out.push_str("<ol>");
-            for vv in arr {
-                out.push_str("<li>");
-                match vv {
-                    Value::Object(_) | Value::Array(_) => render_html_block("item", vv, (level + 1).clamp(1, 6), out),
-                    Value::String(s) if looks_like_image_url(s) => out.push_str(&format!(
-                        "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto;border-radius:8px;border:1px solid #e5e7eb\"/>",
-                        escape_html(s),
-                        escape_html(key)
-                    )),
-                    _ => out.push_str(&escape_html(&value_inline(vv))),
-                }
-                out.push_str("</li>");
-            }
-            out.push_str("</ol>");
-        }
-        Value::String(s) if looks_like_image_url(s) => {
-            out.push_str(&format!(
-                "<img src=\"{}\" alt=\"{}\" style=\"max-width:100%;height:auto;border-radius:8px;border:1px solid #e5e7eb\"/>",
-                escape_html(s),
-                escape_html(key)
-            ));
-        }
-        _ => out.push_str(&format!("<p>{}</p>", escape_html(&value_inline(v)))),
+fn compact_summary_payload(source: &Value) -> Value {
+    let semantic = source.pointer("/semantic_summary").cloned();
+    let summary = source.pointer("/summary").cloned();
+    let hist = source
+        .pointer("/grade_histogram")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().take(6).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let notes = source
+        .pointer("/notes")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().take(4).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    if semantic.is_some() || summary.is_some() {
+        json!({
+            "semantic_summary": semantic,
+            "summary": summary,
+            "grade_histogram_top_bins": hist,
+            "notes": notes,
+        })
+    } else {
+        source.clone()
     }
+}
+
+fn fallback_markdown(title: &str, src_key: &str, compact: &Value) -> String {
+    let sem = compact.pointer("/semantic_summary").unwrap_or(compact);
+    let summary = compact.pointer("/summary").unwrap_or(compact);
+
+    let element_field = sem
+        .get("element_field")
+        .or_else(|| summary.get("element_field"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("grade");
+    let grade_unit = sem
+        .get("grade_unit")
+        .or_else(|| summary.get("grade_unit"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unit");
+
+    let cutoff = sem
+        .get("cutoff_grade")
+        .or_else(|| summary.get("cutoff_grade"));
+    let mean_grade = sem
+        .get("mean_grade")
+        .or_else(|| summary.get("mean_grade"));
+    let max_grade = sem
+        .get("max_grade")
+        .or_else(|| summary.get("max_grade"));
+    let tonnage = sem
+        .get("above_cutoff_tonnage_t")
+        .or_else(|| summary.get("above_cutoff_tonnage_t"));
+    let ounces = sem
+        .get("above_cutoff_contained_metal_oz")
+        .or_else(|| summary.get("above_cutoff_contained_metal_oz"));
+    let share = sem
+        .get("above_cutoff_share_blocks_pct")
+        .or_else(|| summary.get("above_cutoff_share_blocks_pct"));
+
+    let mut md = String::new();
+    md.push_str(&format!("# {}\n\n", title));
+    md.push_str(&format!("Source artifact: `{}`\n\n", src_key));
+    md.push_str("## Executive Summary\n\n");
+    md.push_str(&format!(
+        "Block model for **{}** with cutoff **{} {}** yields approximately **{} t** above cutoff and **{} oz** contained metal.\n\n",
+        element_field,
+        fmt_num(n(cutoff.unwrap_or(&Value::Null)), 3),
+        grade_unit,
+        fmt_num(n(tonnage.unwrap_or(&Value::Null)), 0),
+        fmt_num(n(ounces.unwrap_or(&Value::Null)), 0)
+    ));
+
+    md.push_str("## Key Metrics\n\n");
+    md.push_str("| Metric | Value |\n|---|---:|\n");
+    md.push_str(&format!("| Mean grade ({}) | {} |\n", grade_unit, fmt_num(n(mean_grade.unwrap_or(&Value::Null)), 3)));
+    md.push_str(&format!("| Max grade ({}) | {} |\n", grade_unit, fmt_num(n(max_grade.unwrap_or(&Value::Null)), 3)));
+    md.push_str(&format!("| Above-cutoff share (%) | {} |\n", fmt_num(n(share.unwrap_or(&Value::Null)), 1)));
+    md.push_str(&format!("| Above-cutoff tonnage (t) | {} |\n", fmt_num(n(tonnage.unwrap_or(&Value::Null)), 0)));
+    md.push_str(&format!("| Above-cutoff contained metal (oz) | {} |\n\n", fmt_num(n(ounces.unwrap_or(&Value::Null)), 0)));
+
+    md.push_str("## Geological Commentary (Preliminary)\n\n");
+    md.push_str("- Elevated grades relative to cutoff suggest a potentially coherent high-grade core where drill support density is strongest.\n");
+    md.push_str("- Interpret tonnage/ounces as early-stage, interpolation-driven indicators pending domain constraints and geostatistical validation.\n");
+    md.push_str("- Next confidence gain comes from domain clipping and tighter search constraints to reduce extrapolation at model edges.\n");
+
+    md
+}
+
+async fn summarize_with_openrouter(title: &str, src_key: &str, compact: &Value) -> Result<String, String> {
+    let api_key = env::var("OPENROUTER_API_KEY")
+        .or_else(|_| env::var("OPENROUTER_KEY"))
+        .map_err(|_| "OPENROUTER_API_KEY is not set".to_string())?;
+
+    let system_prompt = "You are a mining resource modelling analyst. Write concise, decision-grade markdown. Include: (1) executive summary, (2) compact KPI table, (3) key modelling parameters, (4) short geological commentary with caveats. Keep to ~250-450 words and avoid repeating raw JSON.";
+    let user_prompt = format!(
+        "Create a concise markdown report titled '{}'. Source artifact key: {}. Input semantic JSON:\n\n{}",
+        title,
+        src_key,
+        serde_json::to_string_pretty(compact).unwrap_or_else(|_| "{}".to_string())
+    );
+
+    let body = json!({
+        "model": "openai/gpt-5-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.25
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(40))
+        .build()
+        .map_err(|e| format!("http client error: {e}"))?;
+
+    let resp = client
+        .post("https://openrouter.ai/api/v1/chat/completions")
+        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .header(CONTENT_TYPE, "application/json")
+        .header("HTTP-Referer", "https://mine-eye.local")
+        .header("X-Title", "mine-eye-md-viewer")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("openrouter request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_else(|_| "<no body>".to_string());
+        return Err(format!("openrouter http {}: {}", status, txt));
+    }
+
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("openrouter response parse failed: {e}"))?;
+
+    let content = v
+        .pointer("/choices/0/message/content")
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "openrouter empty content".to_string())?;
+
+    Ok(content)
 }
 
 pub async fn run_md_viewer(
@@ -158,32 +220,51 @@ pub async fn run_md_viewer(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Semantic JSON Report".to_string());
+    let llm_enabled = job
+        .output_spec
+        .pointer("/node_ui/llm_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
-    let mut image_urls = Vec::<String>::new();
-    let mut markdown = String::new();
-    markdown.push_str(&format!("# {}\n\n", title));
-    markdown.push_str(&format!("Source artifact: `{}`\n\n", first.key));
-    render_markdown_block("Report", &source, 2, &mut markdown, &mut image_urls);
+    let compact = compact_summary_payload(&source);
+    let (markdown, llm_meta) = if llm_enabled {
+        match summarize_with_openrouter(&title, &first.key, &compact).await {
+            Ok(md) => (
+                md,
+                json!({
+                    "used": true,
+                    "provider": "openrouter",
+                    "model": "openai/gpt-5-mini",
+                    "fallback_used": false
+                }),
+            ),
+            Err(reason) => (
+                fallback_markdown(&title, &first.key, &compact),
+                json!({
+                    "used": false,
+                    "provider": "openrouter",
+                    "model": "openai/gpt-5-mini",
+                    "fallback_used": true,
+                    "fallback_reason": reason
+                }),
+            ),
+        }
+    } else {
+        (
+            fallback_markdown(&title, &first.key, &compact),
+            json!({"used": false, "fallback_used": true, "fallback_reason": "llm_disabled"}),
+        )
+    };
 
-    let mut html_body = String::new();
-    html_body.push_str(&format!("<h1>{}</h1>", escape_html(&title)));
-    html_body.push_str(&format!(
-        "<p style=\"color:#6b7280\">Source artifact: <code>{}</code></p>",
-        escape_html(&first.key)
-    ));
-    render_html_block("Report", &source, 2, &mut html_body);
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><style>body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.5;color:#0f172a}}code{{background:#f3f4f6;padding:1px 4px;border-radius:4px}}h1,h2,h3,h4,h5,h6{{margin-top:1.1em}}ul,ol{{padding-left:1.3em}}</style></head><body>{}</body></html>",
-        escape_html(&title),
-        html_body
-    );
+    let html = render_simple_html_from_markdown(&title, &markdown);
 
-    let doc = serde_json::json!({
-        "schema_id": "report.markdown_doc.v1",
+    let doc = json!({
+        "schema_id": "report.markdown_doc.v2",
         "type": "md_view_doc",
         "title": title,
         "source_artifact_key": first.key,
-        "image_urls": image_urls,
+        "input_semantic_summary": compact,
+        "llm": llm_meta,
         "markdown": markdown,
         "html": html,
         "display_contract": {
@@ -206,8 +287,18 @@ pub async fn run_md_viewer(
         job.graph_id, job.node_id
     );
     let doc_bytes = serde_json::to_vec(&doc)?;
-    let md_bytes = markdown.into_bytes();
-    let html_bytes = html.into_bytes();
+    let md_bytes = doc
+        .get("markdown")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .as_bytes()
+        .to_vec();
+    let html_bytes = doc
+        .get("html")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .as_bytes()
+        .to_vec();
 
     let doc_ref =
         super::runtime::write_artifact(ctx, &json_key, &doc_bytes, Some("application/json")).await?;
@@ -224,4 +315,3 @@ pub async fn run_md_viewer(
         error_message: None,
     })
 }
-

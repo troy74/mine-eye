@@ -96,8 +96,9 @@ export function NodeInspector({
   const isTilebrokerNode = kind === "tilebroker";
   const isAoiNode = kind === "aoi";
   const isBlockGradeModelNode = kind === "block_grade_model";
+  const isMdViewerNode = kind === "md_viewer";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode;
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMdViewerNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -456,6 +457,12 @@ export function NodeInspector({
   const [bgMaxBlocks, setBgMaxBlocks] = useState<string>(
     () => (typeof initialUi.max_blocks === "number" ? String(initialUi.max_blocks) : "45000")
   );
+  const [mdTitle, setMdTitle] = useState<string>(
+    () => (typeof initialUi.title === "string" ? initialUi.title : "Semantic JSON Report")
+  );
+  const [mdLlmEnabled, setMdLlmEnabled] = useState<boolean>(
+    () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : true)
+  );
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -657,6 +664,8 @@ export function NodeInspector({
     );
     setBgPalette(typeof u.palette === "string" ? u.palette : "viridis");
     setBgMaxBlocks(typeof u.max_blocks === "number" ? String(u.max_blocks) : "45000");
+    setMdTitle(typeof u.title === "string" ? u.title : "Semantic JSON Report");
+    setMdLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : true);
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -998,6 +1007,9 @@ export function NodeInspector({
       ui.below_cutoff_opacity = Math.max(0, Math.min(1, n(bgBelowCutoffOpacity, 0.08)));
       ui.palette = bgPalette;
       ui.max_blocks = Math.max(1000, Math.trunc(n(bgMaxBlocks, 45000)));
+    } else if (isMdViewerNode) {
+      ui.title = mdTitle.trim() || "Semantic JSON Report";
+      ui.llm_enabled = mdLlmEnabled;
     } else if (isAoiNode) {
       ui.mode = aoiMode;
       ui.margin_pct = Math.max(0, n(aoiMarginPct, 25));
@@ -1113,6 +1125,9 @@ export function NodeInspector({
     bgBelowCutoffOpacity,
     bgPalette,
     bgMaxBlocks,
+    isMdViewerNode,
+    mdTitle,
+    mdLlmEnabled,
     graphId,
     activeBranchId,
     node.id,
@@ -1270,8 +1285,10 @@ export function NodeInspector({
                 ? "AOI"
                 : isBlockGradeModelNode
                   ? "Block model"
+                  : isMdViewerNode
+                    ? "Report"
               : "Config",
-    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode]
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMdViewerNode]
   );
 
   const tabs = useMemo(() => {
@@ -2739,6 +2756,38 @@ export function NodeInspector({
                   </select>
                 </label>
               </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isMdViewerNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Generate a concise report from semantic JSON. Uses OpenRouter model{" "}
+              <code>openai/gpt-5-mini</code> when enabled and API key is available.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Report title</span>
+                <input
+                  type="text"
+                  value={mdTitle}
+                  onChange={(e) => setMdTitle(e.target.value)}
+                  placeholder="Semantic JSON Report"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={mdLlmEnabled}
+                  onChange={(e) => setMdLlmEnabled(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>LLM summarization enabled</span>
+              </label>
+              <p style={{ opacity: 0.65, fontSize: 11, marginTop: 0 }}>
+                If disabled or API call fails, the node emits deterministic fallback summary markdown.
+              </p>
             </div>
           </div>
         )}
