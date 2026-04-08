@@ -94,12 +94,32 @@ export function NodeOutputPanel({
     }
 
     if (!isLikelyJsonKey(selected.key)) {
+      setLoading(true);
       setPreviewText(null);
       setPreviewHtml(null);
-      setPreviewNote(
-        "Preview is optimized for JSON. Open the path from the Artifacts list or fetch this URL in another tool."
-      );
-      setLoading(false);
+      if (selected.key.toLowerCase().endsWith(".html")) {
+        void (async () => {
+          try {
+            const r = await fetch(api(selected.url), { cache: "no-store" });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const raw = await r.text();
+            if (cancelled) return;
+            setPreviewHtml(raw);
+            setPreviewNote(null);
+          } catch (e) {
+            if (!cancelled) {
+              setLoadErr(e instanceof Error ? e.message : String(e));
+            }
+          } finally {
+            if (!cancelled) setLoading(false);
+          }
+        })();
+      } else {
+        setPreviewNote(
+          "Preview is optimized for JSON/HTML. Open the path from the Artifacts list or fetch this URL in another tool."
+        );
+        setLoading(false);
+      }
       return;
     }
 
@@ -237,7 +257,7 @@ export function NodeOutputPanel({
       {previewHtml ? (
         <iframe
           title="Artifact preview"
-          sandbox="allow-same-origin"
+          sandbox="allow-same-origin allow-scripts"
           style={{ width: "100%", minHeight: "68vh", border: "1px solid #30363d", borderRadius: 8, background: "#fff", marginBottom: 10 }}
           srcDoc={previewHtml}
         />

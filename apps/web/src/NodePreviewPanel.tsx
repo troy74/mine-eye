@@ -257,7 +257,7 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
           (isChartViewer && (chartDoc?.html || selectedKey.endsWith(".html"))) ? (
             <iframe
               title={isChartViewer ? "Chart preview" : "Markdown report preview"}
-              sandbox="allow-same-origin"
+              sandbox="allow-same-origin allow-scripts"
               style={{ width: "100%", minHeight: "70vh", border: "1px solid #30363d", borderRadius: 8, background: "#fff" }}
               srcDoc={chartDoc?.html ?? mdDoc?.html ?? rawText}
             />

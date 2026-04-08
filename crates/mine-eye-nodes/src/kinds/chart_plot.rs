@@ -265,6 +265,14 @@ fn render_plotly_html(plot_plan: &Value, rows: &[Map<String, Value>]) -> String 
     let title = plot_plan.pointer("/title").and_then(|v| v.as_str()).unwrap_or("Chart");
     let x_col = plot_plan.pointer("/mapping/x").and_then(|v| v.as_str()).unwrap_or("x");
     let y_col = plot_plan.pointer("/mapping/y").and_then(|v| v.as_str()).unwrap_or("y");
+    let x_label = plot_plan
+        .pointer("/axis/x_label")
+        .and_then(|v| v.as_str())
+        .unwrap_or(x_col);
+    let y_label = plot_plan
+        .pointer("/axis/y_label")
+        .and_then(|v| v.as_str())
+        .unwrap_or(y_col);
     let size_col = plot_plan
         .pointer("/mapping/point_size")
         .and_then(|v| v.as_str())
@@ -292,19 +300,115 @@ fn render_plotly_html(plot_plan: &Value, rows: &[Map<String, Value>]) -> String 
             s.push(json!(6.0));
         }
     }
-    let x_json = serde_json::to_string(&x).unwrap_or_else(|_| "[]".to_string());
-    let y_json = serde_json::to_string(&y).unwrap_or_else(|_| "[]".to_string());
-    let s_json = serde_json::to_string(&s).unwrap_or_else(|_| "[]".to_string());
-    let trace = if template == "histogram" {
-        format!("{{type:'bar',x:{x_json},marker:{{color:'#3b82f6'}}}}")
+    let mut traces = Vec::<Value>::new();
+    if template == "histogram" {
+        traces.push(json!({
+            "type": "bar",
+            "x": x,
+            "marker": { "color": "#3b82f6" }
+        }));
     } else if template == "variogram" || template == "profile" {
-        format!("{{type:'scatter',mode:'lines+markers',x:{x_json},y:{y_json},marker:{{size:{s_json},sizemode:'diameter',sizemin:4,opacity:0.86,color:'#f97316'}},line:{{width:2,color:'#0ea5e9'}}}}")
+        traces.push(json!({
+            "type": "scatter",
+            "mode": "lines+markers",
+            "x": x,
+            "y": y,
+            "marker": { "size": s, "sizemode":"diameter", "sizemin": 4, "opacity": 0.86, "color": "#f97316" },
+            "line": { "width": 2, "color": "#0ea5e9" },
+            "name": "Experimental"
+        }));
     } else {
-        format!("{{type:'scatter',mode:'markers',x:{x_json},y:{y_json},marker:{{size:{s_json},sizemode:'diameter',sizemin:4,opacity:0.82,color:'#8b5cf6'}}}}")
-    };
+        traces.push(json!({
+            "type": "scatter",
+            "mode": "markers",
+            "x": x,
+            "y": y,
+            "marker": { "size": s, "sizemode":"diameter", "sizemin": 4, "opacity": 0.82, "color": "#8b5cf6" }
+        }));
+    }
+
+    let mut shapes = Vec::<Value>::new();
+    let mut annotations = Vec::<Value>::new();
+    if template == "variogram" {
+        let mut pts = rows
+            .iter()
+            .filter_map(|r| Some((r.get(x_col).and_then(n)?, r.get(y_col).and_then(n)?)))
+            .collect::<Vec<_>>();
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if pts.len() >= 2 {
+            let nugget = pts[0];
+            let mut ys = pts.iter().map(|p| p.1).collect::<Vec<_>>();
+            ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let top_n = (ys.len() / 3).max(1);
+            let sill = ys[ys.len() - top_n..].iter().sum::<f64>() / top_n as f64;
+            let range = pts
+                .iter()
+                .find(|(_, gy)| *gy >= 0.95 * sill)
+                .map(|(lx, _)| *lx)
+                .unwrap_or_else(|| pts.last().map(|p| p.0).unwrap_or(nugget.0));
+
+            shapes.push(json!({
+                "type": "line",
+                "xref": "x", "yref": "y",
+                "x0": pts.first().map(|p| p.0).unwrap_or(0.0), "x1": pts.last().map(|p| p.0).unwrap_or(range),
+                "y0": sill, "y1": sill,
+                "line": {"color":"#ef4444","dash":"dash","width":1.5}
+            }));
+            shapes.push(json!({
+                "type": "line",
+                "xref": "x", "yref": "y",
+                "x0": range, "x1": range,
+                "y0": pts.iter().map(|p| p.1).fold(f64::INFINITY, |a,b| a.min(b)),
+                "y1": sill,
+                "line": {"color":"#22c55e","dash":"dot","width":1.5}
+            }));
+            traces.push(json!({
+                "type": "scatter",
+                "mode": "markers+text",
+                "x": [nugget.0],
+                "y": [nugget.1],
+                "text": ["Nugget"],
+                "textposition": "top right",
+                "marker": {"size": 10, "color":"#111827", "symbol":"diamond"},
+                "name": "Nugget"
+            }));
+            annotations.push(json!({
+                "x": pts.last().map(|p| p.0).unwrap_or(range),
+                "y": sill,
+                "xref": "x", "yref": "y",
+                "text": format!("Sill ≈ {:.3}", sill),
+                "showarrow": false,
+                "xanchor": "right",
+                "yanchor": "bottom",
+                "font": {"size": 11, "color":"#ef4444"}
+            }));
+            annotations.push(json!({
+                "x": range,
+                "y": pts.iter().map(|p| p.1).fold(f64::INFINITY, |a,b| a.min(b)),
+                "xref": "x", "yref": "y",
+                "text": format!("Range ≈ {:.1} m", range),
+                "showarrow": false,
+                "xanchor": "left",
+                "yanchor": "top",
+                "font": {"size": 11, "color":"#16a34a"}
+            }));
+        }
+    }
+
+    let data_json = serde_json::to_string(&traces).unwrap_or_else(|_| "[]".to_string());
+    let layout_json = serde_json::to_string(&json!({
+        "title": title,
+        "margin": { "l": 56, "r": 20, "t": 56, "b": 56 },
+        "xaxis": { "title": x_label },
+        "yaxis": { "title": y_label },
+        "shapes": shapes,
+        "annotations": annotations,
+        "legend": {"orientation":"h", "x":0.0, "y":1.12}
+    }))
+    .unwrap_or_else(|_| "{}".to_string());
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script><style>body{{margin:0;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}#plot{{width:100vw;height:100vh}}</style></head><body><div id=\"plot\"></div><script>const data=[{}];const layout={{title:{:?},margin:{{l:56,r:20,t:56,b:56}},xaxis:{{title:{:?}}},yaxis:{{title:{:?}}}}};Plotly.newPlot('plot',data,layout,{{responsive:true,displaylogo:false}});</script></body></html>",
-        title, trace, title, x_col, y_col
+        "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script><style>body{{margin:0;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}#plot{{width:100vw;height:100vh}}</style></head><body><div id=\"plot\"></div><script>const data={};const layout={};Plotly.newPlot('plot',data,layout,{{responsive:true,displaylogo:false}});</script></body></html>",
+        title, data_json, layout_json
     )
 }
 
