@@ -48,6 +48,7 @@ struct ModelParams {
     block_size_z: f64,
     cutoff_grade: f64,
     sg_constant: f64,
+    grade_unit: String,
     estimation_method: String,
     idw_power: f64,
     search_radius_m: f64,
@@ -219,6 +220,7 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         block_size_z: parse_f64("/node_ui/block_size_z", 10.0).max(0.5),
         cutoff_grade: parse_f64("/node_ui/cutoff_grade", 0.0),
         sg_constant: parse_f64("/node_ui/sg_constant", 2.5).clamp(0.2, 8.0),
+        grade_unit: parse_str("/node_ui/grade_unit", "ppm"),
         estimation_method: parse_str("/node_ui/estimation_method", "idw"),
         idw_power: parse_f64("/node_ui/idw_power", 2.0).clamp(1.0, 4.0),
         search_radius_m: parse_f64("/node_ui/search_radius_m", 0.0).max(0.0),
@@ -362,6 +364,15 @@ fn compute_bins(values: &[f64]) -> Vec<serde_json::Value> {
             json!({ "from": from, "to": to, "count": c })
         })
         .collect()
+}
+
+fn grade_unit_factor_to_fraction(unit: &str) -> f64 {
+    match unit.to_ascii_lowercase().as_str() {
+        "percent" | "%" => 1e-2,
+        "fraction" | "ratio" => 1.0,
+        "gpt" | "g/t" | "ppm" => 1e-6,
+        _ => 1e-6,
+    }
 }
 
 pub async fn run_block_grade_model(
@@ -538,24 +549,29 @@ pub async fn run_block_grade_model(
     }
 
     let mut grade_values = Vec::with_capacity(blocks.len());
+    let grade_unit_factor = grade_unit_factor_to_fraction(&params.grade_unit);
     let mut total_tonnage = 0.0;
-    let mut total_contained = 0.0;
+    let mut total_contained_unscaled = 0.0;
+    let mut total_contained_metal_t = 0.0;
     let mut above_cutoff_blocks = 0usize;
     let mut above_cutoff_tonnage = 0.0;
-    let mut above_cutoff_contained = 0.0;
+    let mut above_cutoff_contained_unscaled = 0.0;
+    let mut above_cutoff_contained_metal_t = 0.0;
     for b in &blocks {
         grade_values.push(b.grade);
         total_tonnage += b.tonnage_t;
-        total_contained += b.contained_unscaled;
+        total_contained_unscaled += b.contained_unscaled;
+        total_contained_metal_t += b.contained_unscaled * grade_unit_factor;
         if b.above_cutoff {
             above_cutoff_blocks += 1;
             above_cutoff_tonnage += b.tonnage_t;
-            above_cutoff_contained += b.contained_unscaled;
+            above_cutoff_contained_unscaled += b.contained_unscaled;
+            above_cutoff_contained_metal_t += b.contained_unscaled * grade_unit_factor;
         }
     }
     grade_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mean_grade = if total_tonnage > 0.0 {
-        total_contained / total_tonnage
+        total_contained_unscaled / total_tonnage
     } else {
         0.0
     };
@@ -577,6 +593,7 @@ pub async fn run_block_grade_model(
                     element_field.clone(): b.grade,
                     "tonnage_t": b.tonnage_t,
                     "contained_unscaled": b.contained_unscaled,
+                    "contained_metal_t": b.contained_unscaled * grade_unit_factor,
                     "sg": b.sg,
                 }
             })
@@ -595,6 +612,7 @@ pub async fn run_block_grade_model(
                     "above_cutoff": if b.above_cutoff { 1.0 } else { 0.0 },
                     "tonnage_t": b.tonnage_t,
                     "contained_unscaled": b.contained_unscaled,
+                    "contained_metal_t": b.contained_unscaled * grade_unit_factor,
                 }
             })
         })
@@ -604,6 +622,7 @@ pub async fn run_block_grade_model(
         element_field.clone(),
         "tonnage_t".to_string(),
         "contained_unscaled".to_string(),
+        "contained_metal_t".to_string(),
         "sg".to_string(),
     ];
 
@@ -636,9 +655,11 @@ pub async fn run_block_grade_model(
             "min_grade": min_grade,
             "max_grade": max_grade,
             "total_tonnage_t": total_tonnage,
-            "total_contained_unscaled": total_contained,
+            "total_contained_unscaled": total_contained_unscaled,
+            "total_contained_metal_t": total_contained_metal_t,
             "above_cutoff_tonnage_t": above_cutoff_tonnage,
-            "above_cutoff_contained_unscaled": above_cutoff_contained,
+            "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
+            "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
         }
     });
 
@@ -653,6 +674,7 @@ pub async fn run_block_grade_model(
             element_field,
             "tonnage_t",
             "contained_unscaled",
+            "contained_metal_t",
             "above_cutoff"
         ],
         "points": centers_rows
@@ -663,6 +685,8 @@ pub async fn run_block_grade_model(
         "summary": {
             "cutoff_grade": params.cutoff_grade,
             "sg_constant": params.sg_constant,
+            "grade_unit": params.grade_unit,
+            "grade_unit_factor_to_fraction": grade_unit_factor,
             "element_field": element_field,
             "estimation_method": params.estimation_method,
             "idw_power": params.idw_power,
@@ -679,13 +703,15 @@ pub async fn run_block_grade_model(
             "min_grade": min_grade,
             "max_grade": max_grade,
             "total_tonnage_t": total_tonnage,
-            "total_contained_unscaled": total_contained,
+            "total_contained_unscaled": total_contained_unscaled,
+            "total_contained_metal_t": total_contained_metal_t,
             "above_cutoff_tonnage_t": above_cutoff_tonnage,
-            "above_cutoff_contained_unscaled": above_cutoff_contained,
+            "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
+            "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
         },
         "grade_histogram": compute_bins(&grade_values),
         "notes": [
-            "Contained values are unscaled grade*tonnage. Apply units conversion externally (e.g., ppm to fraction).",
+            "contained_unscaled is grade*tonnage in source grade units. contained_metal_t applies grade_unit_factor_to_fraction.",
             "Topography clipping currently uses block-center test against the best available surface_grid.",
         ]
     });

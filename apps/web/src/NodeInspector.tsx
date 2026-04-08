@@ -401,6 +401,7 @@ export function NodeInspector({
   const [bgElementField, setBgElementField] = useState<string>(
     () => (typeof initialUi.element_field === "string" ? initialUi.element_field : "")
   );
+  const [bgElementOptions, setBgElementOptions] = useState<string[]>([]);
   const [bgBlockSizeX, setBgBlockSizeX] = useState<string>(
     () => (typeof initialUi.block_size_x === "number" ? String(initialUi.block_size_x) : "20")
   );
@@ -415,6 +416,9 @@ export function NodeInspector({
   );
   const [bgSgConstant, setBgSgConstant] = useState<string>(
     () => (typeof initialUi.sg_constant === "number" ? String(initialUi.sg_constant) : "2.5")
+  );
+  const [bgGradeUnit, setBgGradeUnit] = useState<string>(
+    () => (typeof initialUi.grade_unit === "string" ? initialUi.grade_unit : "ppm")
   );
   const [bgEstimationMethod, setBgEstimationMethod] = useState<string>(
     () => (typeof initialUi.estimation_method === "string" ? initialUi.estimation_method : "idw")
@@ -633,6 +637,26 @@ export function NodeInspector({
     setTbCacheTtl(typeof u.cache_ttl_s === "number" ? String(u.cache_ttl_s) : "604800");
     setTbAllowStale(typeof u.allow_stale_on_error === "boolean" ? u.allow_stale_on_error : true);
     setTbDebounceProfile(typeof u.debounce_profile === "string" ? u.debounce_profile : "free_default");
+    setBgElementField(typeof u.element_field === "string" ? u.element_field : "");
+    setBgBlockSizeX(typeof u.block_size_x === "number" ? String(u.block_size_x) : "20");
+    setBgBlockSizeY(typeof u.block_size_y === "number" ? String(u.block_size_y) : "20");
+    setBgBlockSizeZ(typeof u.block_size_z === "number" ? String(u.block_size_z) : "10");
+    setBgCutoffGrade(typeof u.cutoff_grade === "number" ? String(u.cutoff_grade) : "0");
+    setBgSgConstant(typeof u.sg_constant === "number" ? String(u.sg_constant) : "2.5");
+    setBgGradeUnit(typeof u.grade_unit === "string" ? u.grade_unit : "ppm");
+    setBgEstimationMethod(typeof u.estimation_method === "string" ? u.estimation_method : "idw");
+    setBgIdwPower(typeof u.idw_power === "number" ? String(u.idw_power) : "2");
+    setBgSearchRadiusM(typeof u.search_radius_m === "number" ? String(u.search_radius_m) : "0");
+    setBgMinSamples(typeof u.min_samples === "number" ? String(u.min_samples) : "3");
+    setBgMaxSamples(typeof u.max_samples === "number" ? String(u.max_samples) : "24");
+    setBgGradeMin(typeof u.grade_min === "number" ? String(u.grade_min) : "");
+    setBgGradeMax(typeof u.grade_max === "number" ? String(u.grade_max) : "");
+    setBgClipMode(typeof u.clip_mode === "string" ? u.clip_mode : "topography");
+    setBgBelowCutoffOpacity(
+      typeof u.below_cutoff_opacity === "number" ? String(u.below_cutoff_opacity) : "0.08"
+    );
+    setBgPalette(typeof u.palette === "string" ? u.palette : "viridis");
+    setBgMaxBlocks(typeof u.max_blocks === "number" ? String(u.max_blocks) : "45000");
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -729,6 +753,83 @@ export function NodeInspector({
       cancelled = true;
     };
   }, [isTilebrokerNode, nodeArtifacts]);
+
+  useEffect(() => {
+    if (!isBlockGradeModelNode) {
+      setBgElementOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [graphResp, artifactsResp] = await Promise.all([
+          fetch(api(`/graphs/${graphId}`), { cache: "no-store" }),
+          fetch(api(`/graphs/${graphId}/artifacts`), { cache: "no-store" }),
+        ]);
+        if (!graphResp.ok || !artifactsResp.ok) {
+          if (!cancelled) setBgElementOptions([]);
+          return;
+        }
+        const g = (await graphResp.json()) as {
+          edges?: Array<{ from_node: string; to_node: string }>;
+        };
+        const arts = (await artifactsResp.json()) as Array<{
+          node_id: string;
+          key: string;
+          url: string;
+        }>;
+        const incomingNodeIds = new Set(
+          (g.edges ?? []).filter((e) => e.to_node === node.id).map((e) => e.from_node)
+        );
+        const candidates = arts
+          .filter((a) => incomingNodeIds.has(a.node_id) && a.key.endsWith(".json"))
+          .slice(0, 20);
+        const fields = new Set<string>();
+        const addFromRow = (row: unknown) => {
+          if (!row || typeof row !== "object" || Array.isArray(row)) return;
+          const obj = row as Record<string, unknown>;
+          const attrs =
+            obj.attributes && typeof obj.attributes === "object" && !Array.isArray(obj.attributes)
+              ? (obj.attributes as Record<string, unknown>)
+              : null;
+          if (!attrs) return;
+          for (const [k, v] of Object.entries(attrs)) {
+            if (typeof v === "number" && Number.isFinite(v)) fields.add(k);
+            if (typeof v === "string") {
+              const n = Number(v);
+              if (Number.isFinite(n)) fields.add(k);
+            }
+          }
+        };
+        for (const art of candidates) {
+          const r = await fetch(api(art.url), { cache: "no-store" });
+          if (!r.ok) continue;
+          const text = await r.text();
+          let root: unknown;
+          try {
+            root = JSON.parse(text) as unknown;
+          } catch {
+            continue;
+          }
+          if (root && typeof root === "object" && !Array.isArray(root)) {
+            const obj = root as Record<string, unknown>;
+            if (Array.isArray(obj.assay_points)) obj.assay_points.slice(0, 250).forEach(addFromRow);
+            if (Array.isArray(obj.points)) obj.points.slice(0, 250).forEach(addFromRow);
+          }
+          if (Array.isArray(root)) {
+            root.slice(0, 250).forEach(addFromRow);
+          }
+        }
+        const next = [...fields].sort((a, b) => a.localeCompare(b));
+        if (!cancelled) setBgElementOptions(next);
+      } catch {
+        if (!cancelled) setBgElementOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [graphId, isBlockGradeModelNode, node.id]);
 
   const onPickFile = useCallback(
     (file: File | null) => {
@@ -878,6 +979,7 @@ export function NodeInspector({
       ui.block_size_z = Math.max(0.5, n(bgBlockSizeZ, 10));
       ui.cutoff_grade = n(bgCutoffGrade, 0);
       ui.sg_constant = Math.max(0.2, n(bgSgConstant, 2.5));
+      ui.grade_unit = bgGradeUnit;
       ui.estimation_method = bgEstimationMethod === "nearest" ? "nearest" : "idw";
       ui.idw_power = Math.max(1, Math.min(4, n(bgIdwPower, 2)));
       ui.search_radius_m = Math.max(0, n(bgSearchRadiusM, 0));
@@ -995,6 +1097,7 @@ export function NodeInspector({
     bgBlockSizeZ,
     bgCutoffGrade,
     bgSgConstant,
+    bgGradeUnit,
     bgEstimationMethod,
     bgIdwPower,
     bgSearchRadiusM,
@@ -2424,13 +2527,24 @@ export function NodeInspector({
             <div style={mapGrid}>
               <label style={lab}>
                 <span style={labSpan}>Grade element field</span>
-                <input
-                  type="text"
-                  value={bgElementField}
-                  onChange={(e) => setBgElementField(e.target.value)}
-                  placeholder="e.g. au_ppm (blank = auto)"
-                  style={{ ...sel, fontFamily: "inherit" }}
-                />
+                {bgElementOptions.length > 0 ? (
+                  <select value={bgElementField} onChange={(e) => setBgElementField(e.target.value)} style={sel}>
+                    <option value="">Auto (first numeric field)</option>
+                    {bgElementOptions.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={bgElementField}
+                    onChange={(e) => setBgElementField(e.target.value)}
+                    placeholder="e.g. au_ppm (blank = auto)"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                )}
               </label>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                 <label style={lab}>
@@ -2480,6 +2594,15 @@ export function NodeInspector({
                     onChange={(e) => setBgSgConstant(e.target.value)}
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Grade units</span>
+                  <select value={bgGradeUnit} onChange={(e) => setBgGradeUnit(e.target.value)} style={sel}>
+                    <option value="ppm">ppm</option>
+                    <option value="gpt">g/t</option>
+                    <option value="percent">%</option>
+                    <option value="fraction">fraction</option>
+                  </select>
                 </label>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>

@@ -412,7 +412,15 @@ function defaultLayerStyleForId(layerId: string): LayerVizStyle {
   return {
     ...DEFAULT_LAYER_STYLE,
     ...(isContourLayer ? { showLabels: true, labelSize: 12 } : {}),
-    ...(isBlockLayer ? { opacity: 0.92 } : {}),
+    ...(isBlockLayer
+      ? {
+          opacity: 0.95,
+          palette: "turbo",
+          colorStops: PALETTE_STOPS.turbo,
+          clampLowPct: 5,
+          clampHighPct: 95,
+        }
+      : {}),
   };
 }
 
@@ -1663,24 +1671,22 @@ function BlockVoxelLayer3D({
       {above.length > 0 ? (
         <instancedMesh ref={aboveRef} args={[undefined, undefined, above.length]}>
           <boxGeometry args={[1, 1, 1]} />
-          <meshStandardMaterial
+          <meshLambertMaterial
             vertexColors
             transparent
             opacity={aboveOpacity}
-            metalness={0.08}
-            roughness={0.62}
+            depthWrite={true}
           />
         </instancedMesh>
       ) : null}
       {below.length > 0 ? (
         <instancedMesh ref={belowRef} args={[undefined, undefined, below.length]}>
           <boxGeometry args={[1, 1, 1]} />
-          <meshStandardMaterial
+          <meshLambertMaterial
             vertexColors
             transparent
             opacity={belowOpacity}
-            metalness={0.04}
-            roughness={0.78}
+            depthWrite={false}
           />
         </instancedMesh>
       ) : null}
@@ -2958,9 +2964,14 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 baseType,
                 nodeId,
                 nodeKind,
-                label: baseType === "contours"
-                  ? `Contours (${fmtKind(nodeKind)})`
-                  : fmtKind(nodeKind),
+                label:
+                  baseType === "contours"
+                    ? `Contours (${fmtKind(nodeKind)})`
+                    : baseType === "block_voxels"
+                      ? `Block voxels (${fmtKind(nodeKind)})`
+                      : baseType === "assay_points" && nodeKind === "block_grade_model"
+                        ? `Block centers (${fmtKind(nodeKind)})`
+                        : fmtKind(nodeKind),
                 dotColor: baseType === "assay_points" ? "#60a5fa"
                         : baseType === "grade_segments" ? "#f97316"
                         : baseType === "contours" ? "#34d399"
