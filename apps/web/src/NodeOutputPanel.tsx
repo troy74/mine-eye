@@ -258,7 +258,26 @@ export function NodeOutputPanel({
         <iframe
           title="Artifact preview"
           sandbox="allow-same-origin allow-scripts"
-          style={{ width: "100%", minHeight: "68vh", border: "1px solid #30363d", borderRadius: 8, background: "#fff", marginBottom: 10 }}
+          style={
+            kind === "plot_chart"
+              ? {
+                  width: "100%",
+                  aspectRatio: "16 / 10",
+                  minHeight: 260,
+                  border: "1px solid #30363d",
+                  borderRadius: 8,
+                  background: "#fff",
+                  marginBottom: 10,
+                }
+              : {
+                  width: "100%",
+                  minHeight: "68vh",
+                  border: "1px solid #30363d",
+                  borderRadius: 8,
+                  background: "#fff",
+                  marginBottom: 10,
+                }
+          }
           srcDoc={previewHtml}
         />
       ) : null}
