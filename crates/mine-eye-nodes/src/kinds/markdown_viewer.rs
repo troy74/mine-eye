@@ -81,6 +81,31 @@ fn compact_summary_payload(source: &Value) -> Value {
     }
 }
 
+fn score_semantic_report(v: &Value) -> i32 {
+    let mut s = 0i32;
+    let schema = v.pointer("/schema_id").and_then(|x| x.as_str()).unwrap_or("");
+    let typ = v.pointer("/type").and_then(|x| x.as_str()).unwrap_or("");
+    if schema == "report.block_resource.v2" {
+        s += 1000;
+    }
+    if typ == "block_resource_report" {
+        s += 600;
+    }
+    if v.pointer("/semantic_summary").is_some() {
+        s += 500;
+    }
+    if v.pointer("/summary/total_tonnage_t").and_then(n).is_some() {
+        s += 250;
+    }
+    if v.pointer("/summary/above_cutoff_tonnage_t").and_then(n).is_some() {
+        s += 250;
+    }
+    if v.pointer("/points").is_some() {
+        s -= 200;
+    }
+    s
+}
+
 fn fallback_markdown(title: &str, src_key: &str, compact: &Value) -> String {
     let sem = compact.pointer("/semantic_summary").unwrap_or(compact);
     let summary = compact.pointer("/summary").unwrap_or(compact);
@@ -149,9 +174,9 @@ async fn summarize_with_openrouter(title: &str, src_key: &str, compact: &Value) 
         .or_else(|_| env::var("OPENROUTER_KEY"))
         .map_err(|_| "OPENROUTER_API_KEY is not set".to_string())?;
 
-    let system_prompt = "You are a mining resource modelling analyst. Write concise, decision-grade markdown. Include: (1) executive summary, (2) compact KPI table, (3) key modelling parameters, (4) short geological commentary with caveats. Keep to ~250-450 words and avoid repeating raw JSON.";
+    let system_prompt = "You are a senior resource geologist writing an internal technical memo. Produce sharp, practical markdown in plain English. Be specific and numeric. Avoid generic filler.";
     let user_prompt = format!(
-        "Create a concise markdown report titled '{}'. Source artifact key: {}. Input semantic JSON:\n\n{}",
+        "Create a concise decision memo titled '{}'. Source artifact key: {}.\n\nRequired structure:\n1) Executive summary (2-4 bullets, with numbers)\n2) KPI table (only key metrics)\n3) Modelling setup (method, cutoff, block size, search/sample settings)\n4) Geological interpretation (what pattern is suggested)\n5) Risk and caveats (interpolation limits, clipping/domain assumptions)\n6) Recommended next actions (3 bullets)\n\nStyle rules:\n- Prefer concrete values and percentages.\n- Do not repeat raw JSON keys unless needed.\n- If a value is missing, state that explicitly once and move on.\n- Keep total length around 220-420 words.\n\nInput semantic JSON:\n\n{}",
         title,
         src_key,
         serde_json::to_string_pretty(compact).unwrap_or_else(|_| "{}".to_string())
@@ -207,12 +232,33 @@ pub async fn run_md_viewer(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
-    let Some(first) = job.input_artifact_refs.first() else {
+    let Some(first_ref) = job.input_artifact_refs.first() else {
         return Err(NodeError::InvalidConfig(
             "md_viewer requires an upstream semantic JSON artifact".into(),
         ));
     };
-    let source = super::runtime::read_json_artifact(ctx, &first.key).await?;
+
+    let mut chosen_key = first_ref.key.clone();
+    let mut chosen_source: Option<Value> = None;
+    let mut best_score = i32::MIN;
+
+    for ar in &job.input_artifact_refs {
+        let Ok(v) = super::runtime::read_json_artifact(ctx, &ar.key).await else {
+            continue;
+        };
+        let score = score_semantic_report(&v);
+        if score > best_score {
+            best_score = score;
+            chosen_key = ar.key.clone();
+            chosen_source = Some(v);
+        }
+    }
+
+    let Some(source) = chosen_source else {
+        return Err(NodeError::InvalidConfig(
+            "md_viewer could not parse any upstream artifact as JSON".into(),
+        ));
+    };
     let title = job
         .output_spec
         .pointer("/node_ui/title")
@@ -228,7 +274,7 @@ pub async fn run_md_viewer(
 
     let compact = compact_summary_payload(&source);
     let (markdown, llm_meta) = if llm_enabled {
-        match summarize_with_openrouter(&title, &first.key, &compact).await {
+        match summarize_with_openrouter(&title, &chosen_key, &compact).await {
             Ok(md) => (
                 md,
                 json!({
@@ -239,7 +285,7 @@ pub async fn run_md_viewer(
                 }),
             ),
             Err(reason) => (
-                fallback_markdown(&title, &first.key, &compact),
+                fallback_markdown(&title, &chosen_key, &compact),
                 json!({
                     "used": false,
                     "provider": "openrouter",
@@ -251,7 +297,7 @@ pub async fn run_md_viewer(
         }
     } else {
         (
-            fallback_markdown(&title, &first.key, &compact),
+            fallback_markdown(&title, &chosen_key, &compact),
             json!({"used": false, "fallback_used": true, "fallback_reason": "llm_disabled"}),
         )
     };
@@ -262,7 +308,7 @@ pub async fn run_md_viewer(
         "schema_id": "report.markdown_doc.v2",
         "type": "md_view_doc",
         "title": title,
-        "source_artifact_key": first.key,
+        "source_artifact_key": chosen_key,
         "input_semantic_summary": compact,
         "llm": llm_meta,
         "markdown": markdown,
