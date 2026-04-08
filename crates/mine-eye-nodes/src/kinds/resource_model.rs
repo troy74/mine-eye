@@ -584,7 +584,12 @@ pub async fn run_block_grade_model(
     let min_grade = *grade_values.first().unwrap_or(&0.0);
     let max_grade = *grade_values.last().unwrap_or(&0.0);
 
-    let block_rows = blocks
+    let render_blocks = blocks
+        .iter()
+        .filter(|b| b.above_cutoff)
+        .collect::<Vec<_>>();
+
+    let block_rows = render_blocks
         .iter()
         .map(|b| {
             json!({
@@ -606,7 +611,7 @@ pub async fn run_block_grade_model(
         })
         .collect::<Vec<_>>();
 
-    let centers_rows = blocks
+    let centers_rows = render_blocks
         .iter()
         .map(|b| {
             json!({
@@ -654,7 +659,7 @@ pub async fn run_block_grade_model(
         "blocks": block_rows,
         "stats": {
             "element_field": element_field,
-            "estimated_blocks": blocks.len(),
+            "estimated_blocks": render_blocks.len(),
             "estimated_cells_before_filter": total,
             "above_cutoff_blocks": above_cutoff_blocks,
             "mean_grade": mean_grade,
@@ -705,7 +710,7 @@ pub async fn run_block_grade_model(
             "clip_mode": params.clip_mode,
             "block_size_m": { "x": dx, "y": dy, "z": dz },
             "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
-            "estimated_blocks": blocks.len(),
+            "estimated_blocks": render_blocks.len(),
             "estimated_cells_before_filter": total,
             "above_cutoff_blocks": above_cutoff_blocks,
             "mean_grade": mean_grade,
