@@ -82,11 +82,27 @@ fn fmt_num(x: Option<f64>, digits: usize) -> String {
 fn compact_summary_payload(source: &Value) -> Value {
     let semantic = source.pointer("/semantic_summary").cloned();
     let summary = source.pointer("/summary").cloned();
+    let schema = source.pointer("/schema_id").cloned().unwrap_or(Value::Null);
+    let typ = source.pointer("/type").cloned().unwrap_or(Value::Null);
     let hist = source
         .pointer("/grade_histogram")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().take(6).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
+    let cutoff_sensitivity = source
+        .pointer("/cutoff_sensitivity")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().take(12).cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let variogram = source.pointer("/variogram").cloned().or_else(|| {
+        let bins = source.pointer("/bins")?.as_array()?.iter().take(12).cloned().collect::<Vec<_>>();
+        Some(json!({
+            "bins": bins,
+            "lags": source.pointer("/lags").and_then(|v| n(v)),
+            "max_pairs": source.pointer("/max_pairs").and_then(|v| n(v)),
+            "max_range_m": source.pointer("/max_range_m").and_then(|v| n(v)),
+        }))
+    });
     let notes = source
         .pointer("/notes")
         .and_then(|v| v.as_array())
@@ -95,9 +111,13 @@ fn compact_summary_payload(source: &Value) -> Value {
 
     if semantic.is_some() || summary.is_some() {
         json!({
+            "schema_id": schema,
+            "type": typ,
             "semantic_summary": semantic,
             "summary": summary,
             "grade_histogram_top_bins": hist,
+            "cutoff_sensitivity": cutoff_sensitivity,
+            "variogram": variogram,
             "notes": notes,
         })
     } else {
@@ -124,10 +144,71 @@ fn score_semantic_report(v: &Value) -> i32 {
     if v.pointer("/summary/above_cutoff_tonnage_t").and_then(n).is_some() {
         s += 250;
     }
+    if v.pointer("/schema_id").and_then(|x| x.as_str()) == Some("report.variogram.v1") {
+        s += 450;
+    }
+    if v.pointer("/type").and_then(|x| x.as_str()) == Some("variogram_report") {
+        s += 350;
+    }
     if v.pointer("/points").is_some() {
         s -= 200;
     }
     s
+}
+
+fn infer_title(source: &Value) -> String {
+    let typ = source.pointer("/type").and_then(|v| v.as_str()).unwrap_or("");
+    let schema = source.pointer("/schema_id").and_then(|v| v.as_str()).unwrap_or("");
+    let element = source
+        .pointer("/semantic_summary/element_field")
+        .or_else(|| source.pointer("/summary/element_field"))
+        .or_else(|| source.pointer("/element_field"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("grade");
+    let grade_unit = source
+        .pointer("/semantic_summary/grade_unit")
+        .or_else(|| source.pointer("/summary/grade_unit"))
+        .or_else(|| source.pointer("/grade_unit"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unit");
+    if schema == "report.variogram.v1" || typ == "variogram_report" {
+        return format!("Variogram Analysis ({}, {})", element, grade_unit);
+    }
+    if schema == "report.block_resource.v2" || typ == "block_resource_report" {
+        return format!("Block Resource Summary ({}, {})", element, grade_unit);
+    }
+    if !typ.is_empty() {
+        return typ.replace('_', " ");
+    }
+    "Technical Report".to_string()
+}
+
+fn merge_companion_reports(primary: &mut Value, all_sources: &[(String, Value)]) {
+    let is_resource = primary.pointer("/schema_id").and_then(|v| v.as_str()) == Some("report.block_resource.v2")
+        || primary.pointer("/type").and_then(|v| v.as_str()) == Some("block_resource_report");
+    if !is_resource {
+        return;
+    }
+    let has_variogram = primary.pointer("/variogram/bins").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+    if has_variogram {
+        return;
+    }
+    let Some((src_key, vg)) = all_sources.iter().find(|(_, v)| {
+        v.pointer("/schema_id").and_then(|x| x.as_str()) == Some("report.variogram.v1")
+            || v.pointer("/type").and_then(|x| x.as_str()) == Some("variogram_report")
+    }) else {
+        return;
+    };
+    let merged = json!({
+        "bins": vg.pointer("/bins").cloned().unwrap_or_else(|| json!([])),
+        "lags": vg.pointer("/lags").and_then(|v| n(v)),
+        "max_pairs": vg.pointer("/max_pairs").and_then(|v| n(v)),
+        "max_range_m": vg.pointer("/max_range_m").and_then(|v| n(v)),
+        "source_artifact_key": src_key,
+    });
+    if let Some(obj) = primary.as_object_mut() {
+        obj.insert("variogram".to_string(), merged);
+    }
 }
 
 fn fallback_markdown(title: &str, src_key: &str, compact: &Value) -> String {
@@ -198,11 +279,20 @@ async fn summarize_with_openrouter(title: &str, src_key: &str, compact: &Value) 
         .or_else(|_| env::var("OPENROUTER_KEY"))
         .map_err(|_| "OPENROUTER_API_KEY is not set".to_string())?;
 
-    let system_prompt = "You are a senior resource geologist writing an internal technical memo. Produce sharp, practical markdown in plain English. Be specific and numeric. Avoid generic filler.";
+    let system_prompt = "You are a senior resource geologist writing an internal technical memo. Produce crisp, practical markdown in plain English with concrete numbers and caveats. No fluff.";
+    let is_variogram = compact.pointer("/schema_id").and_then(|v| v.as_str()) == Some("report.variogram.v1")
+        || compact.pointer("/type").and_then(|v| v.as_str()) == Some("variogram_report");
+    let structure = if is_variogram {
+        "Required structure:\n1) Executive summary (2-4 bullets)\n2) Variogram diagnostics table (lag range, pairs, gamma)\n3) Interpretation (nugget/sill/range behavior and continuity implications)\n4) Risks and caveats\n5) Recommended next actions (3 bullets)"
+    } else {
+        "Required structure:\n1) Executive summary (2-4 bullets, with numbers)\n2) KPI table (only key metrics)\n3) Modelling setup (method, cutoff, block size, search/sample settings)\n4) Variogram diagnostics (if present)\n5) Geological interpretation\n6) Risk and caveats\n7) Recommended next actions (3 bullets)"
+    };
     let user_prompt = format!(
-        "Create a concise decision memo titled '{}'. Source artifact key: {}.\n\nRequired structure:\n1) Executive summary (2-4 bullets, with numbers)\n2) KPI table (only key metrics)\n3) Modelling setup (method, cutoff, block size, search/sample settings)\n4) Geological interpretation (what pattern is suggested)\n5) Risk and caveats (interpolation limits, clipping/domain assumptions)\n6) Recommended next actions (3 bullets)\n\nStyle rules:\n- Prefer concrete values and percentages.\n- Do not repeat raw JSON keys unless needed.\n- If a value is missing, state that explicitly once and move on.\n- Keep total length around 220-420 words.\n\nInput semantic JSON:\n\n{}",
+        "Create a concise decision memo titled '{}'. Source artifact key: {}.\n\n{}\n\nStyle rules:\n- Start with '# {}' as the first line.\n- Prefer concrete values and percentages.\n- Do not call the report 'Semantic JSON Report'.\n- Do not repeat raw JSON keys unless needed.\n- If a value is missing, state that explicitly once and move on.\n- Keep total length around 260-520 words.\n\nInput semantic JSON:\n\n{}",
         title,
         src_key,
+        structure,
+        title,
         serde_json::to_string_pretty(compact).unwrap_or_else(|_| "{}".to_string())
     );
 
@@ -264,12 +354,14 @@ pub async fn run_md_viewer(
 
     let mut chosen_key = first_ref.key.clone();
     let mut chosen_source: Option<Value> = None;
+    let mut parsed_sources: Vec<(String, Value)> = Vec::new();
     let mut best_score = i32::MIN;
 
     for ar in &job.input_artifact_refs {
         let Ok(v) = super::runtime::read_json_artifact(ctx, &ar.key).await else {
             continue;
         };
+        parsed_sources.push((ar.key.clone(), v.clone()));
         let score = score_semantic_report(&v);
         if score > best_score {
             best_score = score;
@@ -278,18 +370,22 @@ pub async fn run_md_viewer(
         }
     }
 
-    let Some(source) = chosen_source else {
+    let Some(mut source) = chosen_source else {
         return Err(NodeError::InvalidConfig(
             "md_viewer could not parse any upstream artifact as JSON".into(),
         ));
     };
-    let title = job
+    merge_companion_reports(&mut source, &parsed_sources);
+    let configured_title = job
         .output_spec
         .pointer("/node_ui/title")
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Semantic JSON Report".to_string());
+        .filter(|s| !s.is_empty());
+    let title = match configured_title {
+        Some(t) if !t.eq_ignore_ascii_case("Semantic JSON Report") => t,
+        _ => infer_title(&source),
+    };
     let llm_enabled = job
         .output_spec
         .pointer("/node_ui/llm_enabled")
