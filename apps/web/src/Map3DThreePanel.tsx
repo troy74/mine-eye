@@ -1618,6 +1618,7 @@ function BlockVoxelLayer3D({
     color: string;
   };
   const aboveRef = useRef<THREE.InstancedMesh>(null);
+  const edgeRef = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
 
   const above = useMemo(() => {
@@ -1658,18 +1659,50 @@ function BlockVoxelLayer3D({
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   }, [above, dummy]);
 
+  useLayoutEffect(() => {
+    if (!edgeRef.current) return;
+    const mesh = edgeRef.current;
+    for (let i = 0; i < above.length; i++) {
+      const item = above[i];
+      dummy.position.copy(item.position);
+      dummy.scale.set(item.scale[0] * 1.01, item.scale[1] * 1.01, item.scale[2] * 1.01);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [above, dummy]);
+
   const aboveOpacity = Math.max(0.05, style.opacity);
 
   return (
     <group>
       {above.length > 0 ? (
-        <instancedMesh ref={aboveRef} args={[undefined, undefined, above.length]}>
+        <instancedMesh ref={aboveRef} args={[undefined, undefined, above.length]} renderOrder={20}>
           <boxGeometry args={[1, 1, 1]} />
-          <meshBasicMaterial
+          <meshPhongMaterial
             vertexColors
             transparent
             opacity={aboveOpacity}
-            depthWrite
+            depthWrite={false}
+            depthTest
+            flatShading
+            shininess={20}
+            emissive="#2b2b2b"
+            emissiveIntensity={0.35}
+            toneMapped={false}
+          />
+        </instancedMesh>
+      ) : null}
+      {above.length > 0 ? (
+        <instancedMesh ref={edgeRef} args={[undefined, undefined, above.length]} renderOrder={21}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshBasicMaterial
+            color="#dbe7ff"
+            wireframe
+            transparent
+            opacity={Math.min(0.25, Math.max(0.08, aboveOpacity * 0.3))}
+            depthWrite={false}
+            depthTest
             toneMapped={false}
           />
         </instancedMesh>
