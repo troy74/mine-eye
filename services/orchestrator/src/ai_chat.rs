@@ -2267,6 +2267,7 @@ fn parse_semantic_type(s: &str) -> Result<SemanticPortType, String> {
         "raster" => Ok(SemanticPortType::Raster),
         "mesh" => Ok(SemanticPortType::Mesh),
         "block_model" | "blockmodel" => Ok(SemanticPortType::BlockModel),
+        "semantic_json" | "semanticjson" => Ok(SemanticPortType::SemanticJson),
         other => Err(format!("unsupported semantic_type '{}'", other)),
     }
 }

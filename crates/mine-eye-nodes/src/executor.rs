@@ -9,6 +9,7 @@ use crate::kinds::{
     run_dem_fetch, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_data_model_transform,
     run_block_grade_model,
+    run_md_viewer,
     run_aoi, run_imagery_provider, run_scene3d_layer_stack, run_tilebroker,
     run_plan_view_2d, run_plan_view_3d,
     run_surface_iso_extract, run_terrain_adjust,
@@ -66,6 +67,7 @@ impl RegistryExecutor {
         inner.insert("scene3d_layer_stack".into(), Arc::new(Scene3DLayerStackExecutor));
         inner.insert("block_model_basic".into(), Arc::new(BlockModelExecutor));
         inner.insert("block_grade_model".into(), Arc::new(BlockGradeModelExecutor));
+        inner.insert("md_viewer".into(), Arc::new(MdViewerExecutor));
         inner.insert("plan_view_2d".into(), Arc::new(PlanView2DExecutor));
         inner.insert("plan_view_3d".into(), Arc::new(PlanView3DExecutor));
         inner.insert("cesium_display_node".into(), Arc::new(PlanView3DExecutor));
@@ -306,6 +308,19 @@ impl NodeExecutor for BlockGradeModelExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_block_grade_model(ctx, job).await
+    }
+}
+
+struct MdViewerExecutor;
+
+#[async_trait]
+impl NodeExecutor for MdViewerExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_md_viewer(ctx, job).await
     }
 }
 

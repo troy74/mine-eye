@@ -12,6 +12,7 @@ pub enum SemanticPortType {
     Mesh,
     BlockModel,
     Table,
+    SemanticJson,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

@@ -27,6 +27,7 @@ export const PortTaxon = {
   // Wire aliases (legacy / transport)
   wirePointSet: "wire.point_set",
   wireTable: "wire.table",
+  wireSemanticJson: "wire.semantic_json",
   wireIntervalSet: "wire.interval_set",
   wireTrajectorySet: "wire.trajectory_set",
 } as const;
@@ -48,6 +49,7 @@ export const INHERITS: Record<string, string | null> = {
   [PortTaxon.surveyTable]: PortTaxon.dataframe,
   [PortTaxon.wirePointSet]: PortTaxon.dataframe2d,
   [PortTaxon.wireTable]: PortTaxon.dataframe,
+  [PortTaxon.wireSemanticJson]: PortTaxon.dataframe,
   [PortTaxon.wireIntervalSet]: PortTaxon.dataframe,
   [PortTaxon.wireTrajectorySet]: PortTaxon.dataframe3d,
 };
@@ -79,6 +81,8 @@ export function wireSemanticToTaxonomy(semantic: string): string {
       return PortTaxon.wirePointSet;
     case "table":
       return PortTaxon.wireTable;
+    case "semantic_json":
+      return PortTaxon.wireSemanticJson;
     case "interval_set":
       return PortTaxon.wireIntervalSet;
     case "trajectory_set":

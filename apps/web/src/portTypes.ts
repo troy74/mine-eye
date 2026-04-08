@@ -19,6 +19,7 @@ export type SemanticPortKey =
   | "mesh"
   | "block_model"
   | "table"
+  | "semantic_json"
   | string;
 
 /** Stroke colour for edges (and handle accents) by semantic type. */
@@ -32,6 +33,7 @@ export const SEMANTIC_EDGE_COLORS: Record<string, string> = {
   mesh: "#fb7185",
   block_model: "#c084fc",
   table: "#94a3b8",
+  semantic_json: "#22d3ee",
 };
 
 /** When the graph marks a collar-bearing output (port id), tint the link. */

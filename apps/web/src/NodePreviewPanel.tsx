@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type ArtifactEntry } from "./graphApi";
 
 type Props = {
@@ -6,6 +6,14 @@ type Props = {
   nodeId: string;
   nodeKind: string;
   artifacts: ArtifactEntry[];
+};
+
+type MdViewDoc = {
+  type?: string;
+  title?: string;
+  markdown?: string;
+  html?: string;
+  source_artifact_key?: string;
 };
 
 function findNodeArtifacts(artifacts: ArtifactEntry[], nodeId: string): ArtifactEntry[] {
@@ -41,6 +49,10 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [mdDoc, setMdDoc] = useState<MdViewDoc | null>(null);
+  const [shareMsg, setShareMsg] = useState<string | null>(null);
+
+  const isMdViewer = nodeKind === "md_viewer";
 
   useEffect(() => {
     const first = nodeArtifacts.find((a) => a.key.endsWith(".json")) ?? nodeArtifacts[0];
@@ -51,6 +63,7 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
     if (!selectedKey || !graphId) {
       setRawText("");
       setRows([]);
+      setMdDoc(null);
       return;
     }
     const entry = nodeArtifacts.find((a) => a.key === selectedKey);
@@ -68,8 +81,20 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
         try {
           const root = JSON.parse(text) as unknown;
           setRows(extractRows(root));
+          if (
+            root &&
+            typeof root === "object" &&
+            !Array.isArray(root) &&
+            ((root as Record<string, unknown>).type === "md_view_doc" ||
+              (root as Record<string, unknown>).schema_id === "report.markdown_doc.v1")
+          ) {
+            setMdDoc(root as MdViewDoc);
+          } else {
+            setMdDoc(null);
+          }
         } catch {
           setRows([]);
+          setMdDoc(null);
         }
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
@@ -81,6 +106,56 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
       cancelled = true;
     };
   }, [selectedKey, nodeArtifacts, graphId]);
+
+  const fileBySuffix = useCallback(
+    (suffix: string) => nodeArtifacts.find((a) => a.key.endsWith(suffix)) ?? null,
+    [nodeArtifacts]
+  );
+
+  const downloadText = useCallback((filename: string, text: string, mime: string) => {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const fetchArtifactText = useCallback(async (entry: ArtifactEntry | null): Promise<string | null> => {
+    if (!entry) return null;
+    const r = await fetch(api(entry.url));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.text();
+  }, []);
+
+  const saveMd = useCallback(async () => {
+    setShareMsg(null);
+    const mdEntry = fileBySuffix(".md");
+    const text = (await fetchArtifactText(mdEntry)) ?? mdDoc?.markdown ?? rawText;
+    if (!text) return;
+    downloadText("report.md", text, "text/markdown");
+  }, [downloadText, fetchArtifactText, fileBySuffix, mdDoc?.markdown, rawText]);
+
+  const saveHtml = useCallback(async () => {
+    setShareMsg(null);
+    const htmlEntry = fileBySuffix(".html");
+    const text = (await fetchArtifactText(htmlEntry)) ?? mdDoc?.html ?? "<html><body><pre>No HTML</pre></body></html>";
+    downloadText("report.html", text, "text/html");
+  }, [downloadText, fetchArtifactText, fileBySuffix, mdDoc?.html]);
+
+  const shareArtifact = useCallback(async () => {
+    const htmlEntry = fileBySuffix(".html");
+    const target = htmlEntry ?? nodeArtifacts.find((a) => a.key === selectedKey) ?? null;
+    if (!target) return;
+    const absolute = `${window.location.origin}${api(target.url)}`;
+    try {
+      await navigator.clipboard.writeText(absolute);
+      setShareMsg("Share URL copied.");
+    } catch {
+      setShareMsg(absolute);
+    }
+  }, [fileBySuffix, nodeArtifacts, selectedKey]);
 
   const filteredRows = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -131,12 +206,37 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter rows…"
         />
+        {isMdViewer ? (
+          <>
+            <button type="button" onClick={() => void saveMd()}>
+              Save .md
+            </button>
+            <button type="button" onClick={() => void saveHtml()}>
+              Save .html
+            </button>
+            <button type="button" onClick={() => void shareArtifact()}>
+              Share
+            </button>
+          </>
+        ) : null}
       </div>
+      {shareMsg ? (
+        <div style={{ padding: "6px 10px", fontSize: 11, color: "#3fb950", borderBottom: "1px solid #30363d" }}>
+          {shareMsg}
+        </div>
+      ) : null}
       {busy && <div style={{ padding: 10, fontSize: 12 }}>Loading preview…</div>}
       {err && <div style={{ padding: 10, color: "#f85149", fontSize: 12 }}>{err}</div>}
       {!busy && !err && (
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 10 }}>
-          {filteredRows.length > 0 ? (
+          {isMdViewer && (mdDoc?.html || selectedKey.endsWith(".html")) ? (
+            <iframe
+              title="Markdown report preview"
+              sandbox="allow-same-origin"
+              style={{ width: "100%", minHeight: "70vh", border: "1px solid #30363d", borderRadius: 8, background: "#fff" }}
+              srcDoc={mdDoc?.html ?? rawText}
+            />
+          ) : filteredRows.length > 0 ? (
             <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
               <thead>
                 <tr>
@@ -192,4 +292,3 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
     </div>
   );
 }
-

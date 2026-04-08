@@ -34,6 +34,7 @@ export type SemanticType =
   | "mesh"
   | "block_model"
   | "table"
+  | "semantic_json"
   | "any";
 
 // ─── Display kinds ────────────────────────────────────────────────────────────

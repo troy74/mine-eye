@@ -97,6 +97,7 @@ fn sem(s: &str) -> SemanticPortType {
         "mesh" | "Mesh" => SemanticPortType::Mesh,
         "block_model" | "BlockModel" => SemanticPortType::BlockModel,
         "table" | "Table" => SemanticPortType::Table,
+        "semantic_json" | "SemanticJson" => SemanticPortType::SemanticJson,
         _ => SemanticPortType::Table,
     }
 }
@@ -111,6 +112,7 @@ fn sem_str(t: SemanticPortType) -> &'static str {
         SemanticPortType::Mesh => "mesh",
         SemanticPortType::BlockModel => "block_model",
         SemanticPortType::Table => "table",
+        SemanticPortType::SemanticJson => "semantic_json",
     }
 }
 

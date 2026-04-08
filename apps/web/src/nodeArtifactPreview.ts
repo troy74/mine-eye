@@ -23,6 +23,8 @@ export function preferredArtifactSuffix(kind: string): string | null {
       return "dem_stub.json";
     case "block_model_basic":
       return "block_model_meta.json";
+    case "md_viewer":
+      return "md_view_doc.json";
     default:
       return null;
   }

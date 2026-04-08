@@ -232,7 +232,7 @@
           {
             "id": "resource_report",
             "label": "Resource report",
-            "semantic": "table"
+            "semantic": "semantic_json"
           }
         ]
       },
@@ -584,6 +584,40 @@
       },
       "framework_group": "scene_contract",
       "submenu": "layer_stack",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "md_viewer",
+      "category": "visualisation",
+      "label": "Markdown viewer",
+      "role": "Visualisation · semantic JSON report → formatted markdown/html preview artifacts",
+      "menu": {
+        "enabled": true,
+        "order": 89
+      },
+      "policy": {
+        "recompute": "manual",
+        "propagation": "hold",
+        "quality": "preview"
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "report_in",
+            "label": "Semantic JSON report",
+            "semantic": "semantic_json"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "doc_out",
+            "label": "Rendered report doc",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "visualization",
+      "submenu": "reporting",
       "plugin_source": "core"
     },
     {
