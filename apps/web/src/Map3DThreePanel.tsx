@@ -1612,18 +1612,18 @@ function BlockVoxelLayer3D({
   lift: number;
   colorForMeasure: (raw: number | string | null, domain: { lo: number; hi: number }) => string;
 }) {
-  type RenderVoxel = {
-    position: THREE.Vector3;
-    scale: [number, number, number];
-    color: string;
-  };
-  const aboveRef = useRef<THREE.InstancedMesh>(null);
-  const edgeRef = useRef<THREE.InstancedMesh>(null);
-  const dummy = useMemo(() => new THREE.Object3D(), []);
-
-  const above = useMemo(() => {
-    const resolvedAbove: RenderVoxel[] = [];
+  const mergedGeometry = useMemo(() => {
     const attrKey = style.attributeKey.trim();
+    const base = new THREE.BoxGeometry(1, 1, 1);
+    const posAttr = base.getAttribute("position");
+    const idxAttr = base.getIndex();
+    if (!idxAttr) return null;
+
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const indices: number[] = [];
+    let vertOffset = 0;
+
     for (const v of voxels) {
       const raw = attrKey.length > 0 ? (v.measures?.[attrKey] ?? null) : null;
       const numericRaw = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
@@ -1634,78 +1634,77 @@ function BlockVoxelLayer3D({
             ? true
             : numericRaw >= v.cutoffGrade;
       if (!passesCutoff) continue;
-      const pos = toLocal(v.x, v.y, v.z + lift);
+
+      const center = toLocal(v.x, v.y, v.z + lift);
       const sx = Math.max(0.1, v.dx);
       const sy = Math.max(0.1, v.dz);
       const sz = Math.max(0.1, v.dy);
-      const color = colorForMeasure(raw, domain);
-      resolvedAbove.push({ position: pos, scale: [sx, sy, sz], color });
+      const c = new THREE.Color(colorForMeasure(raw, domain));
+
+      for (let i = 0; i < posAttr.count; i++) {
+        positions.push(
+          center.x + posAttr.getX(i) * sx,
+          center.y + posAttr.getY(i) * sy,
+          center.z + posAttr.getZ(i) * sz
+        );
+        colors.push(c.r, c.g, c.b);
+      }
+      for (let i = 0; i < idxAttr.count; i++) {
+        indices.push(idxAttr.getX(i) + vertOffset);
+      }
+      vertOffset += posAttr.count;
     }
-    return resolvedAbove;
+
+    base.dispose();
+    if (positions.length === 0) return null;
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+    return geom;
   }, [colorForMeasure, domain, lift, style.attributeKey, toLocal, voxels]);
 
-  useLayoutEffect(() => {
-    if (!aboveRef.current) return;
-    const mesh = aboveRef.current;
-    for (let i = 0; i < above.length; i++) {
-      const item = above[i];
-      dummy.position.copy(item.position);
-      dummy.scale.set(item.scale[0], item.scale[1], item.scale[2]);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-      mesh.setColorAt(i, new THREE.Color(item.color));
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  }, [above, dummy]);
+  const edgesGeometry = useMemo(() => {
+    if (!mergedGeometry) return null;
+    return new THREE.EdgesGeometry(mergedGeometry);
+  }, [mergedGeometry]);
 
-  useLayoutEffect(() => {
-    if (!edgeRef.current) return;
-    const mesh = edgeRef.current;
-    for (let i = 0; i < above.length; i++) {
-      const item = above[i];
-      dummy.position.copy(item.position);
-      dummy.scale.set(item.scale[0] * 1.01, item.scale[1] * 1.01, item.scale[2] * 1.01);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-    }
-    mesh.instanceMatrix.needsUpdate = true;
-  }, [above, dummy]);
+  useEffect(() => {
+    return () => {
+      mergedGeometry?.dispose();
+      edgesGeometry?.dispose();
+    };
+  }, [edgesGeometry, mergedGeometry]);
 
-  const aboveOpacity = Math.max(0.05, style.opacity);
+  if (!mergedGeometry) return null;
 
   return (
     <group>
-      {above.length > 0 ? (
-        <instancedMesh ref={aboveRef} args={[undefined, undefined, above.length]} renderOrder={20}>
-          <boxGeometry args={[1, 1, 1]} />
-          <meshPhongMaterial
-            vertexColors
-            transparent
-            opacity={aboveOpacity}
-            depthWrite={false}
-            depthTest
-            flatShading
-            shininess={20}
-            emissive="#2b2b2b"
-            emissiveIntensity={0.35}
-            toneMapped={false}
-          />
-        </instancedMesh>
-      ) : null}
-      {above.length > 0 ? (
-        <instancedMesh ref={edgeRef} args={[undefined, undefined, above.length]} renderOrder={21}>
-          <boxGeometry args={[1, 1, 1]} />
-          <meshBasicMaterial
-            color="#dbe7ff"
-            wireframe
-            transparent
-            opacity={Math.min(0.25, Math.max(0.08, aboveOpacity * 0.3))}
-            depthWrite={false}
-            depthTest
-            toneMapped={false}
-          />
-        </instancedMesh>
+      <mesh geometry={mergedGeometry} renderOrder={20}>
+        <meshStandardMaterial
+          vertexColors
+          transparent
+          opacity={Math.max(0.05, style.opacity)}
+          depthWrite={false}
+          depthTest
+          roughness={0.5}
+          metalness={0.0}
+          emissive="#1f1f1f"
+          emissiveIntensity={0.45}
+          toneMapped={false}
+        />
+      </mesh>
+      {edgesGeometry ? (
+      <lineSegments geometry={edgesGeometry} renderOrder={21}>
+        <lineBasicMaterial
+          color="#dbe7ff"
+          transparent
+          opacity={Math.min(0.22, Math.max(0.08, style.opacity * 0.28))}
+          toneMapped={false}
+        />
+      </lineSegments>
       ) : null}
     </group>
   );
