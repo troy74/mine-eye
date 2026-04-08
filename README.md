@@ -50,6 +50,7 @@ This is the core parity rule for web, iOS, and desktop clients.
 - `imagery_raster` (imagery provider + tilebroker contracts)
 - `trajectory` (desurvey)
 - `drillhole` (merge/model)
+- `resource_model` (block grade modeling + resource summaries)
 - `scene_contract` (scene layer composition)
 - `visualization` (viewer payload nodes)
 - `stubs` (alpha placeholders)
@@ -254,7 +255,8 @@ For deterministic draped terrain scenes:
 2. `dem_fetch` (provider DEM with optional fit to known XYZ controls)
 3. `tilebroker` / `imagery_provider` (imagery contract + provider fallback chain)
 4. optional `xyz_to_surface` / mesh/model nodes
-5. `threejs_display_node` consuming wired contracts/layers
+5. optional `block_grade_model` for voxelized grade/resource estimation
+6. `threejs_display_node` consuming wired contracts/layers
 
 This ordering keeps AOI, terrain, and imagery explicit and reproducible.
 

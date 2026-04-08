@@ -196,6 +196,51 @@
       "plugin_source": "core"
     },
     {
+      "kind": "block_grade_model",
+      "category": "model",
+      "label": "Block grade model",
+      "role": "Model · 3D grade field → clipped block model + centers + resource report",
+      "menu": {
+        "enabled": true,
+        "order": 56
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "grade_points_in",
+            "label": "Grade points",
+            "semantic": "table"
+          },
+          {
+            "id": "terrain_in",
+            "label": "Terrain (optional clip)",
+            "semantic": "surface",
+            "optional": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "block_voxels",
+            "label": "Block voxels",
+            "semantic": "mesh"
+          },
+          {
+            "id": "block_centers",
+            "label": "Block centers",
+            "semantic": "point_set"
+          },
+          {
+            "id": "resource_report",
+            "label": "Resource report",
+            "semantic": "table"
+          }
+        ]
+      },
+      "framework_group": "resource_model",
+      "submenu": "block_model",
+      "plugin_source": "core"
+    },
+    {
       "kind": "assay_heatmap",
       "category": "transform",
       "label": "Assay heatmap",

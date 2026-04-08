@@ -160,6 +160,15 @@ async fn layer_presentation_from_artifact(
         out["renderer"] = serde_json::json!("trace_polyline");
         out["display_pointer"] = serde_json::json!("scene3d.trace_polyline");
         out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
+    } else if sk == "block_grade_model" && lower.contains("voxels") {
+        out["renderer"] = serde_json::json!("block_voxels");
+        out["display_pointer"] = serde_json::json!("scene3d.block_voxels");
+        out["editable"] =
+            serde_json::json!(["visible", "opacity", "measure", "palette", "cutoff"]);
+    } else if sk == "block_grade_model" && lower.contains("centers") {
+        out["renderer"] = serde_json::json!("sample_points");
+        out["display_pointer"] = serde_json::json!("scene3d.sample_points");
+        out["editable"] = serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
     } else if sk == "drillhole_model" && lower.contains("drillhole_meshes") {
         out["renderer"] = serde_json::json!("grade_segments");
         out["display_pointer"] = serde_json::json!("scene3d.grade_segments");

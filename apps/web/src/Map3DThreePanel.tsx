@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Text, TrackballControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -69,6 +69,20 @@ type TerrainGridPick = {
   cells: number;
 };
 
+type BlockVoxel = {
+  x: number;
+  y: number;
+  z: number;
+  dx: number;
+  dy: number;
+  dz: number;
+  aboveCutoff?: boolean;
+  belowCutoffOpacity?: number;
+  epsg?: number;
+  measures?: Record<string, number | string>;
+  sourceLayerId?: string;
+};
+
 // Pre-computed heatmap surface grid from the assay_heatmap pipeline node.
 // Values are measure values (e.g. Au ppm), NOT elevation. Stored row-major
 // south-to-north (row 0 = ymin, row ny-1 = ymax), same as TerrainGrid.
@@ -93,6 +107,7 @@ type SceneData = {
   drillSegments: Segment3D[];
   contourSegments: Segment3D[];
   assayPoints: Point3D[];
+  blockVoxels: BlockVoxel[];
   terrainPoints: TerrainPoint[];
   terrainGrids: Array<{
     id: string;
@@ -111,7 +126,7 @@ type SceneData = {
 
 type SourceLayer = {
   id: string;         // "${baseType}__${nodeId}"  e.g. "assay_points__abc123"
-  baseType: string;   // "assay_points" | "grade_segments" | "trajectories"
+  baseType: string;   // "assay_points" | "grade_segments" | "trajectories" | "block_voxels"
   nodeId: string;
   nodeKind: string;
   label: string;      // human-readable
@@ -222,6 +237,7 @@ const LAYER_KEYS = [
   "contours",
   "trajectories",
   "grade_segments",
+  "block_voxels",
   "assay_points",
 ] as const;
 
@@ -392,9 +408,11 @@ const immutableArtifactTextInflight = new Map<string, Promise<string>>();
 
 function defaultLayerStyleForId(layerId: string): LayerVizStyle {
   const isContourLayer = layerId === "contours" || layerId.startsWith("contours__");
+  const isBlockLayer = layerId === "block_voxels" || layerId.startsWith("block_voxels__");
   return {
     ...DEFAULT_LAYER_STYLE,
     ...(isContourLayer ? { showLabels: true, labelSize: 12 } : {}),
+    ...(isBlockLayer ? { opacity: 0.92 } : {}),
   };
 }
 
@@ -791,6 +809,7 @@ function parseSceneJson(
       drillSegments: [],
       contourSegments: [],
       assayPoints: [],
+      blockVoxels: [],
       terrainPoints: [],
       terrainGrids: [],
       terrainGrid: null,
@@ -803,6 +822,7 @@ function parseSceneJson(
   const drillSegments: Segment3D[] = [];
   const contourSegments: Segment3D[] = [];
   const assayPoints: Point3D[] = [];
+  const blockVoxels: BlockVoxel[] = [];
   const terrainPoints: TerrainPoint[] = [];
   const terrainGrids: Array<{
     id: string;
@@ -922,6 +942,42 @@ function parseSceneJson(
     });
   };
 
+  const maybePushBlock = (
+    xv: unknown,
+    yv: unknown,
+    zv: unknown,
+    dxv: unknown,
+    dyv: unknown,
+    dzv: unknown,
+    rawMeasures?: unknown,
+    aboveCutoff?: boolean,
+    belowCutoffOpacity?: number,
+    epsg?: number
+  ) => {
+    const x = n(xv);
+    const y = n(yv);
+    const z = n(zv);
+    const dx = n(dxv);
+    const dy = n(dyv);
+    const dz = n(dzv);
+    if (x === null || y === null || z === null || dx === null || dy === null || dz === null) return;
+    if (dx <= 0 || dy <= 0 || dz <= 0) return;
+    const parsedMeasures = parseAssayAttributes(rawMeasures);
+    for (const k of Object.keys(parsedMeasures)) measures.add(k);
+    blockVoxels.push({
+      x,
+      y,
+      z,
+      dx,
+      dy,
+      dz,
+      aboveCutoff,
+      belowCutoffOpacity,
+      epsg,
+      measures: Object.keys(parsedMeasures).length ? parsedMeasures : undefined,
+    });
+  };
+
   if (Array.isArray(root)) {
     for (const row of root) {
       if (!row || typeof row !== "object" || Array.isArray(row)) continue;
@@ -983,6 +1039,37 @@ function parseSceneJson(
         if (!row || typeof row !== "object" || Array.isArray(row)) continue;
         const r = row as Record<string, unknown>;
         maybePushPoint(r.x, r.y, r.z, r.attributes, artifactEpsg);
+      }
+    }
+
+    const blocks = obj.blocks;
+    const styleDefaults =
+      obj.style_defaults && typeof obj.style_defaults === "object" && !Array.isArray(obj.style_defaults)
+        ? (obj.style_defaults as Record<string, unknown>)
+        : null;
+    const defaultBelowCutoffOpacity = styleDefaults
+      ? n(styleDefaults.below_cutoff_opacity)
+      : null;
+    if (Array.isArray(blocks)) {
+      for (const row of blocks) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+        const r = row as Record<string, unknown>;
+        const attrs =
+          r.attributes && typeof r.attributes === "object" && !Array.isArray(r.attributes)
+            ? (r.attributes as Record<string, unknown>)
+            : undefined;
+        maybePushBlock(
+          r.x,
+          r.y,
+          r.z,
+          r.dx,
+          r.dy,
+          r.dz,
+          attrs,
+          typeof r.above_cutoff === "boolean" ? r.above_cutoff : undefined,
+          n(r.below_cutoff_opacity) ?? defaultBelowCutoffOpacity ?? undefined,
+          artifactEpsg
+        );
       }
     }
 
@@ -1103,6 +1190,7 @@ function parseSceneJson(
     drillSegments,
     contourSegments,
     assayPoints,
+    blockVoxels,
     terrainPoints,
     terrainGrids,
     terrainGrid,
@@ -1491,6 +1579,112 @@ function SegmentTube({
         polygonOffsetUnits={-2}
       />
     </mesh>
+  );
+}
+
+function BlockVoxelLayer3D({
+  voxels,
+  style,
+  domain,
+  toLocal,
+  lift,
+  colorForMeasure,
+}: {
+  voxels: BlockVoxel[];
+  style: LayerVizStyle;
+  domain: { lo: number; hi: number };
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+  lift: number;
+  colorForMeasure: (raw: number | string | null, domain: { lo: number; hi: number }) => string;
+}) {
+  type RenderVoxel = {
+    position: THREE.Vector3;
+    scale: [number, number, number];
+    color: string;
+  };
+  const aboveRef = useRef<THREE.InstancedMesh>(null);
+  const belowRef = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+
+  const { above, below } = useMemo(() => {
+    const resolvedAbove: RenderVoxel[] = [];
+    const resolvedBelow: RenderVoxel[] = [];
+    const attrKey = style.attributeKey.trim();
+    for (const v of voxels) {
+      const pos = toLocal(v.x, v.y, v.z + lift);
+      const sx = Math.max(0.1, v.dx);
+      const sy = Math.max(0.1, v.dz);
+      const sz = Math.max(0.1, v.dy);
+      const raw = attrKey.length > 0 ? (v.measures?.[attrKey] ?? null) : null;
+      const color = colorForMeasure(raw, domain);
+      const target = v.aboveCutoff === false ? resolvedBelow : resolvedAbove;
+      target.push({ position: pos, scale: [sx, sy, sz], color });
+    }
+    return { above: resolvedAbove, below: resolvedBelow };
+  }, [colorForMeasure, domain, lift, style.attributeKey, toLocal, voxels]);
+
+  useLayoutEffect(() => {
+    if (!aboveRef.current) return;
+    const mesh = aboveRef.current;
+    for (let i = 0; i < above.length; i++) {
+      const item = above[i];
+      dummy.position.copy(item.position);
+      dummy.scale.set(item.scale[0], item.scale[1], item.scale[2]);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      mesh.setColorAt(i, new THREE.Color(item.color));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [above, dummy]);
+
+  useLayoutEffect(() => {
+    if (!belowRef.current) return;
+    const mesh = belowRef.current;
+    for (let i = 0; i < below.length; i++) {
+      const item = below[i];
+      dummy.position.copy(item.position);
+      dummy.scale.set(item.scale[0], item.scale[1], item.scale[2]);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      mesh.setColorAt(i, new THREE.Color(item.color));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }, [below, dummy]);
+
+  const aboveOpacity = Math.max(0.05, style.opacity);
+  const suggestedBelowOpacity =
+    voxels.find((v) => typeof v.belowCutoffOpacity === "number")?.belowCutoffOpacity ?? 0.14;
+  const belowOpacity = Math.max(0.02, style.opacity * Math.max(0, Math.min(1, suggestedBelowOpacity)));
+
+  return (
+    <group>
+      {above.length > 0 ? (
+        <instancedMesh ref={aboveRef} args={[undefined, undefined, above.length]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial
+            vertexColors
+            transparent
+            opacity={aboveOpacity}
+            metalness={0.08}
+            roughness={0.62}
+          />
+        </instancedMesh>
+      ) : null}
+      {below.length > 0 ? (
+        <instancedMesh ref={belowRef} args={[undefined, undefined, below.length]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial
+            vertexColors
+            transparent
+            opacity={belowOpacity}
+            metalness={0.04}
+            roughness={0.78}
+          />
+        </instancedMesh>
+      ) : null}
+    </group>
   );
 }
 
@@ -2354,6 +2548,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     drillSegments: [],
     contourSegments: [],
     assayPoints: [],
+    blockVoxels: [],
     terrainPoints: [],
     terrainGrids: [],
     terrainGrid: null,
@@ -2635,6 +2830,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           drillSegments: [],
           contourSegments: [],
           assayPoints: [],
+          blockVoxels: [],
           terrainPoints: [],
           terrainGrids: [],
           terrainGrid: null,
@@ -2659,6 +2855,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const allSegs: Segment3D[] = [];
       const allContours: Segment3D[] = [];
       const allPoints: Point3D[] = [];
+      const allBlocks: BlockVoxel[] = [];
       const allTerrain: TerrainPoint[] = [];
       const allSourceLayers: SourceLayer[] = [];
       const allHeatmapSurfaces: HeatmapSurfaceGrid[] = [];
@@ -2742,12 +2939,15 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             // Tag contour segments with the source node so they can be independently styled.
             const taggedContours = parsed.contourSegments.map(s => ({...s, sourceLayerId: makeId("contours")}));
             allContours.push(...taggedContours);
+            const taggedBlocks = parsed.blockVoxels.map(b => ({...b, sourceLayerId: makeId("block_voxels")}));
+            allBlocks.push(...taggedBlocks);
 
             for (const [baseType, hasItems] of [
               ["assay_points",   parsed.assayPoints.length > 0],
               ["grade_segments", parsed.drillSegments.length > 0],
               ["trajectories",   parsed.traces.length > 0],
               ["contours",       parsed.contourSegments.length > 0],
+              ["block_voxels",   parsed.blockVoxels.length > 0],
             ] as const) {
               if (!hasItems) continue;
               const id = makeId(baseType);
@@ -2764,6 +2964,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 dotColor: baseType === "assay_points" ? "#60a5fa"
                         : baseType === "grade_segments" ? "#f97316"
                         : baseType === "contours" ? "#34d399"
+                        : baseType === "block_voxels" ? "#f43f5e"
                         : "#a78bfa",
               });
             }
@@ -2826,6 +3027,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         drillSegments: allSegs,
         contourSegments: allContours,
         assayPoints: allPoints,
+        blockVoxels: allBlocks,
         terrainPoints: allTerrain,
         terrainGrids: orderedTerrain,
         terrainGrid: preferredTerrain,
@@ -2835,7 +3037,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         sourceLayers: allSourceLayers,
         heatmapSurfaces: allHeatmapSurfaces,
       });
-      setStatus(`${allTraces.length + allSegs.length + allContours.length} line segment(s), ${allPoints.length} point(s), ${allTerrain.length} terrain samples from ${loaded} artifact(s).`);
+      setStatus(`${allTraces.length + allSegs.length + allContours.length} line segment(s), ${allPoints.length} point(s), ${allBlocks.length} block voxel(s), ${allTerrain.length} terrain samples from ${loaded} artifact(s).`);
     })();
     return () => {
       cancelled = true;
@@ -2886,6 +3088,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     for (const p of sceneData.assayPoints) {
       const z = resolvePointZ(p, groundTerrainGrid);
       if (typeof z === "number" && Number.isFinite(z)) pts.push([p.x, p.y, z]);
+    }
+    for (const b of sceneData.blockVoxels) {
+      const hx = b.dx * 0.5;
+      const hy = b.dy * 0.5;
+      const hz = b.dz * 0.5;
+      pts.push([b.x - hx, b.y - hy, b.z - hz], [b.x + hx, b.y + hy, b.z + hz]);
     }
     for (const p of sceneData.terrainPoints) pts.push([p.x, p.y, p.z]);
     if (groundTerrainGrid && groundTerrainGrid.values.length > 0) {
@@ -2972,7 +3180,14 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           outsideSegmentEndCount += 1;
         }
       }
-      const outsideTotal = outsidePointCount + outsideSegmentEndCount;
+      const outsideBlockCount = sceneData.blockVoxels.filter(
+        (b) =>
+          b.x < baseBounds.xmin ||
+          b.x > baseBounds.xmax ||
+          b.y < baseBounds.ymin ||
+          b.y > baseBounds.ymax
+      ).length;
+      const outsideTotal = outsidePointCount + outsideSegmentEndCount + outsideBlockCount;
       if (outsideTotal > 0) {
         warnings.push(
           `${outsideTotal} feature endpoint(s) outside AOI/terrain extent (check CRS or AOI).`
@@ -2982,6 +3197,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
     const crsSamples: number[] = [];
     for (const p of sceneData.assayPoints) if (typeof p.epsg === "number") crsSamples.push(p.epsg);
+    for (const b of sceneData.blockVoxels) if (typeof b.epsg === "number") crsSamples.push(b.epsg);
     for (const p of sceneData.terrainPoints) if (typeof p.epsg === "number") crsSamples.push(p.epsg);
     for (const s of [...sceneData.traces, ...sceneData.drillSegments, ...sceneData.contourSegments]) {
       if (typeof s.epsg === "number") crsSamples.push(s.epsg);
@@ -3064,12 +3280,20 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         if (tv !== null && Number.isFinite(tv)) vals.push(tv);
       }
     }
+    for (const b of sceneData.blockVoxels) {
+      if (sourceLayerIdFilter && b.sourceLayerId !== sourceLayerIdFilter) continue;
+      const v = b.measures?.[key];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        const tv = applyMeasureTransform(v, transform);
+        if (tv !== null && Number.isFinite(tv)) vals.push(tv);
+      }
+    }
     vals.sort((a, b) => a - b);
     return {
       lo: vals.length ? percentile(vals, lowPct) : 0,
       hi: vals.length ? percentile(vals, highPct) : 1,
     };
-  }, [sceneData.assayPoints, sceneData.drillSegments]);
+  }, [sceneData.assayPoints, sceneData.blockVoxels, sceneData.drillSegments]);
 
   const assayStyle = useMemo(() => layerStyle("assay_points"), [layerStyle]);
   const segmentStyle = useMemo(() => layerStyle("grade_segments"), [layerStyle]);
@@ -3429,6 +3653,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     contours: "Contours",
     trajectories: "Trajectories",
     grade_segments: "Grade segments",
+    block_voxels: "Block voxels",
     assay_points: "Assay points",
   };
   const LAYER_DOT: Record<LayerKey, string> = {
@@ -3437,11 +3662,13 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     contours: "#38bdf8",
     trajectories: "#a78bfa",
     grade_segments: "#f97316",
+    block_voxels: "#f43f5e",
     assay_points: "#60a5fa",
   };
   const styleableLayers = new Set<LayerKey>([
     "trajectories",
     "grade_segments",
+    "block_voxels",
     "assay_points",
   ]);
 
@@ -3634,6 +3861,28 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                         return <SegmentTube key={`seg-${i}`} from={a} to={b} radius={r} color={color} />;
                       })}
                     </group>
+                  );
+                }
+                if (baseType === "block_voxels") {
+                  const thisBlockStyle = layerStyle(layerId);
+                  if (!thisBlockStyle.visible) return null;
+                  const voxels = sceneData.blockVoxels.filter((v) =>
+                    layerId.includes("__") ? v.sourceLayerId === layerId : true
+                  );
+                  if (voxels.length === 0) return null;
+                  const thisDomain = domainForLayer(layerId);
+                  return (
+                    <BlockVoxelLayer3D
+                      key={`layer-block-voxels-${layerId}`}
+                      voxels={voxels}
+                      style={thisBlockStyle}
+                      domain={thisDomain}
+                      toLocal={toLocal}
+                      lift={layerLift(layerId)}
+                      colorForMeasure={(raw, domain) =>
+                        colorFromLayerStyle(thisBlockStyle, raw, domain)
+                      }
+                    />
                   );
                 }
                 if (baseType === "contours") {
@@ -3836,7 +4085,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     {orderedLayerIds.map((layerId) => {
                       const style = layerStyle(layerId);
                       const lBaseType = layerId.includes("__") ? layerId.split("__")[0] : layerId;
-                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface";
+                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "block_voxels" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface";
                       const sourceLayer = sceneData.sourceLayers.find(sl => sl.id === layerId);
                       const thisLayerLabel = sourceLayer?.label
                         ?? (layerId === "esri_drape" ? "Imagery drape"
@@ -4175,6 +4424,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                           const v = p.measures?.[key];
                                           if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
                                         }
+                                        for (const b of sceneData.blockVoxels) {
+                                          if (b.sourceLayerId !== layerId) continue;
+                                          const v = b.measures?.[key];
+                                          if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
+                                        }
                                         return vals;
                                       })()}
                                       dataMin={(() => {
@@ -4191,6 +4445,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                         let mn = Infinity;
                                         for (const s of sceneData.drillSegments) { const v = s.measures?.[key]; if (typeof v === "number") mn = Math.min(mn, v); }
                                         for (const p of sceneData.assayPoints) { const v = p.measures?.[key]; if (typeof v === "number") mn = Math.min(mn, v); }
+                                        for (const b of sceneData.blockVoxels) { const v = b.sourceLayerId === layerId ? b.measures?.[key] : undefined; if (typeof v === "number") mn = Math.min(mn, v); }
                                         return isFinite(mn) ? mn : 0;
                                       })()}
                                       dataMax={(() => {
@@ -4207,6 +4462,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                         let mx = -Infinity;
                                         for (const s of sceneData.drillSegments) { const v = s.measures?.[key]; if (typeof v === "number") mx = Math.max(mx, v); }
                                         for (const p of sceneData.assayPoints) { const v = p.measures?.[key]; if (typeof v === "number") mx = Math.max(mx, v); }
+                                        for (const b of sceneData.blockVoxels) { const v = b.sourceLayerId === layerId ? b.measures?.[key] : undefined; if (typeof v === "number") mx = Math.max(mx, v); }
                                         return isFinite(mx) ? mx : 1;
                                       })()}
                                     />

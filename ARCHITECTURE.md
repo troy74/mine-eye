@@ -62,6 +62,7 @@ Node implementation structure (current):
   - `imagery_raster`
   - `trajectory`
   - `drillhole`
+  - `resource_model`
   - `scene_contract`
   - `visualization`
   - `stubs`

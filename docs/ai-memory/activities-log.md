@@ -1,6 +1,16 @@
 # Activities Log (AI Context)
 
 ## 2026-04-08
+- Added `block_grade_model` node (model domain) with three outputs:
+  - voxel/mesh-ready block model with grade + cutoff flags.
+  - block-center grade points for overlays/downstream transforms.
+  - resource report JSON (tonnage/contained/grade stats and histogram).
+- Added topography clipping (block-center vs terrain surface), SG constant support, configurable
+  block sizing, grade cutoff/clamps, and nearest/IDW estimation controls.
+- Extended Three.js viewer for `scene3d.block_voxels`:
+  - instanced voxel rendering for performance.
+  - measure-based color ramps and transparent below-cutoff display.
+  - dynamic source-layer styling alongside existing trajectory/segment/point layers.
 - Established Clerk-backed authentication and organization isolation across web + orchestrator:
   - web shell now requires sign-in (`ClerkProvider`, signed-out screen, user menu).
   - orchestrator verifies Clerk RS256 session tokens with JWKS caching and authorized-party checks.

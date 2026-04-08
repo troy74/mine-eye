@@ -8,6 +8,7 @@ pub mod tile_cache;
 pub mod data_model;
 pub mod drillhole;
 pub mod imagery_raster;
+pub mod resource_model;
 pub mod runtime;
 pub mod scene_contract;
 pub mod spatial;
@@ -23,6 +24,7 @@ pub use acquisition::{
 pub use data_model::run_data_model_transform;
 pub use drillhole::{run_drillhole_merge, run_drillhole_model};
 pub use imagery_raster::{run_imagery_provider, run_tilebroker};
+pub use resource_model::run_block_grade_model;
 pub use scene_contract::run_scene3d_layer_stack;
 pub use spatial::run_aoi;
 pub use stubs::{run_block_model_stub, run_dem_integrate_stub};

@@ -112,7 +112,8 @@ export function isSceneViewInputSemantic(semantic: string): boolean {
     k === "interval_set" ||
     k === "trajectory_set" ||
     k === "surface" ||
-    k === "mesh"
+    k === "mesh" ||
+    k === "block_model"
   );
 }
 

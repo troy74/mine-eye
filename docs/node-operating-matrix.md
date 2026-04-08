@@ -13,6 +13,7 @@ This matrix is the practical operating guide for what we currently do with node 
 |---|---|---|---|
 | Drillhole 3D interpretation | `collar_ingest` + `survey_ingest` -> `desurvey_trajectory` -> `drillhole_model` -> `threejs_display_node` | Primary | Baseline for collars/surveys/assays into 3D scene context. |
 | Terrain + imagery context in 3D | `aoi` -> `dem_fetch` -> `tilebroker` -> `threejs_display_node` | Primary | Use with drillhole outputs for draped exploration context. |
+| Block resource estimation (voxel) | `drillhole_model`/grade points -> `block_grade_model` -> `threejs_display_node` | Primary | Emits block voxels + center points + resource summary report; clips to topography when terrain is wired. |
 | Surface geochem heatmap | `surface_sample_ingest` -> (`data_model_transform`) -> `assay_heatmap` -> `plan_view_2d`/`threejs_display_node` | Primary | Keep measure-column config explicit and validated from source schema. |
 | Contour export / topography QA | `dem_fetch`/`terrain_adjust` -> `surface_iso_extract` or `dem_contour_xyz` | Secondary | Use when iso/contour artifacts are required downstream. |
 | Scene contract composition | `scene3d_layer_stack` -> `threejs_display_node` | Secondary | Useful for explicit multi-layer 3D composition and UI capabilities. |
@@ -27,6 +28,7 @@ This matrix is the practical operating guide for what we currently do with node 
 | `surface_sample_ingest` | input | Import surface point samples | file/config mapping | `surface_samples` (`point_set`) | Primary |
 | `desurvey_trajectory` | transform | Build downhole trajectories | collars + surveys | `trajectory` | Primary |
 | `drillhole_model` | model | Build drill traces/meshes and assay points | trajectory + assays | meshes + points | Primary |
+| `block_grade_model` | model | Build voxel block grades + resource summary | grade points (+ optional terrain) | block voxels + centers + report | Primary |
 | `aoi` | transform | Stable AOI definition | seed geometry | AOI contract (`table`) | Primary |
 | `dem_fetch` | transform | DEM fetch/fit from AOI | AOI geometry | terrain surface | Primary |
 | `tilebroker` | transform | Imagery provider normalization | AOI + terrain | imagery contract | Primary |

@@ -27,6 +27,8 @@ pub async fn run_scene3d_layer_stack(
             "contours"
         } else if display_pointer == "scene3d.trace_polyline" {
             "drill_segments"
+        } else if display_pointer == "scene3d.block_voxels" {
+            "block_voxels"
         } else if display_pointer == "scene3d.sample_points" {
             "assay_points"
         } else {
@@ -37,6 +39,7 @@ pub async fn run_scene3d_layer_stack(
             "terrain" => serde_json::json!(["visible", "opacity"]),
             "contours" => serde_json::json!(["visible", "opacity", "color", "width", "interval_step"]),
             "drill_segments" => serde_json::json!(["visible", "opacity", "palette", "radius_scale", "measure"]),
+            "block_voxels" => serde_json::json!(["visible", "opacity", "palette", "measure", "cutoff"]),
             "assay_points" => serde_json::json!(["visible", "opacity", "palette", "size_scale", "measure"]),
             _ => serde_json::json!(["visible", "opacity"]),
         };

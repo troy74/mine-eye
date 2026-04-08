@@ -95,8 +95,9 @@ export function NodeInspector({
   const isIsoExtractNode = kind === "surface_iso_extract";
   const isTilebrokerNode = kind === "tilebroker";
   const isAoiNode = kind === "aoi";
+  const isBlockGradeModelNode = kind === "block_grade_model";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode;
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -397,6 +398,60 @@ export function NodeInspector({
   const [tbLastWarnings, setTbLastWarnings] = useState<string[]>([]);
   const [tbAoiSourceUsed, setTbAoiSourceUsed] = useState<string>("");
   const [tbEffectiveConfigText, setTbEffectiveConfigText] = useState<string>("");
+  const [bgElementField, setBgElementField] = useState<string>(
+    () => (typeof initialUi.element_field === "string" ? initialUi.element_field : "")
+  );
+  const [bgBlockSizeX, setBgBlockSizeX] = useState<string>(
+    () => (typeof initialUi.block_size_x === "number" ? String(initialUi.block_size_x) : "20")
+  );
+  const [bgBlockSizeY, setBgBlockSizeY] = useState<string>(
+    () => (typeof initialUi.block_size_y === "number" ? String(initialUi.block_size_y) : "20")
+  );
+  const [bgBlockSizeZ, setBgBlockSizeZ] = useState<string>(
+    () => (typeof initialUi.block_size_z === "number" ? String(initialUi.block_size_z) : "10")
+  );
+  const [bgCutoffGrade, setBgCutoffGrade] = useState<string>(
+    () => (typeof initialUi.cutoff_grade === "number" ? String(initialUi.cutoff_grade) : "0")
+  );
+  const [bgSgConstant, setBgSgConstant] = useState<string>(
+    () => (typeof initialUi.sg_constant === "number" ? String(initialUi.sg_constant) : "2.5")
+  );
+  const [bgEstimationMethod, setBgEstimationMethod] = useState<string>(
+    () => (typeof initialUi.estimation_method === "string" ? initialUi.estimation_method : "idw")
+  );
+  const [bgIdwPower, setBgIdwPower] = useState<string>(
+    () => (typeof initialUi.idw_power === "number" ? String(initialUi.idw_power) : "2")
+  );
+  const [bgSearchRadiusM, setBgSearchRadiusM] = useState<string>(
+    () => (typeof initialUi.search_radius_m === "number" ? String(initialUi.search_radius_m) : "0")
+  );
+  const [bgMinSamples, setBgMinSamples] = useState<string>(
+    () => (typeof initialUi.min_samples === "number" ? String(initialUi.min_samples) : "3")
+  );
+  const [bgMaxSamples, setBgMaxSamples] = useState<string>(
+    () => (typeof initialUi.max_samples === "number" ? String(initialUi.max_samples) : "24")
+  );
+  const [bgGradeMin, setBgGradeMin] = useState<string>(
+    () => (typeof initialUi.grade_min === "number" ? String(initialUi.grade_min) : "")
+  );
+  const [bgGradeMax, setBgGradeMax] = useState<string>(
+    () => (typeof initialUi.grade_max === "number" ? String(initialUi.grade_max) : "")
+  );
+  const [bgClipMode, setBgClipMode] = useState<string>(
+    () => (typeof initialUi.clip_mode === "string" ? initialUi.clip_mode : "topography")
+  );
+  const [bgBelowCutoffOpacity, setBgBelowCutoffOpacity] = useState<string>(
+    () =>
+      typeof initialUi.below_cutoff_opacity === "number"
+        ? String(initialUi.below_cutoff_opacity)
+        : "0.08"
+  );
+  const [bgPalette, setBgPalette] = useState<string>(
+    () => (typeof initialUi.palette === "string" ? initialUi.palette : "viridis")
+  );
+  const [bgMaxBlocks, setBgMaxBlocks] = useState<string>(
+    () => (typeof initialUi.max_blocks === "number" ? String(initialUi.max_blocks) : "45000")
+  );
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -816,6 +871,27 @@ export function NodeInspector({
       ui.cache_ttl_s = Math.max(60, Math.trunc(n(tbCacheTtl, 604800)));
       ui.allow_stale_on_error = tbAllowStale;
       ui.debounce_profile = tbDebounceProfile;
+    } else if (isBlockGradeModelNode) {
+      ui.element_field = bgElementField.trim() || undefined;
+      ui.block_size_x = Math.max(0.5, n(bgBlockSizeX, 20));
+      ui.block_size_y = Math.max(0.5, n(bgBlockSizeY, 20));
+      ui.block_size_z = Math.max(0.5, n(bgBlockSizeZ, 10));
+      ui.cutoff_grade = n(bgCutoffGrade, 0);
+      ui.sg_constant = Math.max(0.2, n(bgSgConstant, 2.5));
+      ui.estimation_method = bgEstimationMethod === "nearest" ? "nearest" : "idw";
+      ui.idw_power = Math.max(1, Math.min(4, n(bgIdwPower, 2)));
+      ui.search_radius_m = Math.max(0, n(bgSearchRadiusM, 0));
+      ui.min_samples = Math.max(1, Math.trunc(n(bgMinSamples, 3)));
+      ui.max_samples = Math.max(
+        Math.trunc(n(bgMinSamples, 3)),
+        Math.trunc(n(bgMaxSamples, 24))
+      );
+      ui.grade_min = bgGradeMin.trim().length > 0 ? n(bgGradeMin, 0) : undefined;
+      ui.grade_max = bgGradeMax.trim().length > 0 ? n(bgGradeMax, 0) : undefined;
+      ui.clip_mode = bgClipMode === "none" ? "none" : "topography";
+      ui.below_cutoff_opacity = Math.max(0, Math.min(1, n(bgBelowCutoffOpacity, 0.08)));
+      ui.palette = bgPalette;
+      ui.max_blocks = Math.max(1000, Math.trunc(n(bgMaxBlocks, 45000)));
     } else if (isAoiNode) {
       ui.mode = aoiMode;
       ui.margin_pct = Math.max(0, n(aoiMarginPct, 25));
@@ -912,6 +988,24 @@ export function NodeInspector({
     tbCacheTtl,
     tbAllowStale,
     tbDebounceProfile,
+    isBlockGradeModelNode,
+    bgElementField,
+    bgBlockSizeX,
+    bgBlockSizeY,
+    bgBlockSizeZ,
+    bgCutoffGrade,
+    bgSgConstant,
+    bgEstimationMethod,
+    bgIdwPower,
+    bgSearchRadiusM,
+    bgMinSamples,
+    bgMaxSamples,
+    bgGradeMin,
+    bgGradeMax,
+    bgClipMode,
+    bgBelowCutoffOpacity,
+    bgPalette,
+    bgMaxBlocks,
     graphId,
     activeBranchId,
     node.id,
@@ -1067,8 +1161,10 @@ export function NodeInspector({
               ? "Tilebroker"
               : isAoiNode
                 ? "AOI"
+                : isBlockGradeModelNode
+                  ? "Block model"
               : "Config",
-    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode]
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode]
   );
 
   const tabs = useMemo(() => {
@@ -1334,6 +1430,13 @@ export function NodeInspector({
                 Use <strong>Tilebroker</strong> to set provider precedence, CRS/size strategy, and
                 cache policy. Outputs include effective config + warnings for drift-resistant
                 rendering.
+              </p>
+            )}
+            {isBlockGradeModelNode && (
+              <p style={{ opacity: 0.75 }}>
+                Use <strong>Block model</strong> to choose grade element, block dimensions, cut-off,
+                SG, interpolation controls, and topography clipping. Outputs are voxels, block
+                centers, and a resource summary JSON report.
               </p>
             )}
             <p style={{ opacity: 0.7, marginTop: 14, fontSize: 11 }}>
@@ -2309,6 +2412,186 @@ export function NodeInspector({
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {tab === "config" && isBlockGradeModelNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Build a topography-clipped block model from 3D grade points. Outputs include voxel
+              blocks, block-center points, and a resource summary report.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Grade element field</span>
+                <input
+                  type="text"
+                  value={bgElementField}
+                  onChange={(e) => setBgElementField(e.target.value)}
+                  placeholder="e.g. au_ppm (blank = auto)"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Block size X</span>
+                  <input
+                    type="number"
+                    value={bgBlockSizeX}
+                    onChange={(e) => setBgBlockSizeX(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Block size Y</span>
+                  <input
+                    type="number"
+                    value={bgBlockSizeY}
+                    onChange={(e) => setBgBlockSizeY(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Block size Z</span>
+                  <input
+                    type="number"
+                    value={bgBlockSizeZ}
+                    onChange={(e) => setBgBlockSizeZ(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Cutoff grade</span>
+                  <input
+                    type="number"
+                    value={bgCutoffGrade}
+                    onChange={(e) => setBgCutoffGrade(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>SG constant</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={bgSgConstant}
+                    onChange={(e) => setBgSgConstant(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Method</span>
+                  <select
+                    value={bgEstimationMethod}
+                    onChange={(e) => setBgEstimationMethod(e.target.value)}
+                    style={sel}
+                  >
+                    <option value="idw">IDW</option>
+                    <option value="nearest">Nearest</option>
+                  </select>
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>IDW power</span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={bgIdwPower}
+                    onChange={(e) => setBgIdwPower(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Search radius (m)</span>
+                  <input
+                    type="number"
+                    value={bgSearchRadiusM}
+                    onChange={(e) => setBgSearchRadiusM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Max blocks</span>
+                  <input
+                    type="number"
+                    value={bgMaxBlocks}
+                    onChange={(e) => setBgMaxBlocks(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Min samples</span>
+                  <input
+                    type="number"
+                    value={bgMinSamples}
+                    onChange={(e) => setBgMinSamples(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Max samples</span>
+                  <input
+                    type="number"
+                    value={bgMaxSamples}
+                    onChange={(e) => setBgMaxSamples(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Grade min clamp</span>
+                  <input
+                    type="number"
+                    value={bgGradeMin}
+                    onChange={(e) => setBgGradeMin(e.target.value)}
+                    placeholder="optional"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Grade max clamp</span>
+                  <input
+                    type="number"
+                    value={bgGradeMax}
+                    onChange={(e) => setBgGradeMax(e.target.value)}
+                    placeholder="optional"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Clip mode</span>
+                  <select value={bgClipMode} onChange={(e) => setBgClipMode(e.target.value)} style={sel}>
+                    <option value="topography">Topography (ground)</option>
+                    <option value="none">None</option>
+                  </select>
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Below-cutoff opacity</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={bgBelowCutoffOpacity}
+                    onChange={(e) => setBgBelowCutoffOpacity(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Palette hint</span>
+                  <select value={bgPalette} onChange={(e) => setBgPalette(e.target.value)} style={sel}>
+                    <option value="inferno">Inferno</option>
+                    <option value="viridis">Viridis</option>
+                    <option value="turbo">Turbo</option>
+                    <option value="red_blue">Red/Blue</option>
+                  </select>
+                </label>
+              </div>
+            </div>
           </div>
         )}
 
