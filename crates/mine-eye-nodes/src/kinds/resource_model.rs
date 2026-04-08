@@ -162,7 +162,32 @@ fn collect_numeric_fields(
             out.insert(k.clone(), n);
         }
     }
+    if let Some(attrs) = row.get("attributes").and_then(|v| v.as_object()) {
+        for (k, v) in attrs {
+            if let Some(n) = parse_numeric_value(v) {
+                out.insert(k.clone(), n);
+            }
+        }
+    }
     out
+}
+
+fn lookup_numeric_case_insensitive(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<f64> {
+    if let Some(v) = obj.get(key).and_then(parse_numeric_value) {
+        return Some(v);
+    }
+    let lk = key.to_ascii_lowercase();
+    for (k, v) in obj {
+        if k.to_ascii_lowercase() == lk {
+            if let Some(n) = parse_numeric_value(v) {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 fn parse_params(job: &JobEnvelope) -> ModelParams {
@@ -407,12 +432,12 @@ pub async fn run_block_grade_model(
 
         let mut grade_value = None;
         if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
-            if let Some(v) = attrs.get(&element_field).and_then(parse_numeric_value) {
+            if let Some(v) = lookup_numeric_case_insensitive(attrs, &element_field) {
                 grade_value = Some(v);
             }
         }
         if grade_value.is_none() {
-            grade_value = obj.get(&element_field).and_then(parse_numeric_value);
+            grade_value = lookup_numeric_case_insensitive(obj, &element_field);
         }
         if let Some(value) = grade_value {
             samples.push(GradeSample { x, y, z, value });
