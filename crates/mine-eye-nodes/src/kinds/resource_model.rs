@@ -550,23 +550,29 @@ pub async fn run_block_grade_model(
 
     let mut grade_values = Vec::with_capacity(blocks.len());
     let grade_unit_factor = grade_unit_factor_to_fraction(&params.grade_unit);
+    let troy_oz_per_tonne = 32150.74656862745_f64;
     let mut total_tonnage = 0.0;
     let mut total_contained_unscaled = 0.0;
     let mut total_contained_metal_t = 0.0;
+    let mut total_contained_metal_oz = 0.0;
     let mut above_cutoff_blocks = 0usize;
     let mut above_cutoff_tonnage = 0.0;
     let mut above_cutoff_contained_unscaled = 0.0;
     let mut above_cutoff_contained_metal_t = 0.0;
+    let mut above_cutoff_contained_metal_oz = 0.0;
     for b in &blocks {
         grade_values.push(b.grade);
         total_tonnage += b.tonnage_t;
         total_contained_unscaled += b.contained_unscaled;
         total_contained_metal_t += b.contained_unscaled * grade_unit_factor;
+        total_contained_metal_oz += b.contained_unscaled * grade_unit_factor * troy_oz_per_tonne;
         if b.above_cutoff {
             above_cutoff_blocks += 1;
             above_cutoff_tonnage += b.tonnage_t;
             above_cutoff_contained_unscaled += b.contained_unscaled;
             above_cutoff_contained_metal_t += b.contained_unscaled * grade_unit_factor;
+            above_cutoff_contained_metal_oz +=
+                b.contained_unscaled * grade_unit_factor * troy_oz_per_tonne;
         }
     }
     grade_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -657,9 +663,11 @@ pub async fn run_block_grade_model(
             "total_tonnage_t": total_tonnage,
             "total_contained_unscaled": total_contained_unscaled,
             "total_contained_metal_t": total_contained_metal_t,
+            "total_contained_metal_oz": total_contained_metal_oz,
             "above_cutoff_tonnage_t": above_cutoff_tonnage,
             "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
             "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
+            "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
         }
     });
 
@@ -687,6 +695,7 @@ pub async fn run_block_grade_model(
             "sg_constant": params.sg_constant,
             "grade_unit": params.grade_unit,
             "grade_unit_factor_to_fraction": grade_unit_factor,
+            "troy_oz_per_tonne": troy_oz_per_tonne,
             "element_field": element_field,
             "estimation_method": params.estimation_method,
             "idw_power": params.idw_power,
@@ -705,9 +714,11 @@ pub async fn run_block_grade_model(
             "total_tonnage_t": total_tonnage,
             "total_contained_unscaled": total_contained_unscaled,
             "total_contained_metal_t": total_contained_metal_t,
+            "total_contained_metal_oz": total_contained_metal_oz,
             "above_cutoff_tonnage_t": above_cutoff_tonnage,
             "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
             "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
+            "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
         },
         "grade_histogram": compute_bins(&grade_values),
         "notes": [

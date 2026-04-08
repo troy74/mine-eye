@@ -1664,7 +1664,10 @@ function BlockVoxelLayer3D({
   const aboveOpacity = Math.max(0.05, style.opacity);
   const suggestedBelowOpacity =
     voxels.find((v) => typeof v.belowCutoffOpacity === "number")?.belowCutoffOpacity ?? 0.14;
-  const belowOpacity = Math.max(0.02, style.opacity * Math.max(0, Math.min(1, suggestedBelowOpacity)));
+  const belowOpacity = Math.max(
+    0.002,
+    style.opacity * Math.max(0, Math.min(1, suggestedBelowOpacity))
+  );
 
   return (
     <group>
@@ -3071,6 +3074,26 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       return { ...p, layerStyles: newStyles };
     });
   }, [sceneData.measureCandidates, sceneData.sourceLayers]);
+
+  useEffect(() => {
+    if (sceneData.sourceLayers.length === 0) return;
+    setUi((prev) => {
+      let changed = false;
+      const nextStyles: Record<string, LayerVizStyle> = { ...prev.layerStyles };
+      for (const sl of sceneData.sourceLayers) {
+        // Keep block centers available, but hidden by default so voxel styling is obvious.
+        if (sl.baseType === "assay_points" && sl.nodeKind === "block_grade_model") {
+          const existing = nextStyles[sl.id] ?? defaultLayerStyleForId(sl.id);
+          if (existing.visible !== false || existing.opacity > 0.2) {
+            nextStyles[sl.id] = { ...existing, visible: false, opacity: Math.min(existing.opacity, 0.2) };
+            changed = true;
+          }
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, layerStyles: nextStyles };
+    });
+  }, [sceneData.sourceLayers]);
 
   useEffect(() => {
     if (sceneData.terrainGrids.length === 0) return;
