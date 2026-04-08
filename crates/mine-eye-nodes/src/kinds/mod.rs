@@ -4,6 +4,7 @@
 //! preserving the existing public `run_*` API for compatibility.
 
 pub mod acquisition;
+pub mod chart_plot;
 pub mod tile_cache;
 pub mod data_model;
 pub mod drillhole;
@@ -22,6 +23,7 @@ pub use acquisition::{
     run_assay_ingest, run_collar_ingest, run_drillhole_ingest, run_surface_sample_ingest,
     run_survey_ingest,
 };
+pub use chart_plot::run_plot_chart;
 pub use data_model::run_data_model_transform;
 pub use drillhole::{run_drillhole_merge, run_drillhole_model};
 pub use imagery_raster::{run_imagery_provider, run_tilebroker};

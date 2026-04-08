@@ -16,6 +16,12 @@ type MdViewDoc = {
   source_artifact_key?: string;
 };
 
+type ChartViewDoc = {
+  type?: string;
+  title?: string;
+  html?: string;
+};
+
 function findNodeArtifacts(artifacts: ArtifactEntry[], nodeId: string): ArtifactEntry[] {
   return artifacts
     .filter((a) => a.node_id === nodeId)
@@ -50,9 +56,11 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [mdDoc, setMdDoc] = useState<MdViewDoc | null>(null);
+  const [chartDoc, setChartDoc] = useState<ChartViewDoc | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
 
   const isMdViewer = nodeKind === "md_viewer";
+  const isChartViewer = nodeKind === "plot_chart";
 
   useEffect(() => {
     const first = nodeArtifacts.find((a) => a.key.endsWith(".json")) ?? nodeArtifacts[0];
@@ -64,6 +72,7 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
       setRawText("");
       setRows([]);
       setMdDoc(null);
+      setChartDoc(null);
       return;
     }
     const entry = nodeArtifacts.find((a) => a.key === selectedKey);
@@ -86,15 +95,28 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
             typeof root === "object" &&
             !Array.isArray(root) &&
             ((root as Record<string, unknown>).type === "md_view_doc" ||
-              (root as Record<string, unknown>).schema_id === "report.markdown_doc.v1")
+              (root as Record<string, unknown>).schema_id === "report.markdown_doc.v1" ||
+              (root as Record<string, unknown>).schema_id === "report.markdown_doc.v2")
           ) {
             setMdDoc(root as MdViewDoc);
+            setChartDoc(null);
+          } else if (
+            root &&
+            typeof root === "object" &&
+            !Array.isArray(root) &&
+            ((root as Record<string, unknown>).type === "chart_view_doc" ||
+              (root as Record<string, unknown>).schema_id === "report.chart_doc.v1")
+          ) {
+            setChartDoc(root as ChartViewDoc);
+            setMdDoc(null);
           } else {
             setMdDoc(null);
+            setChartDoc(null);
           }
         } catch {
           setRows([]);
           setMdDoc(null);
+          setChartDoc(null);
         }
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
@@ -206,11 +228,13 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter rows…"
         />
-        {isMdViewer ? (
+        {isMdViewer || isChartViewer ? (
           <>
-            <button type="button" onClick={() => void saveMd()}>
-              Save .md
-            </button>
+            {isMdViewer ? (
+              <button type="button" onClick={() => void saveMd()}>
+                Save .md
+              </button>
+            ) : null}
             <button type="button" onClick={() => void saveHtml()}>
               Save .html
             </button>
@@ -229,12 +253,13 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
       {err && <div style={{ padding: 10, color: "#f85149", fontSize: 12 }}>{err}</div>}
       {!busy && !err && (
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 10 }}>
-          {isMdViewer && (mdDoc?.html || selectedKey.endsWith(".html")) ? (
+          {(isMdViewer && (mdDoc?.html || selectedKey.endsWith(".html"))) ||
+          (isChartViewer && (chartDoc?.html || selectedKey.endsWith(".html"))) ? (
             <iframe
-              title="Markdown report preview"
+              title={isChartViewer ? "Chart preview" : "Markdown report preview"}
               sandbox="allow-same-origin"
               style={{ width: "100%", minHeight: "70vh", border: "1px solid #30363d", borderRadius: 8, background: "#fff" }}
-              srcDoc={mdDoc?.html ?? rawText}
+              srcDoc={chartDoc?.html ?? mdDoc?.html ?? rawText}
             />
           ) : filteredRows.length > 0 ? (
             <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>

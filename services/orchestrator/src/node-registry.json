@@ -233,11 +233,6 @@
             "id": "resource_report",
             "label": "Resource report",
             "semantic": "semantic_json"
-          },
-          {
-            "id": "variogram_report",
-            "label": "Variogram report",
-            "semantic": "semantic_json"
           }
         ]
       },
@@ -589,6 +584,50 @@
       },
       "framework_group": "scene_contract",
       "submenu": "layer_stack",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "plot_chart",
+      "category": "visualisation",
+      "label": "Chart viewer",
+      "role": "Visualisation · semantic JSON → chart spec + rendered chart + data snapshot",
+      "menu": {
+        "enabled": true,
+        "order": 88
+      },
+      "policy": {
+        "recompute": "manual",
+        "propagation": "hold",
+        "quality": "preview"
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "report_in",
+            "label": "Semantic JSON",
+            "semantic": "semantic_json"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "chart_spec",
+            "label": "Chart spec",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "chart_render",
+            "label": "Chart render",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "chart_data_snapshot",
+            "label": "Chart data snapshot",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "visualization",
+      "submenu": "reporting",
       "plugin_source": "core"
     },
     {

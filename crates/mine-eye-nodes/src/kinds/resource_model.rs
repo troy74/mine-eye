@@ -1223,17 +1223,6 @@ pub async fn run_block_grade_model(
             "Topography clipping currently uses block-center test against the best available surface_grid."
         ]
     });
-    let variogram_payload = json!({
-        "schema_id": "report.variogram.v1",
-        "type": "variogram_report",
-        "element_field": element_field,
-        "grade_unit": params.grade_unit,
-        "lags": params.variogram_lags,
-        "max_pairs": params.variogram_max_pairs,
-        "max_range_m": params.variogram_max_range_m,
-        "bins": report_payload.pointer("/variogram/bins").cloned().unwrap_or_else(|| json!([]))
-    });
-
     let voxels_bytes = serde_json::to_vec(&voxels_payload)?;
     let voxels_key = format!(
         "graphs/{}/nodes/{}/block_grade_model_voxels.json",
@@ -1260,28 +1249,14 @@ pub async fn run_block_grade_model(
     let report_ref =
         super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json"))
             .await?;
-    let variogram_bytes = serde_json::to_vec(&variogram_payload)?;
-    let variogram_key = format!(
-        "graphs/{}/nodes/{}/block_grade_model_variogram.json",
-        job.graph_id, job.node_id
-    );
-    let variogram_ref = super::runtime::write_artifact(
-        ctx,
-        &variogram_key,
-        &variogram_bytes,
-        Some("application/json"),
-    )
-    .await?;
-
     Ok(JobResult {
         job_id: job.job_id,
         status: JobStatus::Succeeded,
-        output_artifact_refs: vec![voxels_ref.clone(), centers_ref.clone(), report_ref.clone(), variogram_ref.clone()],
+        output_artifact_refs: vec![voxels_ref.clone(), centers_ref.clone(), report_ref.clone()],
         content_hashes: vec![
             voxels_ref.content_hash,
             centers_ref.content_hash,
             report_ref.content_hash,
-            variogram_ref.content_hash,
         ],
         error_message: None,
     })

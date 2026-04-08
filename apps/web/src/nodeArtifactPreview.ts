@@ -25,6 +25,8 @@ export function preferredArtifactSuffix(kind: string): string | null {
       return "block_model_meta.json";
     case "md_viewer":
       return "md_view_doc.json";
+    case "plot_chart":
+      return "plot_chart_view.json";
     default:
       return null;
   }

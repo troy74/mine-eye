@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { parseCsv } from "./csvParse";
-import type { ApiNode, ArtifactEntry } from "./graphApi";
-import { api, patchNodeParams, runGraph } from "./graphApi";
+import type { ApiNode, ArtifactEntry, ChartTemplate } from "./graphApi";
+import { api, listChartTemplates, patchNodeParams, runGraph } from "./graphApi";
 import { CrsPicker } from "./CrsPicker";
 import { extractHeatmapMeasureCandidatesFromJson } from "./spatialExtract";
 import { NodeOutputPanel } from "./NodeOutputPanel";
@@ -97,8 +97,9 @@ export function NodeInspector({
   const isAoiNode = kind === "aoi";
   const isBlockGradeModelNode = kind === "block_grade_model";
   const isMdViewerNode = kind === "md_viewer";
+  const isPlotChartNode = kind === "plot_chart";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMdViewerNode;
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMdViewerNode || isPlotChartNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -511,6 +512,31 @@ export function NodeInspector({
   const [mdLlmEnabled, setMdLlmEnabled] = useState<boolean>(
     () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : true)
   );
+  const [chartTemplates, setChartTemplates] = useState<ChartTemplate[]>([]);
+  const [chartTemplateKey, setChartTemplateKey] = useState<string>(
+    () => (typeof initialUi.template_key === "string" ? initialUi.template_key : "variogram")
+  );
+  const [chartTemplateId, setChartTemplateId] = useState<string>(
+    () => (typeof initialUi.template_id === "string" ? initialUi.template_id : "")
+  );
+  const [chartDataPointer, setChartDataPointer] = useState<string>(
+    () => (typeof initialUi.data_json_pointer === "string" ? initialUi.data_json_pointer : "")
+  );
+  const [chartTitle, setChartTitle] = useState<string>(
+    () => (typeof initialUi.title === "string" ? initialUi.title : "")
+  );
+  const [chartLlmEnabled, setChartLlmEnabled] = useState<boolean>(
+    () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : false)
+  );
+  const [chartObjective, setChartObjective] = useState<string>(
+    () => (typeof initialUi.user_objective === "string" ? initialUi.user_objective : "")
+  );
+  const [chartMaxContextRows, setChartMaxContextRows] = useState<string>(
+    () => (typeof initialUi.max_context_rows === "number" ? String(initialUi.max_context_rows) : "8")
+  );
+  const [chartMaxRenderRows, setChartMaxRenderRows] = useState<string>(
+    () => (typeof initialUi.max_render_rows === "number" ? String(initialUi.max_render_rows) : "3000")
+  );
   const [headers, setHeaders] = useState<string[]>([]);
   const [csvRows, setCsvRows] = useState<string[][]>([]);
   const [previewRows, setPreviewRows] = useState<string[][]>([]);
@@ -732,6 +758,14 @@ export function NodeInspector({
     );
     setMdTitle(typeof u.title === "string" ? u.title : "Semantic JSON Report");
     setMdLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : true);
+    setChartTemplateKey(typeof u.template_key === "string" ? u.template_key : "variogram");
+    setChartTemplateId(typeof u.template_id === "string" ? u.template_id : "");
+    setChartDataPointer(typeof u.data_json_pointer === "string" ? u.data_json_pointer : "");
+    setChartTitle(typeof u.title === "string" ? u.title : "");
+    setChartLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : false);
+    setChartObjective(typeof u.user_objective === "string" ? u.user_objective : "");
+    setChartMaxContextRows(typeof u.max_context_rows === "number" ? String(u.max_context_rows) : "8");
+    setChartMaxRenderRows(typeof u.max_render_rows === "number" ? String(u.max_render_rows) : "3000");
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -905,6 +939,42 @@ export function NodeInspector({
       cancelled = true;
     };
   }, [graphId, isBlockGradeModelNode, node.id]);
+
+  useEffect(() => {
+    if (!isPlotChartNode) {
+      setChartTemplates([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const items = await listChartTemplates();
+        if (!cancelled) setChartTemplates(items);
+      } catch {
+        if (!cancelled) setChartTemplates([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPlotChartNode]);
+
+  useEffect(() => {
+    if (!isPlotChartNode || chartTemplates.length === 0) return;
+    const byId = chartTemplateId
+      ? chartTemplates.find((t) => t.id === chartTemplateId)
+      : null;
+    const byKey = chartTemplates.find((t) => t.key === chartTemplateKey);
+    const picked = byId ?? byKey ?? chartTemplates[0];
+    if (!picked) return;
+    if (picked.id !== chartTemplateId) setChartTemplateId(picked.id);
+    if (picked.key !== chartTemplateKey) setChartTemplateKey(picked.key);
+    if (chartDataPointer.trim().length === 0) {
+      const ptr = (picked.template_schema?.default_data_pointer_candidates as unknown[] | undefined)
+        ?.find((x): x is string => typeof x === "string");
+      if (ptr) setChartDataPointer(ptr);
+    }
+  }, [isPlotChartNode, chartTemplates, chartTemplateId, chartTemplateKey, chartDataPointer]);
 
   const onPickFile = useCallback(
     (file: File | null) => {
@@ -1085,6 +1155,20 @@ export function NodeInspector({
       ui.variogram_lags = Math.max(6, Math.min(40, Math.trunc(n(bgVariogramLags, 12))));
       ui.variogram_max_pairs = Math.max(2000, Math.trunc(n(bgVariogramMaxPairs, 300000)));
       ui.variogram_max_range_m = Math.max(0, n(bgVariogramRange, 0));
+    } else if (isPlotChartNode) {
+      const picked =
+        chartTemplates.find((t) => t.id === chartTemplateId) ??
+        chartTemplates.find((t) => t.key === chartTemplateKey) ??
+        null;
+      ui.template_key = chartTemplateKey || "variogram";
+      ui.template_id = picked?.id;
+      ui.template_snapshot = picked?.template_schema;
+      ui.data_json_pointer = chartDataPointer.trim() || undefined;
+      ui.title = chartTitle.trim() || undefined;
+      ui.llm_enabled = chartLlmEnabled;
+      ui.user_objective = chartObjective.trim() || undefined;
+      ui.max_context_rows = Math.max(3, Math.min(40, Math.trunc(n(chartMaxContextRows, 8))));
+      ui.max_render_rows = Math.max(100, Math.min(50000, Math.trunc(n(chartMaxRenderRows, 3000))));
     } else if (isMdViewerNode) {
       ui.title = mdTitle.trim() || "Semantic JSON Report";
       ui.llm_enabled = mdLlmEnabled;
@@ -1213,6 +1297,16 @@ export function NodeInspector({
     bgVariogramLags,
     bgVariogramMaxPairs,
     bgVariogramRange,
+    isPlotChartNode,
+    chartTemplateKey,
+    chartTemplateId,
+    chartDataPointer,
+    chartTitle,
+    chartLlmEnabled,
+    chartObjective,
+    chartMaxContextRows,
+    chartMaxRenderRows,
+    chartTemplates,
     isMdViewerNode,
     mdTitle,
     mdLlmEnabled,
@@ -1375,8 +1469,10 @@ export function NodeInspector({
                   ? "Block model"
                   : isMdViewerNode
                     ? "Report"
+                    : isPlotChartNode
+                      ? "Chart"
               : "Config",
-    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMdViewerNode]
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMdViewerNode, isPlotChartNode]
   );
 
   const tabs = useMemo(() => {
@@ -2983,6 +3079,111 @@ export function NodeInspector({
               <p style={{ opacity: 0.65, fontSize: 11, marginTop: 0 }}>
                 If disabled or API call fails, the node emits deterministic fallback summary markdown.
               </p>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isPlotChartNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Build a reusable chart from semantic JSON using a backend template. Use{" "}
+              <code>data JSON pointer</code> to target a specific fragment (for example{" "}
+              <code>/variogram/bins</code>) and avoid processing unrelated payload sections.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Template</span>
+                <select
+                  value={chartTemplateKey}
+                  onChange={(e) => {
+                    const nextKey = e.target.value;
+                    setChartTemplateKey(nextKey);
+                    const picked = chartTemplates.find((t) => t.key === nextKey);
+                    setChartTemplateId(picked?.id ?? "");
+                    const ptr = (picked?.template_schema?.default_data_pointer_candidates as unknown[] | undefined)
+                      ?.find((x): x is string => typeof x === "string");
+                    if (typeof ptr === "string" && chartDataPointer.trim().length === 0) {
+                      setChartDataPointer(ptr);
+                    }
+                  }}
+                  style={sel}
+                >
+                  {chartTemplates.length === 0 ? (
+                    <>
+                      <option value="variogram">Variogram</option>
+                      <option value="scatter">Scatter</option>
+                      <option value="histogram">Histogram</option>
+                      <option value="profile">Profile</option>
+                    </>
+                  ) : (
+                    chartTemplates.map((t) => (
+                      <option key={t.id} value={t.key}>
+                        {t.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Data JSON pointer</span>
+                <input
+                  type="text"
+                  value={chartDataPointer}
+                  onChange={(e) => setChartDataPointer(e.target.value)}
+                  placeholder="/variogram/bins"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Chart title (optional)</span>
+                <input
+                  type="text"
+                  value={chartTitle}
+                  onChange={(e) => setChartTitle(e.target.value)}
+                  placeholder="Auto title"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>User objective (optional)</span>
+                <input
+                  type="text"
+                  value={chartObjective}
+                  onChange={(e) => setChartObjective(e.target.value)}
+                  placeholder="Highlight nugget / sill behavior"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Context rows (top/tail)</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={chartMaxContextRows}
+                  onChange={(e) => setChartMaxContextRows(e.target.value)}
+                  placeholder="8"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Max render rows</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={chartMaxRenderRows}
+                  onChange={(e) => setChartMaxRenderRows(e.target.value)}
+                  placeholder="3000"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={chartLlmEnabled}
+                  onChange={(e) => setChartLlmEnabled(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>LLM planning assist (optional)</span>
+              </label>
             </div>
           </div>
         )}

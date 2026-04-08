@@ -211,6 +211,105 @@ impl PgStore {
         Ok(())
     }
 
+    pub async fn ensure_default_chart_templates(&self, organization_id: &str) -> Result<(), StoreError> {
+        let defaults = vec![
+            (
+                "variogram",
+                "Variogram",
+                "Experimental variogram (lag vs semivariance) with point-size by pair count.",
+                serde_json::json!({
+                    "template": "variogram",
+                    "required_mapping": ["x", "y"],
+                    "optional_mapping": ["weight", "point_size", "label"],
+                    "default_data_pointer_candidates": ["/variogram/bins", "/bins"],
+                    "defaults": {
+                        "x": "lag_mid_m",
+                        "y": "gamma",
+                        "weight": "pairs",
+                        "point_size_expr": "sqrt(pairs)",
+                        "layers": ["line", "point"],
+                        "axis": { "x_label": "Lag distance (m)", "y_label": "Semivariance" },
+                        "title": "Experimental Variogram"
+                    }
+                }),
+            ),
+            (
+                "scatter",
+                "Scatter",
+                "Generic scatter relationship plot.",
+                serde_json::json!({
+                    "template": "scatter",
+                    "required_mapping": ["x", "y"],
+                    "optional_mapping": ["color", "size", "label", "group"],
+                    "default_data_pointer_candidates": ["/points", "/rows"],
+                    "defaults": { "layers": ["point"] }
+                }),
+            ),
+            (
+                "histogram",
+                "Histogram",
+                "Distribution histogram plot.",
+                serde_json::json!({
+                    "template": "histogram",
+                    "required_mapping": ["x"],
+                    "optional_mapping": ["group", "weight"],
+                    "default_data_pointer_candidates": ["/grade_histogram", "/histogram", "/bins"],
+                    "defaults": { "layers": ["bar"] }
+                }),
+            ),
+            (
+                "profile",
+                "Profile",
+                "Ordered profile plot along depth/time/distance.",
+                serde_json::json!({
+                    "template": "profile",
+                    "required_mapping": ["x", "y"],
+                    "optional_mapping": ["group", "label"],
+                    "default_data_pointer_candidates": ["/points", "/rows"],
+                    "defaults": { "layers": ["line", "point"] }
+                }),
+            ),
+        ];
+
+        for (key, name, description, template_schema) in defaults {
+            sqlx::query(
+                r#"
+                INSERT INTO chart_templates (id, organization_id, key, name, description, template_schema)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (organization_id, key) DO NOTHING
+                "#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(organization_id)
+            .bind(key)
+            .bind(name)
+            .bind(description)
+            .bind(template_schema)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn list_chart_templates(
+        &self,
+        organization_id: &str,
+    ) -> Result<Vec<(Uuid, String, String, Option<String>, serde_json::Value, chrono::DateTime<chrono::Utc>)>, StoreError>
+    {
+        let rows = sqlx::query_as(
+            r#"
+            SELECT id, key, name, description, template_schema, updated_at
+            FROM chart_templates
+            WHERE organization_id = $1
+            ORDER BY key ASC
+            "#,
+        )
+        .bind(organization_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn create_workspace(
         &self,
         name: &str,

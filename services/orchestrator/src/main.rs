@@ -31,6 +31,7 @@ use mine_eye_types::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::types::chrono;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -435,6 +436,7 @@ async fn main() -> anyhow::Result<()> {
     ));
     let protected = Router::new()
         .route("/registry/nodes", get(get_node_registry))
+        .route("/chart-templates", get(list_chart_templates))
         .route("/epsg/search", get(search_epsg))
         .route("/workspaces", post(create_workspace))
         .route(
@@ -557,6 +559,43 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
         }
     }
     Ok(Json(v))
+}
+
+#[derive(Serialize)]
+struct ChartTemplateDto {
+    id: Uuid,
+    key: String,
+    name: String,
+    description: Option<String>,
+    template_schema: serde_json::Value,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+async fn list_chart_templates(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<ChartTemplateDto>>, (StatusCode, String)> {
+    s.store
+        .ensure_default_chart_templates(&auth.organization_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let rows = s
+        .store
+        .list_chart_templates(&auth.organization_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let out = rows
+        .into_iter()
+        .map(|(id, key, name, description, template_schema, updated_at)| ChartTemplateDto {
+            id,
+            key,
+            name,
+            description,
+            template_schema,
+            updated_at,
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]

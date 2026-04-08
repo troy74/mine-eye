@@ -152,6 +152,15 @@ export type AiChatResponse = {
 
 export const api = (path: string) => `/api${path}`;
 
+export type ChartTemplate = {
+  id: string;
+  key: string;
+  name: string;
+  description?: string | null;
+  template_schema: Record<string, unknown>;
+  updated_at: string;
+};
+
 /** One row from `GET /graphs/:id/artifacts` (same paths the worker writes under). */
 export type ArtifactEntry = {
   node_id: string;
@@ -263,6 +272,12 @@ export async function fetchGraph(graphId: string): Promise<GraphResponse> {
     nodes,
     edges,
   };
+}
+
+export async function listChartTemplates(): Promise<ChartTemplate[]> {
+  const r = await fetch(api("/chart-templates"), { cache: "no-store" });
+  if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+  return (await r.json()) as ChartTemplate[];
 }
 
 export async function createWorkspace(body: {
