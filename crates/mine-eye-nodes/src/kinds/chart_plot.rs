@@ -196,6 +196,7 @@ fn default_plot_plan(template_key: &str, rows: &[Map<String, Value>], title_hint
     }
     if rows.iter().any(|r| r.get("pairs").is_some()) {
         mapping["weight"] = json!("pairs");
+        mapping["point_size"] = json!("point_size");
     }
     json!({
         "template": template_key,
@@ -209,17 +210,45 @@ fn default_plot_plan(template_key: &str, rows: &[Map<String, Value>], title_hint
     })
 }
 
-fn apply_simple_data_plan(rows: &mut [Map<String, Value>], plot_plan: &Value) {
-    let weight_col = plot_plan.pointer("/mapping/weight").and_then(|v| v.as_str());
-    let point_size_col = plot_plan.pointer("/mapping/point_size").and_then(|v| v.as_str()).unwrap_or("point_size");
-    if let Some(wc) = weight_col {
+fn apply_simple_data_plan(rows: &mut [Map<String, Value>], plot_plan: &mut Value) {
+    let weight_col = plot_plan
+        .pointer("/mapping/weight")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let mut point_size_col = plot_plan.pointer("/mapping/point_size").and_then(|v| v.as_str()).unwrap_or("point_size").to_string();
+    if let Some(wc) = weight_col.as_deref() {
+        if plot_plan.pointer("/mapping/point_size").is_none() {
+            if let Some(obj) = plot_plan.get_mut("mapping").and_then(|m| m.as_object_mut()) {
+                obj.insert("point_size".to_string(), json!("point_size"));
+            }
+            point_size_col = "point_size".to_string();
+        }
+        let mut raw = Vec::<f64>::new();
+        for row in rows.iter() {
+            if let Some(w) = row.get(wc).and_then(n) {
+                raw.push(w.max(0.0).sqrt());
+            }
+        }
+        let rmin = raw
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, |a, b| a.min(b));
+        let rmax = raw
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, |a, b| a.max(b));
+        let span = (rmax - rmin).max(1e-9);
         for row in rows {
-            if row.get(point_size_col).is_none() {
+            if row.get(&point_size_col).is_none() {
                 if let Some(w) = row.get(wc).and_then(n) {
-                    row.insert(point_size_col.to_string(), json!(w.max(0.0).sqrt()));
+                    let rs = w.max(0.0).sqrt();
+                    // Normalize into a visible but bounded marker-size range.
+                    let s = 6.0 + 14.0 * ((rs - rmin) / span).clamp(0.0, 1.0);
+                    row.insert(point_size_col.clone(), json!(s));
                 }
             }
         }
+        return;
     }
 }
 
@@ -269,9 +298,9 @@ fn render_plotly_html(plot_plan: &Value, rows: &[Map<String, Value>]) -> String 
     let trace = if template == "histogram" {
         format!("{{type:'bar',x:{x_json},marker:{{color:'#3b82f6'}}}}")
     } else if template == "variogram" || template == "profile" {
-        format!("{{type:'scatter',mode:'lines+markers',x:{x_json},y:{y_json},marker:{{size:{s_json},opacity:0.82,color:'#f97316'}},line:{{width:2,color:'#0ea5e9'}}}}")
+        format!("{{type:'scatter',mode:'lines+markers',x:{x_json},y:{y_json},marker:{{size:{s_json},sizemode:'diameter',sizemin:4,opacity:0.86,color:'#f97316'}},line:{{width:2,color:'#0ea5e9'}}}}")
     } else {
-        format!("{{type:'scatter',mode:'markers',x:{x_json},y:{y_json},marker:{{size:{s_json},opacity:0.82,color:'#8b5cf6'}}}}")
+        format!("{{type:'scatter',mode:'markers',x:{x_json},y:{y_json},marker:{{size:{s_json},sizemode:'diameter',sizemin:4,opacity:0.82,color:'#8b5cf6'}}}}")
     };
     format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><script src=\"https://cdn.plot.ly/plotly-2.35.2.min.js\"></script><style>body{{margin:0;background:#fff;color:#0f172a;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}#plot{{width:100vw;height:100vh}}</style></head><body><div id=\"plot\"></div><script>const data=[{}];const layout={{title:{:?},margin:{{l:56,r:20,t:56,b:56}},xaxis:{{title:{:?}}},yaxis:{{title:{:?}}}}};Plotly.newPlot('plot',data,layout,{{responsive:true,displaylogo:false}});</script></body></html>",
@@ -479,7 +508,7 @@ pub async fn run_plot_chart(
         }
     }
 
-    apply_simple_data_plan(&mut rows, &plot_plan);
+    apply_simple_data_plan(&mut rows, &mut plot_plan);
     let x_col = plot_plan.pointer("/mapping/x").and_then(|v| v.as_str()).unwrap_or("x");
     sort_rows(&mut rows, x_col);
     if rows.len() > params.max_render_rows {
@@ -556,4 +585,3 @@ pub async fn run_plot_chart(
         error_message: None,
     })
 }
-

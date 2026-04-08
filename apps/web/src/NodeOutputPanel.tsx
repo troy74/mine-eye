@@ -45,6 +45,7 @@ export function NodeOutputPanel({
   const selected = sorted.find((a) => a.key === selectedKey) ?? null;
 
   const [previewText, setPreviewText] = useState<string | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [previewNote, setPreviewNote] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,6 +53,7 @@ export function NodeOutputPanel({
   useEffect(() => {
     if (!selected) {
       setPreviewText(null);
+      setPreviewHtml(null);
       setPreviewNote(null);
       setLoadErr(null);
       return;
@@ -60,9 +62,11 @@ export function NodeOutputPanel({
     let cancelled = false;
     setLoadErr(null);
     setPreviewNote(null);
+    setPreviewHtml(null);
 
     if (isLikelyBinaryKey(selected.key)) {
       setPreviewText(null);
+      setPreviewHtml(null);
       setLoading(true);
       void (async () => {
         try {
@@ -91,6 +95,7 @@ export function NodeOutputPanel({
 
     if (!isLikelyJsonKey(selected.key)) {
       setPreviewText(null);
+      setPreviewHtml(null);
       setPreviewNote(
         "Preview is optimized for JSON. Open the path from the Artifacts list or fetch this URL in another tool."
       );
@@ -100,6 +105,7 @@ export function NodeOutputPanel({
 
     setLoading(true);
     setPreviewText(null);
+    setPreviewHtml(null);
     void (async () => {
       try {
         const r = await fetch(api(selected.url), { cache: "no-store" });
@@ -114,6 +120,18 @@ export function NodeOutputPanel({
         }
         try {
           const parsed = JSON.parse(raw) as unknown;
+          if (
+            parsed &&
+            typeof parsed === "object" &&
+            !Array.isArray(parsed) &&
+            (((parsed as Record<string, unknown>).type === "chart_view_doc" ||
+              (parsed as Record<string, unknown>).schema_id === "report.chart_doc.v1" ||
+              (parsed as Record<string, unknown>).type === "md_view_doc" ||
+              (parsed as Record<string, unknown>).schema_id === "report.markdown_doc.v2") &&
+              typeof (parsed as Record<string, unknown>).html === "string")
+          ) {
+            setPreviewHtml(String((parsed as Record<string, unknown>).html));
+          }
           display = JSON.stringify(parsed, null, 2);
           if (display.length > MAX_TEXT_PREVIEW) {
             display =
@@ -216,6 +234,14 @@ export function NodeOutputPanel({
       {previewNote && !previewText && (
         <pre style={preBox}>{previewNote}</pre>
       )}
+      {previewHtml ? (
+        <iframe
+          title="Artifact preview"
+          sandbox="allow-same-origin"
+          style={{ width: "100%", minHeight: "68vh", border: "1px solid #30363d", borderRadius: 8, background: "#fff", marginBottom: 10 }}
+          srcDoc={previewHtml}
+        />
+      ) : null}
       {previewText && <pre style={preBox}>{previewText}</pre>}
 
       <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #30363d" }}>
