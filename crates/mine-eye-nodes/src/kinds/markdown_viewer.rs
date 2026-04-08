@@ -1,6 +1,7 @@
 use std::env;
 
 use mine_eye_types::{JobEnvelope, JobResult, JobStatus};
+use pulldown_cmark::{html, Options, Parser};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Value};
 
@@ -22,27 +23,50 @@ fn n(v: &Value) -> Option<f64> {
     }
 }
 
-fn render_simple_html_from_markdown(title: &str, markdown: &str) -> String {
-    let mut body = String::new();
-    body.push_str(&format!("<h1>{}</h1>", escape_html(title)));
-    for line in markdown.lines() {
-        let t = line.trim_end();
-        if let Some(rest) = t.strip_prefix("# ") {
-            body.push_str(&format!("<h1>{}</h1>", escape_html(rest)));
-        } else if let Some(rest) = t.strip_prefix("## ") {
-            body.push_str(&format!("<h2>{}</h2>", escape_html(rest)));
-        } else if let Some(rest) = t.strip_prefix("### ") {
-            body.push_str(&format!("<h3>{}</h3>", escape_html(rest)));
-        } else if let Some(rest) = t.strip_prefix("- ") {
-            body.push_str(&format!("<li>{}</li>", escape_html(rest)));
-        } else if t.is_empty() {
-            body.push_str("<br/>");
-        } else {
-            body.push_str(&format!("<p>{}</p>", escape_html(t)));
-        }
+fn decode_basic_entities(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+fn promote_mermaid_blocks(input: &str) -> String {
+    let start_tag = "<pre><code class=\"language-mermaid\">";
+    let end_tag = "</code></pre>";
+    let mut out = String::with_capacity(input.len() + 128);
+    let mut rest = input;
+    while let Some(start) = rest.find(start_tag) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + start_tag.len()..];
+        let Some(end) = after.find(end_tag) else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let code = decode_basic_entities(&after[..end]);
+        out.push_str("<pre class=\"mermaid\">");
+        out.push_str(&code);
+        out.push_str("</pre>");
+        rest = &after[end + end_tag.len()..];
     }
+    out.push_str(rest);
+    out
+}
+
+fn render_simple_html_from_markdown(title: &str, markdown: &str) -> String {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TASKLISTS);
+    options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    let parser = Parser::new_ext(markdown, options);
+    let mut body = String::new();
+    html::push_html(&mut body, parser);
+    body = promote_mermaid_blocks(&body);
     format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><style>body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.5;color:#0f172a}}h1,h2,h3{{margin-top:1em;margin-bottom:.4em}}p{{margin:.35em 0}}li{{margin:.15em 0}}code{{background:#f3f4f6;padding:1px 4px;border-radius:4px}}</style></head><body>{}</body></html>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/><title>{}</title><style>body{{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:20px;line-height:1.55;color:#0f172a}}main{{max-width:1100px}}h1,h2,h3{{margin-top:1em;margin-bottom:.4em}}p{{margin:.35em 0}}li{{margin:.15em 0}}img{{max-width:100%;height:auto;border-radius:8px;border:1px solid #e5e7eb}}code{{background:#f3f4f6;padding:1px 4px;border-radius:4px}}pre{{background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:10px;overflow:auto}}table{{border-collapse:collapse;width:100%;margin:12px 0;display:table;table-layout:auto}}th,td{{border:1px solid #e5e7eb;padding:8px 10px;text-align:left;vertical-align:top}}thead{{background:#f3f4f6}}tbody tr:nth-child(even){{background:#fafafa}}</style><script src=\"https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js\"></script><script>if(window.mermaid){{window.mermaid.initialize({{startOnLoad:true,securityLevel:'loose'}});}}</script></head><body><main><h1>{}</h1>{}</main></body></html>",
+        escape_html(title),
         escape_html(title),
         body
     )

@@ -233,6 +233,11 @@
             "id": "resource_report",
             "label": "Resource report",
             "semantic": "semantic_json"
+          },
+          {
+            "id": "variogram_report",
+            "label": "Variogram report",
+            "semantic": "semantic_json"
           }
         ]
       },

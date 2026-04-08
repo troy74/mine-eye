@@ -415,6 +415,12 @@ export function NodeInspector({
   const [bgCutoffGrade, setBgCutoffGrade] = useState<string>(
     () => (typeof initialUi.cutoff_grade === "number" ? String(initialUi.cutoff_grade) : "0")
   );
+  const [bgSgMode, setBgSgMode] = useState<string>(
+    () => (typeof initialUi.sg_mode === "string" ? initialUi.sg_mode : "constant")
+  );
+  const [bgSgField, setBgSgField] = useState<string>(
+    () => (typeof initialUi.sg_field === "string" ? initialUi.sg_field : "")
+  );
   const [bgSgConstant, setBgSgConstant] = useState<string>(
     () => (typeof initialUi.sg_constant === "number" ? String(initialUi.sg_constant) : "2.5")
   );
@@ -456,6 +462,48 @@ export function NodeInspector({
   );
   const [bgMaxBlocks, setBgMaxBlocks] = useState<string>(
     () => (typeof initialUi.max_blocks === "number" ? String(initialUi.max_blocks) : "45000")
+  );
+  const [bgDomainMode, setBgDomainMode] = useState<string>(
+    () => (typeof initialUi.domain_mode === "string" ? initialUi.domain_mode : "full_extent")
+  );
+  const [bgHullBufferM, setBgHullBufferM] = useState<string>(
+    () => (typeof initialUi.hull_buffer_m === "number" ? String(initialUi.hull_buffer_m) : "0")
+  );
+  const [bgSensitivityMin, setBgSensitivityMin] = useState<string>(
+    () =>
+      typeof initialUi.sensitivity_min_cutoff === "number"
+        ? String(initialUi.sensitivity_min_cutoff)
+        : ""
+  );
+  const [bgSensitivityMax, setBgSensitivityMax] = useState<string>(
+    () =>
+      typeof initialUi.sensitivity_max_cutoff === "number"
+        ? String(initialUi.sensitivity_max_cutoff)
+        : ""
+  );
+  const [bgSensitivitySteps, setBgSensitivitySteps] = useState<string>(
+    () =>
+      typeof initialUi.sensitivity_steps === "number"
+        ? String(initialUi.sensitivity_steps)
+        : "8"
+  );
+  const [bgVariogramLags, setBgVariogramLags] = useState<string>(
+    () =>
+      typeof initialUi.variogram_lags === "number"
+        ? String(initialUi.variogram_lags)
+        : "12"
+  );
+  const [bgVariogramMaxPairs, setBgVariogramMaxPairs] = useState<string>(
+    () =>
+      typeof initialUi.variogram_max_pairs === "number"
+        ? String(initialUi.variogram_max_pairs)
+        : "300000"
+  );
+  const [bgVariogramRange, setBgVariogramRange] = useState<string>(
+    () =>
+      typeof initialUi.variogram_max_range_m === "number"
+        ? String(initialUi.variogram_max_range_m)
+        : "0"
   );
   const [mdTitle, setMdTitle] = useState<string>(
     () => (typeof initialUi.title === "string" ? initialUi.title : "Semantic JSON Report")
@@ -649,6 +697,8 @@ export function NodeInspector({
     setBgBlockSizeY(typeof u.block_size_y === "number" ? String(u.block_size_y) : "20");
     setBgBlockSizeZ(typeof u.block_size_z === "number" ? String(u.block_size_z) : "10");
     setBgCutoffGrade(typeof u.cutoff_grade === "number" ? String(u.cutoff_grade) : "0");
+    setBgSgMode(typeof u.sg_mode === "string" ? u.sg_mode : "constant");
+    setBgSgField(typeof u.sg_field === "string" ? u.sg_field : "");
     setBgSgConstant(typeof u.sg_constant === "number" ? String(u.sg_constant) : "2.5");
     setBgGradeUnit(typeof u.grade_unit === "string" ? u.grade_unit : "ppm");
     setBgEstimationMethod(typeof u.estimation_method === "string" ? u.estimation_method : "idw");
@@ -664,6 +714,22 @@ export function NodeInspector({
     );
     setBgPalette(typeof u.palette === "string" ? u.palette : "viridis");
     setBgMaxBlocks(typeof u.max_blocks === "number" ? String(u.max_blocks) : "45000");
+    setBgDomainMode(typeof u.domain_mode === "string" ? u.domain_mode : "full_extent");
+    setBgHullBufferM(typeof u.hull_buffer_m === "number" ? String(u.hull_buffer_m) : "0");
+    setBgSensitivityMin(
+      typeof u.sensitivity_min_cutoff === "number" ? String(u.sensitivity_min_cutoff) : ""
+    );
+    setBgSensitivityMax(
+      typeof u.sensitivity_max_cutoff === "number" ? String(u.sensitivity_max_cutoff) : ""
+    );
+    setBgSensitivitySteps(typeof u.sensitivity_steps === "number" ? String(u.sensitivity_steps) : "8");
+    setBgVariogramLags(typeof u.variogram_lags === "number" ? String(u.variogram_lags) : "12");
+    setBgVariogramMaxPairs(
+      typeof u.variogram_max_pairs === "number" ? String(u.variogram_max_pairs) : "300000"
+    );
+    setBgVariogramRange(
+      typeof u.variogram_max_range_m === "number" ? String(u.variogram_max_range_m) : "0"
+    );
     setMdTitle(typeof u.title === "string" ? u.title : "Semantic JSON Report");
     setMdLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : true);
     const h = u.csv_headers;
@@ -991,6 +1057,8 @@ export function NodeInspector({
       ui.block_size_y = Math.max(0.5, n(bgBlockSizeY, 20));
       ui.block_size_z = Math.max(0.5, n(bgBlockSizeZ, 10));
       ui.cutoff_grade = n(bgCutoffGrade, 0);
+      ui.sg_mode = bgSgMode === "field" ? "field" : "constant";
+      ui.sg_field = bgSgField.trim().length > 0 ? bgSgField.trim() : undefined;
       ui.sg_constant = Math.max(0.2, n(bgSgConstant, 2.5));
       ui.grade_unit = bgGradeUnit;
       ui.estimation_method = bgEstimationMethod === "nearest" ? "nearest" : "idw";
@@ -1007,6 +1075,16 @@ export function NodeInspector({
       ui.below_cutoff_opacity = Math.max(0, Math.min(1, n(bgBelowCutoffOpacity, 0.08)));
       ui.palette = bgPalette;
       ui.max_blocks = Math.max(1000, Math.trunc(n(bgMaxBlocks, 45000)));
+      ui.domain_mode = bgDomainMode;
+      ui.hull_buffer_m = Math.max(0, n(bgHullBufferM, 0));
+      ui.sensitivity_min_cutoff =
+        bgSensitivityMin.trim().length > 0 ? n(bgSensitivityMin, 0) : undefined;
+      ui.sensitivity_max_cutoff =
+        bgSensitivityMax.trim().length > 0 ? n(bgSensitivityMax, 0) : undefined;
+      ui.sensitivity_steps = Math.max(3, Math.min(40, Math.trunc(n(bgSensitivitySteps, 8))));
+      ui.variogram_lags = Math.max(6, Math.min(40, Math.trunc(n(bgVariogramLags, 12))));
+      ui.variogram_max_pairs = Math.max(2000, Math.trunc(n(bgVariogramMaxPairs, 300000)));
+      ui.variogram_max_range_m = Math.max(0, n(bgVariogramRange, 0));
     } else if (isMdViewerNode) {
       ui.title = mdTitle.trim() || "Semantic JSON Report";
       ui.llm_enabled = mdLlmEnabled;
@@ -1112,6 +1190,8 @@ export function NodeInspector({
     bgBlockSizeY,
     bgBlockSizeZ,
     bgCutoffGrade,
+    bgSgMode,
+    bgSgField,
     bgSgConstant,
     bgGradeUnit,
     bgEstimationMethod,
@@ -1125,6 +1205,14 @@ export function NodeInspector({
     bgBelowCutoffOpacity,
     bgPalette,
     bgMaxBlocks,
+    bgDomainMode,
+    bgHullBufferM,
+    bgSensitivityMin,
+    bgSensitivityMax,
+    bgSensitivitySteps,
+    bgVariogramLags,
+    bgVariogramMaxPairs,
+    bgVariogramRange,
     isMdViewerNode,
     mdTitle,
     mdLlmEnabled,
@@ -2615,6 +2703,13 @@ export function NodeInspector({
                   />
                 </label>
                 <label style={lab}>
+                  <span style={labSpan}>SG mode</span>
+                  <select value={bgSgMode} onChange={(e) => setBgSgMode(e.target.value)} style={sel}>
+                    <option value="constant">Constant</option>
+                    <option value="field">From field</option>
+                  </select>
+                </label>
+                <label style={lab}>
                   <span style={labSpan}>SG constant</span>
                   <input
                     type="text"
@@ -2622,6 +2717,16 @@ export function NodeInspector({
                     value={bgSgConstant}
                     onChange={(e) => setBgSgConstant(e.target.value)}
                     placeholder="2.5"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>SG field (if field mode)</span>
+                  <input
+                    type="text"
+                    value={bgSgField}
+                    onChange={(e) => setBgSgField(e.target.value)}
+                    placeholder="e.g. sg, density_t_m3"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
@@ -2729,6 +2834,26 @@ export function NodeInspector({
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                 <label style={lab}>
+                  <span style={labSpan}>Domain mode</span>
+                  <select value={bgDomainMode} onChange={(e) => setBgDomainMode(e.target.value)} style={sel}>
+                    <option value="full_extent">Full extent</option>
+                    <option value="convex_hull">Convex hull</option>
+                    <option value="buffered_hull">Buffered hull</option>
+                    <option value="input_domain_mask">Input domain mask</option>
+                  </select>
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Hull buffer (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgHullBufferM}
+                    onChange={(e) => setBgHullBufferM(e.target.value)}
+                    placeholder="0"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
                   <span style={labSpan}>Clip mode</span>
                   <select value={bgClipMode} onChange={(e) => setBgClipMode(e.target.value)} style={sel}>
                     <option value="topography">Topography (ground)</option>
@@ -2754,6 +2879,76 @@ export function NodeInspector({
                     <option value="turbo">Turbo</option>
                     <option value="red_blue">Red/Blue</option>
                   </select>
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Sensitivity cutoff min</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgSensitivityMin}
+                    onChange={(e) => setBgSensitivityMin(e.target.value)}
+                    placeholder="auto"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Sensitivity cutoff max</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgSensitivityMax}
+                    onChange={(e) => setBgSensitivityMax(e.target.value)}
+                    placeholder="auto"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Sensitivity steps</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={bgSensitivitySteps}
+                    onChange={(e) => setBgSensitivitySteps(e.target.value)}
+                    placeholder="8"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Variogram lags</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={bgVariogramLags}
+                    onChange={(e) => setBgVariogramLags(e.target.value)}
+                    placeholder="12"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Variogram max pairs</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={bgVariogramMaxPairs}
+                    onChange={(e) => setBgVariogramMaxPairs(e.target.value)}
+                    placeholder="300000"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Variogram max range (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgVariogramRange}
+                    onChange={(e) => setBgVariogramRange(e.target.value)}
+                    placeholder="auto"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
                 </label>
               </div>
             </div>

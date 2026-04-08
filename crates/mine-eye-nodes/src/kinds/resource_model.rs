@@ -38,6 +38,10 @@ struct BlockCell {
     tonnage_t: f64,
     contained_unscaled: f64,
     above_cutoff: bool,
+    n_samples_used: usize,
+    nearest_sample_distance_m: f64,
+    mean_sample_distance_m: f64,
+    confidence_class: String,
 }
 
 #[derive(Clone)]
@@ -47,6 +51,8 @@ struct ModelParams {
     block_size_y: f64,
     block_size_z: f64,
     cutoff_grade: f64,
+    sg_mode: String,
+    sg_field: Option<String>,
     sg_constant: f64,
     grade_unit: String,
     estimation_method: String,
@@ -60,6 +66,14 @@ struct ModelParams {
     below_cutoff_opacity: f64,
     preferred_palette: String,
     max_blocks: usize,
+    domain_mode: String,
+    hull_buffer_m: f64,
+    sensitivity_min_cutoff: Option<f64>,
+    sensitivity_max_cutoff: Option<f64>,
+    sensitivity_steps: usize,
+    variogram_lags: usize,
+    variogram_max_pairs: usize,
+    variogram_max_range_m: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +84,18 @@ struct Extent3D {
     ymax: f64,
     zmin: f64,
     zmax: f64,
+}
+
+#[derive(Clone)]
+struct DomainPolygon {
+    vertices: Vec<(f64, f64)>,
+}
+
+#[derive(Clone, Copy)]
+struct NeighborStats {
+    n_used: usize,
+    nearest_m: f64,
+    mean_m: f64,
 }
 
 impl Extent3D {
@@ -219,6 +245,11 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         block_size_y: parse_f64("/node_ui/block_size_y", 20.0).max(0.5),
         block_size_z: parse_f64("/node_ui/block_size_z", 10.0).max(0.5),
         cutoff_grade: parse_f64("/node_ui/cutoff_grade", 0.0),
+        sg_mode: parse_str("/node_ui/sg_mode", "constant"),
+        sg_field: ui("/node_ui/sg_field")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         sg_constant: parse_f64("/node_ui/sg_constant", 2.5).clamp(0.2, 8.0),
         grade_unit: parse_str("/node_ui/grade_unit", "ppm"),
         estimation_method: parse_str("/node_ui/estimation_method", "idw"),
@@ -232,6 +263,14 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         below_cutoff_opacity: parse_f64("/node_ui/below_cutoff_opacity", 0.08).clamp(0.0, 1.0),
         preferred_palette: parse_str("/node_ui/palette", "viridis"),
         max_blocks: parse_usize("/node_ui/max_blocks", 45000).clamp(1000, 250000),
+        domain_mode: parse_str("/node_ui/domain_mode", "full_extent"),
+        hull_buffer_m: parse_f64("/node_ui/hull_buffer_m", 0.0).max(0.0),
+        sensitivity_min_cutoff: ui("/node_ui/sensitivity_min_cutoff").and_then(parse_numeric_value),
+        sensitivity_max_cutoff: ui("/node_ui/sensitivity_max_cutoff").and_then(parse_numeric_value),
+        sensitivity_steps: parse_usize("/node_ui/sensitivity_steps", 8).clamp(3, 40),
+        variogram_lags: parse_usize("/node_ui/variogram_lags", 12).clamp(6, 40),
+        variogram_max_pairs: parse_usize("/node_ui/variogram_max_pairs", 300000).clamp(2000, 3_000_000),
+        variogram_max_range_m: parse_f64("/node_ui/variogram_max_range_m", 0.0).max(0.0),
     }
 }
 
@@ -296,7 +335,138 @@ fn estimate_block_count(ext: Extent3D, dx: f64, dy: f64, dz: f64) -> (usize, usi
     (nx, ny, nz)
 }
 
-fn estimate_grade(samples: &[GradeSample], x: f64, y: f64, z: f64, p: &ModelParams) -> Option<f64> {
+fn cross(o: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+}
+
+fn convex_hull_xy(samples: &[GradeSample]) -> Option<DomainPolygon> {
+    if samples.len() < 3 {
+        return None;
+    }
+    let mut pts = samples.iter().map(|s| (s.x, s.y)).collect::<Vec<_>>();
+    pts.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9);
+    if pts.len() < 3 {
+        return None;
+    }
+    let mut lower: Vec<(f64, f64)> = Vec::new();
+    for p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+    let mut upper: Vec<(f64, f64)> = Vec::new();
+    for p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    if lower.len() < 3 {
+        return None;
+    }
+    Some(DomainPolygon { vertices: lower })
+}
+
+fn point_in_polygon_xy(x: f64, y: f64, poly: &DomainPolygon) -> bool {
+    let mut inside = false;
+    let n = poly.vertices.len();
+    for i in 0..n {
+        let (x1, y1) = poly.vertices[i];
+        let (x2, y2) = poly.vertices[(i + 1) % n];
+        let intersects = ((y1 > y) != (y2 > y))
+            && (x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-12) + x1);
+        if intersects {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn dist_point_segment_xy(px: f64, py: f64, a: (f64, f64), b: (f64, f64)) -> f64 {
+    let vx = b.0 - a.0;
+    let vy = b.1 - a.1;
+    let wx = px - a.0;
+    let wy = py - a.1;
+    let c1 = vx * wx + vy * wy;
+    if c1 <= 0.0 {
+        return ((px - a.0).powi(2) + (py - a.1).powi(2)).sqrt();
+    }
+    let c2 = vx * vx + vy * vy;
+    if c2 <= c1 {
+        return ((px - b.0).powi(2) + (py - b.1).powi(2)).sqrt();
+    }
+    let t = c1 / c2;
+    let projx = a.0 + t * vx;
+    let projy = a.1 + t * vy;
+    ((px - projx).powi(2) + (py - projy).powi(2)).sqrt()
+}
+
+fn min_distance_to_polygon_edges_xy(x: f64, y: f64, poly: &DomainPolygon) -> f64 {
+    let mut dmin = f64::INFINITY;
+    let n = poly.vertices.len();
+    for i in 0..n {
+        let a = poly.vertices[i];
+        let b = poly.vertices[(i + 1) % n];
+        dmin = dmin.min(dist_point_segment_xy(x, y, a, b));
+    }
+    dmin
+}
+
+fn parse_domain_polygon(root: &serde_json::Value) -> Option<DomainPolygon> {
+    if root.pointer("/schema_id").and_then(|v| v.as_str()) == Some("spatial.aoi.v1") {
+        let b = root.get("bounds")?.as_object()?;
+        let xmin = b.get("xmin").and_then(parse_numeric_value)?;
+        let xmax = b.get("xmax").and_then(parse_numeric_value)?;
+        let ymin = b.get("ymin").and_then(parse_numeric_value)?;
+        let ymax = b.get("ymax").and_then(parse_numeric_value)?;
+        if xmin < xmax && ymin < ymax {
+            return Some(DomainPolygon {
+                vertices: vec![(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)],
+            });
+        }
+    }
+    let candidates = [
+        root.pointer("/domain_polygon/coordinates"),
+        root.pointer("/polygon/coordinates"),
+        root.pointer("/aoi_polygon/coordinates"),
+    ];
+    for c in candidates {
+        let Some(arr) = c.and_then(|v| v.as_array()) else {
+            continue;
+        };
+        let mut verts = Vec::<(f64, f64)>::new();
+        for p in arr {
+            let Some(pa) = p.as_array() else { continue };
+            if pa.len() < 2 {
+                continue;
+            }
+            let Some(x) = parse_numeric_value(&pa[0]) else { continue };
+            let Some(y) = parse_numeric_value(&pa[1]) else { continue };
+            verts.push((x, y));
+        }
+        if verts.len() >= 3 {
+            return Some(DomainPolygon { vertices: verts });
+        }
+    }
+    None
+}
+
+fn estimate_value_with_support(
+    samples: &[GradeSample],
+    x: f64,
+    y: f64,
+    z: f64,
+    p: &ModelParams,
+) -> Option<(f64, NeighborStats)> {
     let mut near: Vec<(f64, f64)> = Vec::new();
     for s in samples {
         let dx = x - s.x;
@@ -319,16 +489,152 @@ fn estimate_grade(samples: &[GradeSample], x: f64, y: f64, z: f64, p: &ModelPara
         return None;
     }
     if near[0].0 <= 1e-9 || p.estimation_method.eq_ignore_ascii_case("nearest") {
-        return Some(near[0].1);
+        let nearest = near[0].0;
+        let mean = near.iter().map(|(d, _)| *d).sum::<f64>() / near.len() as f64;
+        return Some((
+            near[0].1,
+            NeighborStats {
+                n_used: near.len(),
+                nearest_m: nearest,
+                mean_m: mean,
+            },
+        ));
     }
     let mut num = 0.0;
     let mut den = 0.0;
-    for (d, v) in near {
+    for (d, v) in &near {
         let w = 1.0 / d.max(1e-9).powf(p.idw_power);
-        num += w * v;
+        num += w * *v;
         den += w;
     }
-    (den > 0.0).then_some(num / den)
+    if den <= 0.0 {
+        return None;
+    }
+    let nearest = near[0].0;
+    let mean = near.iter().map(|(d, _)| *d).sum::<f64>() / near.len() as f64;
+    Some((
+        num / den,
+        NeighborStats {
+            n_used: near.len(),
+            nearest_m: nearest,
+            mean_m: mean,
+        },
+    ))
+}
+
+fn classify_confidence(stats: NeighborStats, block_diag_m: f64) -> String {
+    if stats.n_used >= 12 && stats.nearest_m <= 0.75 * block_diag_m && stats.mean_m <= 2.0 * block_diag_m {
+        "high".to_string()
+    } else if stats.n_used >= 6 && stats.nearest_m <= 1.5 * block_diag_m {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
+fn compute_cutoff_sensitivity(
+    blocks: &[BlockCell],
+    min_cutoff: f64,
+    max_cutoff: f64,
+    steps: usize,
+    grade_unit_factor: f64,
+    troy_oz_per_tonne: f64,
+) -> Vec<serde_json::Value> {
+    if blocks.is_empty() || steps < 2 || max_cutoff <= min_cutoff {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(steps);
+    let step = (max_cutoff - min_cutoff) / (steps as f64 - 1.0);
+    for i in 0..steps {
+        let cutoff = min_cutoff + i as f64 * step;
+        let mut n_blocks = 0usize;
+        let mut tonnage = 0.0;
+        let mut ounces = 0.0;
+        for b in blocks {
+            if b.grade >= cutoff {
+                n_blocks += 1;
+                tonnage += b.tonnage_t;
+                ounces += b.contained_unscaled * grade_unit_factor * troy_oz_per_tonne;
+            }
+        }
+        out.push(json!({
+            "cutoff_grade": cutoff,
+            "blocks": n_blocks,
+            "tonnage_t": tonnage,
+            "contained_metal_oz": ounces,
+        }));
+    }
+    out
+}
+
+fn compute_variogram(samples: &[GradeSample], lags: usize, max_range: f64, max_pairs: usize) -> Vec<serde_json::Value> {
+    if samples.len() < 2 || lags < 2 {
+        return Vec::new();
+    }
+    let mut pairs_used = 0usize;
+    let mut max_d = if max_range > 0.0 { max_range } else { 0.0 };
+    if max_d <= 0.0 {
+        let mut xmin = f64::INFINITY;
+        let mut xmax = f64::NEG_INFINITY;
+        let mut ymin = f64::INFINITY;
+        let mut ymax = f64::NEG_INFINITY;
+        let mut zmin = f64::INFINITY;
+        let mut zmax = f64::NEG_INFINITY;
+        for s in samples {
+            xmin = xmin.min(s.x);
+            xmax = xmax.max(s.x);
+            ymin = ymin.min(s.y);
+            ymax = ymax.max(s.y);
+            zmin = zmin.min(s.z);
+            zmax = zmax.max(s.z);
+        }
+        let diag = ((xmax - xmin).powi(2) + (ymax - ymin).powi(2) + (zmax - zmin).powi(2)).sqrt();
+        max_d = 0.5 * diag.max(1.0);
+    }
+    let lag_w = (max_d / lags as f64).max(1e-9);
+    let mut gamma_sum = vec![0.0_f64; lags];
+    let mut count = vec![0usize; lags];
+    let step_i = ((samples.len() * samples.len()).saturating_div(max_pairs.max(1))).max(1);
+    for i in 0..samples.len() {
+        for j in (i + 1)..samples.len() {
+            if ((j - i) % step_i) != 0 {
+                continue;
+            }
+            let dx = samples[i].x - samples[j].x;
+            let dy = samples[i].y - samples[j].y;
+            let dz = samples[i].z - samples[j].z;
+            let d = (dx * dx + dy * dy + dz * dz).sqrt();
+            if d <= 0.0 || d > max_d {
+                continue;
+            }
+            let b = ((d / lag_w).floor() as usize).min(lags - 1);
+            let diff = samples[i].value - samples[j].value;
+            gamma_sum[b] += 0.5 * diff * diff;
+            count[b] += 1;
+            pairs_used += 1;
+            if pairs_used >= max_pairs {
+                break;
+            }
+        }
+        if pairs_used >= max_pairs {
+            break;
+        }
+    }
+    (0..lags)
+        .map(|i| {
+            let from = i as f64 * lag_w;
+            let to = (i + 1) as f64 * lag_w;
+            let c = count[i];
+            let gamma = if c > 0 { gamma_sum[i] / c as f64 } else { 0.0 };
+            json!({
+                "lag_from_m": from,
+                "lag_to_m": to,
+                "lag_mid_m": 0.5 * (from + to),
+                "pairs": c,
+                "gamma": gamma
+            })
+        })
+        .collect()
 }
 
 fn compute_bins(values: &[f64]) -> Vec<serde_json::Value> {
@@ -388,6 +694,7 @@ pub async fn run_block_grade_model(
     let mut numeric_fields = BTreeSet::new();
     let mut best_terrain: Option<SurfaceGrid> = None;
     let mut project_epsg: Option<i32> = None;
+    let mut input_domain_polygon: Option<DomainPolygon> = None;
 
     for ar in &job.input_artifact_refs {
         let root = super::runtime::read_json_artifact(ctx, &ar.key).await?;
@@ -406,6 +713,9 @@ pub async fn run_block_grade_model(
             if cells > best_cells {
                 best_terrain = Some(sg);
             }
+        }
+        if input_domain_polygon.is_none() {
+            input_domain_polygon = parse_domain_polygon(&root);
         }
         for row in collect_rows(&root) {
             if let Some(obj) = row.as_object() {
@@ -430,6 +740,7 @@ pub async fn run_block_grade_model(
     };
 
     let mut samples: Vec<GradeSample> = Vec::new();
+    let mut sg_samples: Vec<GradeSample> = Vec::new();
     for row in all_rows {
         let Some(obj) = row.as_object() else {
             continue;
@@ -452,6 +763,20 @@ pub async fn run_block_grade_model(
         }
         if let Some(value) = grade_value {
             samples.push(GradeSample { x, y, z, value });
+            if params.sg_mode.eq_ignore_ascii_case("field") {
+                if let Some(sg_field) = params.sg_field.as_ref() {
+                    let mut sg_value = None;
+                    if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
+                        sg_value = lookup_numeric_case_insensitive(attrs, sg_field);
+                    }
+                    if sg_value.is_none() {
+                        sg_value = lookup_numeric_case_insensitive(obj, sg_field);
+                    }
+                    if let Some(sgv) = sg_value.filter(|v| v.is_finite() && *v > 0.1 && *v < 12.0) {
+                        sg_samples.push(GradeSample { x, y, z, value: sgv });
+                    }
+                }
+            }
         }
     }
 
@@ -482,6 +807,23 @@ pub async fn run_block_grade_model(
 
     let mut blocks: Vec<BlockCell> = Vec::new();
     blocks.reserve(total.min(params.max_blocks));
+    let domain_poly = if params.domain_mode.eq_ignore_ascii_case("convex_hull")
+        || params.domain_mode.eq_ignore_ascii_case("buffered_hull")
+    {
+        convex_hull_xy(&samples)
+    } else if params.domain_mode.eq_ignore_ascii_case("input_domain_mask") {
+        input_domain_polygon.clone()
+    } else {
+        None
+    };
+
+    if params.domain_mode.eq_ignore_ascii_case("input_domain_mask") && domain_poly.is_none() {
+        return Err(NodeError::InvalidConfig(
+            "domain_mode=input_domain_mask but no input polygon/AOI mask was found".into(),
+        ));
+    }
+
+    let block_diag_m = (dx * dx + dy * dy + dz * dz).sqrt();
 
     for iz in 0..grid.2 {
         let z = extent.zmin + (iz as f64 + 0.5) * dz;
@@ -489,6 +831,21 @@ pub async fn run_block_grade_model(
             let y = extent.ymin + (iy as f64 + 0.5) * dy;
             for ix in 0..grid.0 {
                 let x = extent.xmin + (ix as f64 + 0.5) * dx;
+                if let Some(poly) = domain_poly.as_ref() {
+                    let inside = point_in_polygon_xy(x, y, poly);
+                    if params.domain_mode.eq_ignore_ascii_case("convex_hull") && !inside {
+                        continue;
+                    }
+                    if params.domain_mode.eq_ignore_ascii_case("buffered_hull") && !inside {
+                        let d_edge = min_distance_to_polygon_edges_xy(x, y, poly);
+                        if d_edge > params.hull_buffer_m {
+                            continue;
+                        }
+                    }
+                    if params.domain_mode.eq_ignore_ascii_case("input_domain_mask") && !inside {
+                        continue;
+                    }
+                }
                 if params.clip_mode.eq_ignore_ascii_case("topography") {
                     if let Some(g) = best_terrain.as_ref() {
                         if let Some(top_z) = super::runtime::bilinear_from_grid(
@@ -509,7 +866,7 @@ pub async fn run_block_grade_model(
                     }
                 }
 
-                let Some(mut grade) = estimate_grade(&samples, x, y, z, &params) else {
+                let Some((mut grade, support)) = estimate_value_with_support(&samples, x, y, z, &params) else {
                     continue;
                 };
                 if let Some(gmin) = params.grade_min {
@@ -521,9 +878,17 @@ pub async fn run_block_grade_model(
                 if !grade.is_finite() {
                     continue;
                 }
+                let sg_here = if params.sg_mode.eq_ignore_ascii_case("field") && !sg_samples.is_empty() {
+                    estimate_value_with_support(&sg_samples, x, y, z, &params)
+                        .map(|(v, _)| v.clamp(0.2, 8.0))
+                        .unwrap_or(params.sg_constant)
+                } else {
+                    params.sg_constant
+                };
                 let volume_m3 = dx * dy * dz;
-                let tonnage_t = volume_m3 * params.sg_constant;
+                let tonnage_t = volume_m3 * sg_here;
                 let contained_unscaled = tonnage_t * grade;
+                let confidence_class = classify_confidence(support, block_diag_m);
                 blocks.push(BlockCell {
                     x,
                     y,
@@ -532,10 +897,14 @@ pub async fn run_block_grade_model(
                     dy,
                     dz,
                     grade,
-                    sg: params.sg_constant,
+                    sg: sg_here,
                     tonnage_t,
                     contained_unscaled,
                     above_cutoff: grade >= params.cutoff_grade,
+                    n_samples_used: support.n_used,
+                    nearest_sample_distance_m: support.nearest_m,
+                    mean_sample_distance_m: support.mean_m,
+                    confidence_class,
                 });
             }
         }
@@ -560,6 +929,12 @@ pub async fn run_block_grade_model(
     let mut above_cutoff_contained_unscaled = 0.0;
     let mut above_cutoff_contained_metal_t = 0.0;
     let mut above_cutoff_contained_metal_oz = 0.0;
+    let mut sum_n_samples = 0.0;
+    let mut sum_nearest_m = 0.0;
+    let mut sum_mean_dist_m = 0.0;
+    let mut conf_high = 0usize;
+    let mut conf_medium = 0usize;
+    let mut conf_low = 0usize;
     for b in &blocks {
         grade_values.push(b.grade);
         total_tonnage += b.tonnage_t;
@@ -574,6 +949,14 @@ pub async fn run_block_grade_model(
             above_cutoff_contained_metal_oz +=
                 b.contained_unscaled * grade_unit_factor * troy_oz_per_tonne;
         }
+        sum_n_samples += b.n_samples_used as f64;
+        sum_nearest_m += b.nearest_sample_distance_m;
+        sum_mean_dist_m += b.mean_sample_distance_m;
+        match b.confidence_class.as_str() {
+            "high" => conf_high += 1,
+            "medium" => conf_medium += 1,
+            _ => conf_low += 1,
+        }
     }
     grade_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mean_grade = if total_tonnage > 0.0 {
@@ -583,6 +966,9 @@ pub async fn run_block_grade_model(
     };
     let min_grade = *grade_values.first().unwrap_or(&0.0);
     let max_grade = *grade_values.last().unwrap_or(&0.0);
+    let mean_n_samples_used = if blocks.is_empty() { 0.0 } else { sum_n_samples / blocks.len() as f64 };
+    let mean_nearest_sample_distance_m = if blocks.is_empty() { 0.0 } else { sum_nearest_m / blocks.len() as f64 };
+    let mean_sample_distance_m = if blocks.is_empty() { 0.0 } else { sum_mean_dist_m / blocks.len() as f64 };
 
     let render_blocks = blocks
         .iter()
@@ -606,6 +992,10 @@ pub async fn run_block_grade_model(
                     "contained_unscaled": b.contained_unscaled,
                     "contained_metal_t": b.contained_unscaled * grade_unit_factor,
                     "sg": b.sg,
+                    "n_samples_used": b.n_samples_used,
+                    "nearest_sample_distance_m": b.nearest_sample_distance_m,
+                    "mean_sample_distance_m": b.mean_sample_distance_m,
+                    "confidence_class": b.confidence_class,
                 }
             })
         })
@@ -624,6 +1014,10 @@ pub async fn run_block_grade_model(
                     "tonnage_t": b.tonnage_t,
                     "contained_unscaled": b.contained_unscaled,
                     "contained_metal_t": b.contained_unscaled * grade_unit_factor,
+                    "sg": b.sg,
+                    "n_samples_used": b.n_samples_used as f64,
+                    "nearest_sample_distance_m": b.nearest_sample_distance_m,
+                    "mean_sample_distance_m": b.mean_sample_distance_m,
                 }
             })
         })
@@ -635,6 +1029,9 @@ pub async fn run_block_grade_model(
         "contained_unscaled".to_string(),
         "contained_metal_t".to_string(),
         "sg".to_string(),
+        "n_samples_used".to_string(),
+        "nearest_sample_distance_m".to_string(),
+        "mean_sample_distance_m".to_string(),
     ];
 
     let voxels_payload = json!({
@@ -704,73 +1101,137 @@ pub async fn run_block_grade_model(
     } else {
         0.0
     };
+    let s_min = params
+        .sensitivity_min_cutoff
+        .unwrap_or_else(|| min_grade.min(params.cutoff_grade));
+    let s_max = params
+        .sensitivity_max_cutoff
+        .unwrap_or_else(|| max_grade.max(params.cutoff_grade));
+    let cutoff_sensitivity = compute_cutoff_sensitivity(
+        &blocks,
+        s_min,
+        s_max,
+        params.sensitivity_steps,
+        grade_unit_factor,
+        troy_oz_per_tonne,
+    );
+    let variogram_bins = compute_variogram(
+        &samples,
+        params.variogram_lags,
+        params.variogram_max_range_m,
+        params.variogram_max_pairs,
+    );
 
-    let report_payload = json!({
-        "schema_id": "report.block_resource.v2",
-        "type": "block_resource_report",
-        "semantic_summary": {
-            "title": "Block Grade Model Resource Summary",
-            "element_field": element_field,
-            "grade_unit": params.grade_unit,
-            "cutoff_grade": params.cutoff_grade,
-            "block_size_m": { "x": dx, "y": dy, "z": dz },
-            "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
-            "estimated_blocks": render_blocks.len(),
-            "above_cutoff_blocks": above_cutoff_blocks,
-            "above_cutoff_share_blocks_pct": cutoff_share_blocks_pct,
-            "above_cutoff_tonnage_t": above_cutoff_tonnage,
-            "above_cutoff_share_tonnage_pct": cutoff_share_tonnage_pct,
-            "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
-            "total_tonnage_t": total_tonnage,
-            "total_contained_metal_oz": total_contained_metal_oz,
-            "mean_grade": mean_grade,
-            "min_grade": min_grade,
-            "max_grade": max_grade,
-            "key_parameters": {
-                "estimation_method": params.estimation_method,
-                "idw_power": params.idw_power,
-                "search_radius_m": params.search_radius_m,
-                "min_samples": params.min_samples,
-                "max_samples": params.max_samples,
-                "clip_mode": params.clip_mode,
-                "sg_constant": params.sg_constant
-            }
-        },
-        "summary": {
-            "cutoff_grade": params.cutoff_grade,
-            "sg_constant": params.sg_constant,
-            "grade_unit": params.grade_unit,
-            "grade_unit_factor_to_fraction": grade_unit_factor,
-            "troy_oz_per_tonne": troy_oz_per_tonne,
-            "element_field": element_field,
+    let semantic_summary = json!({
+        "title": "Block Grade Model Resource Summary",
+        "element_field": element_field,
+        "grade_unit": params.grade_unit,
+        "cutoff_grade": params.cutoff_grade,
+        "block_size_m": { "x": dx, "y": dy, "z": dz },
+        "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
+        "estimated_blocks": render_blocks.len(),
+        "above_cutoff_blocks": above_cutoff_blocks,
+        "above_cutoff_share_blocks_pct": cutoff_share_blocks_pct,
+        "above_cutoff_tonnage_t": above_cutoff_tonnage,
+        "above_cutoff_share_tonnage_pct": cutoff_share_tonnage_pct,
+        "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
+        "total_tonnage_t": total_tonnage,
+        "total_contained_metal_oz": total_contained_metal_oz,
+        "mean_grade": mean_grade,
+        "min_grade": min_grade,
+        "max_grade": max_grade,
+        "key_parameters": {
             "estimation_method": params.estimation_method,
             "idw_power": params.idw_power,
             "search_radius_m": params.search_radius_m,
             "min_samples": params.min_samples,
             "max_samples": params.max_samples,
             "clip_mode": params.clip_mode,
-            "block_size_m": { "x": dx, "y": dy, "z": dz },
-            "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
-            "estimated_blocks": render_blocks.len(),
-            "estimated_cells_before_filter": total,
-            "above_cutoff_blocks": above_cutoff_blocks,
-            "mean_grade": mean_grade,
-            "min_grade": min_grade,
-            "max_grade": max_grade,
-            "total_tonnage_t": total_tonnage,
-            "total_contained_unscaled": total_contained_unscaled,
-            "total_contained_metal_t": total_contained_metal_t,
-            "total_contained_metal_oz": total_contained_metal_oz,
-            "above_cutoff_tonnage_t": above_cutoff_tonnage,
-            "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
-            "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
-            "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
+            "sg_mode": params.sg_mode,
+            "sg_field": params.sg_field,
+            "sg_constant": params.sg_constant,
+            "domain_mode": params.domain_mode,
+            "hull_buffer_m": params.hull_buffer_m
         },
+        "support_diagnostics": {
+            "mean_n_samples_used": mean_n_samples_used,
+            "mean_nearest_sample_distance_m": mean_nearest_sample_distance_m,
+            "mean_sample_distance_m": mean_sample_distance_m,
+            "confidence_counts": {
+                "high": conf_high,
+                "medium": conf_medium,
+                "low": conf_low
+            }
+        }
+    });
+    let summary_payload = json!({
+        "cutoff_grade": params.cutoff_grade,
+        "sg_constant": params.sg_constant,
+        "grade_unit": params.grade_unit,
+        "grade_unit_factor_to_fraction": grade_unit_factor,
+        "troy_oz_per_tonne": troy_oz_per_tonne,
+        "element_field": element_field,
+        "estimation_method": params.estimation_method,
+        "idw_power": params.idw_power,
+        "search_radius_m": params.search_radius_m,
+        "min_samples": params.min_samples,
+        "max_samples": params.max_samples,
+        "clip_mode": params.clip_mode,
+        "domain_mode": params.domain_mode,
+        "hull_buffer_m": params.hull_buffer_m,
+        "sg_mode": params.sg_mode,
+        "sg_field": params.sg_field,
+        "block_size_m": { "x": dx, "y": dy, "z": dz },
+        "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
+        "estimated_blocks": render_blocks.len(),
+        "estimated_cells_before_filter": total,
+        "above_cutoff_blocks": above_cutoff_blocks,
+        "mean_grade": mean_grade,
+        "min_grade": min_grade,
+        "max_grade": max_grade,
+        "total_tonnage_t": total_tonnage,
+        "total_contained_unscaled": total_contained_unscaled,
+        "total_contained_metal_t": total_contained_metal_t,
+        "total_contained_metal_oz": total_contained_metal_oz,
+        "above_cutoff_tonnage_t": above_cutoff_tonnage,
+        "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
+        "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
+        "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
+        "mean_n_samples_used": mean_n_samples_used,
+        "mean_nearest_sample_distance_m": mean_nearest_sample_distance_m,
+        "mean_sample_distance_m": mean_sample_distance_m,
+        "confidence_high_blocks": conf_high,
+        "confidence_medium_blocks": conf_medium,
+        "confidence_low_blocks": conf_low
+    });
+    let variogram_payload_inner = json!({
+        "bins": variogram_bins,
+        "lags": params.variogram_lags,
+        "max_pairs": params.variogram_max_pairs,
+        "max_range_m": params.variogram_max_range_m
+    });
+    let report_payload = json!({
+        "schema_id": "report.block_resource.v2",
+        "type": "block_resource_report",
+        "semantic_summary": semantic_summary,
+        "summary": summary_payload,
         "grade_histogram": grade_histogram,
+        "cutoff_sensitivity": cutoff_sensitivity,
+        "variogram": variogram_payload_inner,
         "notes": [
             "contained_unscaled is grade*tonnage in source grade units. contained_metal_t applies grade_unit_factor_to_fraction.",
-            "Topography clipping currently uses block-center test against the best available surface_grid.",
+            "Topography clipping currently uses block-center test against the best available surface_grid."
         ]
+    });
+    let variogram_payload = json!({
+        "schema_id": "report.variogram.v1",
+        "type": "variogram_report",
+        "element_field": element_field,
+        "grade_unit": params.grade_unit,
+        "lags": params.variogram_lags,
+        "max_pairs": params.variogram_max_pairs,
+        "max_range_m": params.variogram_max_range_m,
+        "bins": report_payload.pointer("/variogram/bins").cloned().unwrap_or_else(|| json!([]))
     });
 
     let voxels_bytes = serde_json::to_vec(&voxels_payload)?;
@@ -799,12 +1260,29 @@ pub async fn run_block_grade_model(
     let report_ref =
         super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json"))
             .await?;
+    let variogram_bytes = serde_json::to_vec(&variogram_payload)?;
+    let variogram_key = format!(
+        "graphs/{}/nodes/{}/block_grade_model_variogram.json",
+        job.graph_id, job.node_id
+    );
+    let variogram_ref = super::runtime::write_artifact(
+        ctx,
+        &variogram_key,
+        &variogram_bytes,
+        Some("application/json"),
+    )
+    .await?;
 
     Ok(JobResult {
         job_id: job.job_id,
         status: JobStatus::Succeeded,
-        output_artifact_refs: vec![voxels_ref.clone(), centers_ref.clone(), report_ref.clone()],
-        content_hashes: vec![voxels_ref.content_hash, centers_ref.content_hash, report_ref.content_hash],
+        output_artifact_refs: vec![voxels_ref.clone(), centers_ref.clone(), report_ref.clone(), variogram_ref.clone()],
+        content_hashes: vec![
+            voxels_ref.content_hash,
+            centers_ref.content_hash,
+            report_ref.content_hash,
+            variogram_ref.content_hash,
+        ],
         error_message: None,
     })
 }

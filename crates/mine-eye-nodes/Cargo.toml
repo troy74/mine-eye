@@ -17,3 +17,4 @@ hex = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "rt"] }
 proj = { version = "0.31.0", default-features = false, features = ["bundled_proj"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+pulldown-cmark = "0.11"
