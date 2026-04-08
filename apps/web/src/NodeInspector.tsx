@@ -873,7 +873,11 @@ export function NodeInspector({
       csv_preview_rows: csvRows.slice(0, 8),
     };
     const n = (v: string, fallback: number) => {
-      const x = Number(v);
+      const normalized = String(v ?? "")
+        .trim()
+        .replace(/\s+/g, "")
+        .replace(",", ".");
+      const x = Number(normalized);
       return Number.isFinite(x) ? x : fallback;
     };
     if (isHeatmapNode) {
@@ -2550,27 +2554,33 @@ export function NodeInspector({
                 <label style={lab}>
                   <span style={labSpan}>Block size X</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgBlockSizeX}
                     onChange={(e) => setBgBlockSizeX(e.target.value)}
+                    placeholder="20.0"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>Block size Y</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgBlockSizeY}
                     onChange={(e) => setBgBlockSizeY(e.target.value)}
+                    placeholder="20.0"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>Block size Z</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgBlockSizeZ}
                     onChange={(e) => setBgBlockSizeZ(e.target.value)}
+                    placeholder="10.0"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
@@ -2579,19 +2589,22 @@ export function NodeInspector({
                 <label style={lab}>
                   <span style={labSpan}>Cutoff grade</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgCutoffGrade}
                     onChange={(e) => setBgCutoffGrade(e.target.value)}
+                    placeholder="0.5"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>SG constant</span>
                   <input
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={bgSgConstant}
                     onChange={(e) => setBgSgConstant(e.target.value)}
+                    placeholder="2.5"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
@@ -2620,28 +2633,33 @@ export function NodeInspector({
                 <label style={lab}>
                   <span style={labSpan}>IDW power</span>
                   <input
-                    type="number"
-                    step="0.1"
+                    type="text"
+                    inputMode="decimal"
                     value={bgIdwPower}
                     onChange={(e) => setBgIdwPower(e.target.value)}
+                    placeholder="2.0"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>Search radius (m)</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgSearchRadiusM}
                     onChange={(e) => setBgSearchRadiusM(e.target.value)}
+                    placeholder="0"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>Max blocks</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={bgMaxBlocks}
                     onChange={(e) => setBgMaxBlocks(e.target.value)}
+                    placeholder="45000"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
@@ -2650,25 +2668,30 @@ export function NodeInspector({
                 <label style={lab}>
                   <span style={labSpan}>Min samples</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={bgMinSamples}
                     onChange={(e) => setBgMinSamples(e.target.value)}
+                    placeholder="3"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>Max samples</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="numeric"
                     value={bgMaxSamples}
                     onChange={(e) => setBgMaxSamples(e.target.value)}
+                    placeholder="24"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
                 <label style={lab}>
                   <span style={labSpan}>Grade min clamp</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgGradeMin}
                     onChange={(e) => setBgGradeMin(e.target.value)}
                     placeholder="optional"
@@ -2678,7 +2701,8 @@ export function NodeInspector({
                 <label style={lab}>
                   <span style={labSpan}>Grade max clamp</span>
                   <input
-                    type="number"
+                    type="text"
+                    inputMode="decimal"
                     value={bgGradeMax}
                     onChange={(e) => setBgGradeMax(e.target.value)}
                     placeholder="optional"
@@ -2697,10 +2721,11 @@ export function NodeInspector({
                 <label style={lab}>
                   <span style={labSpan}>Below-cutoff opacity</span>
                   <input
-                    type="number"
-                    step="0.01"
+                    type="text"
+                    inputMode="decimal"
                     value={bgBelowCutoffOpacity}
                     onChange={(e) => setBgBelowCutoffOpacity(e.target.value)}
+                    placeholder="0.05"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
