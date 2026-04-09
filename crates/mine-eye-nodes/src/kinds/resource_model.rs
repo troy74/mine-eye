@@ -383,7 +383,7 @@ fn choose_element_field(
     fields.iter().next().cloned()
 }
 
-fn infer_extent(samples: &[GradeSample], terrain: Option<&SurfaceGrid>) -> Option<Extent3D> {
+fn infer_extent(samples: &[GradeSample]) -> Option<Extent3D> {
     if samples.is_empty() {
         return None;
     }
@@ -400,17 +400,6 @@ fn infer_extent(samples: &[GradeSample], terrain: Option<&SurfaceGrid>) -> Optio
         ymax = ymax.max(s.y);
         zmin = zmin.min(s.z);
         zmax = zmax.max(s.z);
-    }
-    if let Some(g) = terrain {
-        xmin = xmin.min(g.xmin);
-        xmax = xmax.max(g.xmax);
-        ymin = ymin.min(g.ymin);
-        ymax = ymax.max(g.ymax);
-        for v in &g.values {
-            if let Some(z) = *v {
-                zmax = zmax.max(z);
-            }
-        }
     }
     if !(xmin < xmax && ymin < ymax && zmin < zmax) {
         return None;
@@ -1331,7 +1320,13 @@ pub async fn run_block_grade_model(
         }
     }
 
-    let mut extent = infer_extent(&samples, best_terrain.as_ref())
+    if params.clip_mode.eq_ignore_ascii_case("topography") && best_terrain.is_none() {
+        return Err(NodeError::InvalidConfig(
+            "clip_mode=topography requires a wired terrain/surface_grid input".into(),
+        ));
+    }
+
+    let mut extent = infer_extent(&samples)
         .ok_or_else(|| NodeError::InvalidConfig("unable to infer model extent".into()))?
         .with_padding(0.05);
 
@@ -1437,6 +1432,9 @@ pub async fn run_block_grade_model(
                             if z + 0.5 * dz > top_z {
                                 continue;
                             }
+                        } else {
+                            // Strict clip: if terrain cannot be sampled at XY, do not keep the block.
+                            continue;
                         }
                     }
                 }
@@ -1863,7 +1861,7 @@ pub async fn run_block_grade_model(
         "variogram": variogram_payload_inner,
         "notes": [
             "contained_unscaled is grade*tonnage in source grade units. contained_metal_t applies grade_unit_factor_to_fraction.",
-            "Topography clipping currently uses block-center test against the best available surface_grid."
+            "Topography clipping uses block-top (z + 0.5*dz) against selected surface_grid and excludes cells where terrain is unavailable at XY."
         ]
     });
     let voxels_bytes = serde_json::to_vec(&voxels_payload)?;
