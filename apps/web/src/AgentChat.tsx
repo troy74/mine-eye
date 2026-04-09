@@ -12,6 +12,7 @@ import { aiChat, type AiChatToolEvent } from "./graphApi";
 const CHAT_KEY = (projectLocalId: string) => `mineeye:chat:v1:${projectLocalId}`;
 const CHAT_APPLY_KEY = (projectLocalId: string) => `mineeye:chat:apply:v1:${projectLocalId}`;
 const CHAT_ONBOARD_KEY = (projectLocalId: string) => `mineeye:chat:onboard:v1:${projectLocalId}`;
+const MAX_CHAT_FILE_BYTES = 32 * 1024 * 1024;
 
 export type ChatAttachment = {
   name: string;
@@ -123,8 +124,8 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
       const list = [...files].slice(0, 6);
       const attachments: ChatAttachment[] = [];
       for (const f of list) {
-        if (f.size > 4 * 1024 * 1024) {
-          setFileErr(`${f.name} is too large (max 4 MB per file).`);
+        if (f.size > MAX_CHAT_FILE_BYTES) {
+          setFileErr(`${f.name} is too large (max 32 MB per file).`);
           return;
         }
         if (f.type.startsWith("image/")) {

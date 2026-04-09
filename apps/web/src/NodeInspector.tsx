@@ -1159,6 +1159,11 @@ export function NodeInspector({
       setErr("Please provide a valid EPSG code.");
       return;
     }
+    const MAX_ROWS_SAVED_TO_NODE = 12000;
+    const rowsForNode =
+      csvRows.length > MAX_ROWS_SAVED_TO_NODE
+        ? csvRows.slice(0, MAX_ROWS_SAVED_TO_NODE)
+        : csvRows;
     const ui: Record<string, unknown> = {
       mapping: { ...mapping },
       use_project_crs: useProject,
@@ -1166,7 +1171,7 @@ export function NodeInspector({
       z_is_relative: kind === "collar_ingest" ? zRelative : undefined,
       csv_filename: csvName || undefined,
       csv_headers: headers.length ? headers : undefined,
-      csv_rows: csvRows,
+      csv_rows: rowsForNode,
       csv_preview_rows: csvRows.slice(0, 8),
     };
     const n = (v: string, fallback: number) => {
@@ -1366,7 +1371,13 @@ export function NodeInspector({
     try {
       const updated = await patchNodeParams(graphId, node.id, { ui }, { branchId: activeBranchId });
       onNodeUpdated(updated);
-      setSaveMsg("Saved to node config (re-run pipeline to rebuild artifacts).");
+      if (rowsForNode.length < csvRows.length) {
+        setSaveMsg(
+          `Saved to node config with first ${rowsForNode.length.toLocaleString()} rows (file is larger). Use Run-this-node to process full in-memory CSV now.`
+        );
+      } else {
+        setSaveMsg("Saved to node config (re-run pipeline to rebuild artifacts).");
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -1561,7 +1572,39 @@ export function NodeInspector({
     setRunMsg(null);
     setRunErr(null);
     try {
-      const res = await runGraph(graphId, { dirtyRoots: [node.id], includeManual: true });
+      const inputPayloads: Record<string, unknown> = {};
+      if (csvCapable && headers.length > 0 && csvRows.length > 0) {
+        const parseCell = (s: string): unknown => {
+          const t = String(s ?? "").trim();
+          if (!t.length) return "";
+          const n = Number(t.replace(",", "."));
+          return Number.isFinite(n) ? n : t;
+        };
+        if (kind === "magnetic_mapper") {
+          const rows = csvRows.map((r) => {
+            const obj: Record<string, unknown> = {};
+            headers.forEach((h, i) => {
+              if (i < r.length) obj[h] = parseCell(r[i]);
+            });
+            return obj;
+          });
+          const useProject = crsMode === "project";
+          const epsg = useProject
+            ? projectEpsg
+            : crsMode === "custom"
+              ? parseInt(sourceCustomEpsg, 10)
+              : parseInt(crsMode, 10);
+          inputPayloads[node.id] = {
+            rows,
+            source_crs: { epsg: Number.isFinite(epsg) && epsg > 0 ? epsg : 4326, wkt: null },
+          };
+        }
+      }
+      const res = await runGraph(graphId, {
+        dirtyRoots: [node.id],
+        includeManual: true,
+        inputPayloads: Object.keys(inputPayloads).length ? inputPayloads : undefined,
+      });
       const nq = res.queued?.length ?? 0;
       const ns = res.skipped_manual?.length ?? 0;
       setRunMsg(
@@ -1577,7 +1620,7 @@ export function NodeInspector({
     } finally {
       setRunBusy(false);
     }
-  }, [graphId, node.id, onPipelineQueued]);
+  }, [csvCapable, headers, csvRows, kind, crsMode, projectEpsg, sourceCustomEpsg, graphId, node.id, onPipelineQueued]);
 
   const selectCol = (field: string, label: string) => (
     <label style={lab}>

@@ -180,7 +180,7 @@ export type RunGraphResponse = {
  */
 export async function runGraph(
   graphId: string,
-  opts?: { dirtyRoots?: string[]; includeManual?: boolean }
+  opts?: { dirtyRoots?: string[]; includeManual?: boolean; inputPayloads?: Record<string, unknown> }
 ): Promise<RunGraphResponse> {
   const body: Record<string, unknown> = {};
   if (opts?.dirtyRoots !== undefined) {
@@ -188,6 +188,9 @@ export async function runGraph(
   }
   if (opts?.includeManual !== undefined) {
     body.include_manual = opts.includeManual;
+  }
+  if (opts?.inputPayloads) {
+    body.input_payloads = opts.inputPayloads;
   }
   const r = await fetch(api(`/graphs/${graphId}/run`), {
     method: "POST",
