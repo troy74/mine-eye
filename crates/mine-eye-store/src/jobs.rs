@@ -29,6 +29,7 @@ pub trait JobQueue: Send + Sync {
         stats: Option<Value>,
     ) -> Result<(), StoreError>;
     async fn touch_heartbeat(&self, job_row_id: Uuid) -> Result<(), StoreError>;
+    async fn reap_stale_running(&self, stale_after_seconds: i64) -> Result<u64, StoreError>;
     async fn latest_for_node(
         &self,
         graph_id: Uuid,
@@ -228,6 +229,39 @@ impl JobQueue for PgJobQueue {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn reap_stale_running(&self, stale_after_seconds: i64) -> Result<u64, StoreError> {
+        let n = stale_after_seconds.max(30);
+        let res = sqlx::query(
+            r#"
+            UPDATE job_queue
+            SET status = 'failed',
+                error_message = COALESCE(
+                    error_message,
+                    format('stale running job reaped after %s seconds without heartbeat', $1)
+                ),
+                result = COALESCE(
+                    result,
+                    jsonb_build_object(
+                        'status', 'failed',
+                        'error_message', format('stale running job reaped after %s seconds without heartbeat', $1)
+                    )
+                ),
+                finished_at = now()
+            WHERE status = 'running'
+              AND now() - COALESCE(
+                    NULLIF(payload->'runtime_progress'->>'heartbeat_at', '')::timestamptz,
+                    NULLIF(payload->'runtime_progress'->>'updated_at', '')::timestamptz,
+                    started_at,
+                    created_at
+                  ) > make_interval(secs => $1)
+            "#,
+        )
+        .bind(n)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
     }
 
     async fn latest_for_node(

@@ -37,8 +37,19 @@ async fn main() -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&artifact_root).await?;
 
     tracing::info!("worker started, polling job_queue");
+    let mut last_reap = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(120))
+        .unwrap_or_else(std::time::Instant::now);
 
     loop {
+        if last_reap.elapsed() >= Duration::from_secs(30) {
+            match jobs.reap_stale_running(120).await {
+                Ok(n) if n > 0 => tracing::warn!(count = n, "reaped stale running jobs"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "reap_stale_running failed"),
+            }
+            last_reap = std::time::Instant::now();
+        }
         match jobs.claim_next().await {
             Ok(Some((row_id, mut envelope))) => {
                 let jobs_for_progress = jobs.clone();

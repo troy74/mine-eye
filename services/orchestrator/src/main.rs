@@ -2231,6 +2231,7 @@ async fn get_node_job_runtime(
     Path((graph_id, node_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Option<NodeJobRuntimeDto>>, (StatusCode, String)> {
     require_graph_access(&s, &auth, graph_id).await?;
+    let _ = s.jobs.reap_stale_running(120).await;
     let rt = s
         .jobs
         .latest_for_node(graph_id, node_id)
