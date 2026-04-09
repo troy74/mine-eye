@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mine_eye_types::{JobEnvelope, JobResult, JobStatus};
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 use crate::executor::ExecutionContext;
 use crate::NodeError;
@@ -58,6 +58,10 @@ struct ModelParams {
     estimation_method: String,
     idw_power: f64,
     search_radius_m: f64,
+    search_azimuth_deg: f64,
+    anisotropy_x: f64,
+    anisotropy_y: f64,
+    anisotropy_z: f64,
     min_samples: usize,
     max_samples: usize,
     grade_min: Option<f64>,
@@ -98,6 +102,24 @@ struct NeighborStats {
     n_used: usize,
     nearest_m: f64,
     mean_m: f64,
+}
+
+#[derive(Clone, Copy)]
+struct Triangle3 {
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+}
+
+#[derive(Clone)]
+struct TriangleMesh {
+    tris: Vec<Triangle3>,
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
+    zmin: f64,
+    zmax: f64,
 }
 
 impl Extent3D {
@@ -271,6 +293,10 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         estimation_method: parse_str("/node_ui/estimation_method", "idw"),
         idw_power: parse_f64("/node_ui/idw_power", 2.0).clamp(1.0, 4.0),
         search_radius_m: parse_f64("/node_ui/search_radius_m", 0.0).max(0.0),
+        search_azimuth_deg: parse_f64("/node_ui/search_azimuth_deg", 0.0),
+        anisotropy_x: parse_f64("/node_ui/anisotropy_x", 1.0).max(1e-6),
+        anisotropy_y: parse_f64("/node_ui/anisotropy_y", 1.0).max(1e-6),
+        anisotropy_z: parse_f64("/node_ui/anisotropy_z", 1.0).max(1e-6),
         min_samples: parse_usize("/node_ui/min_samples", 3).clamp(1, 32),
         max_samples: parse_usize("/node_ui/max_samples", 24).clamp(1, 128),
         grade_min: ui("/node_ui/grade_min").and_then(parse_numeric_value),
@@ -478,6 +504,213 @@ fn parse_domain_polygon(root: &serde_json::Value) -> Option<DomainPolygon> {
     None
 }
 
+fn parse_triangle_mesh(root: &serde_json::Value) -> Option<TriangleMesh> {
+    fn push_tri(
+        tris: &mut Vec<Triangle3>,
+        a: [f64; 3],
+        b: [f64; 3],
+        c: [f64; 3],
+    ) {
+        tris.push(Triangle3 { a, b, c });
+    }
+
+    let mut tris: Vec<Triangle3> = Vec::new();
+
+    if let Some(tarr) = root.get("triangles").and_then(|v| v.as_array()) {
+        for t in tarr {
+            let Some(tv) = t.as_array() else { continue };
+            if tv.len() != 3 {
+                continue;
+            }
+            let parse_pt = |v: &serde_json::Value| -> Option<[f64; 3]> {
+                let a = v.as_array()?;
+                if a.len() < 3 {
+                    return None;
+                }
+                Some([
+                    parse_numeric_value(&a[0])?,
+                    parse_numeric_value(&a[1])?,
+                    parse_numeric_value(&a[2])?,
+                ])
+            };
+            let Some(a) = parse_pt(&tv[0]) else { continue };
+            let Some(b) = parse_pt(&tv[1]) else { continue };
+            let Some(c) = parse_pt(&tv[2]) else { continue };
+            push_tri(&mut tris, a, b, c);
+        }
+    }
+
+    let mesh_obj = root.get("mesh").and_then(|v| v.as_object());
+    let vertices = mesh_obj
+        .and_then(|m| m.get("vertices"))
+        .and_then(|v| v.as_array());
+    let faces = mesh_obj
+        .and_then(|m| m.get("faces"))
+        .and_then(|v| v.as_array());
+    if let (Some(verts), Some(fcs)) = (vertices, faces) {
+        let mut vv = Vec::<[f64; 3]>::new();
+        for p in verts {
+            let Some(pa) = p.as_array() else { continue };
+            if pa.len() < 3 {
+                continue;
+            }
+            let Some(x) = parse_numeric_value(&pa[0]) else { continue };
+            let Some(y) = parse_numeric_value(&pa[1]) else { continue };
+            let Some(z) = parse_numeric_value(&pa[2]) else { continue };
+            vv.push([x, y, z]);
+        }
+        for f in fcs {
+            let Some(fa) = f.as_array() else { continue };
+            if fa.len() < 3 {
+                continue;
+            }
+            let i0 = parse_numeric_value(&fa[0]).map(|x| x as usize);
+            let i1 = parse_numeric_value(&fa[1]).map(|x| x as usize);
+            let i2 = parse_numeric_value(&fa[2]).map(|x| x as usize);
+            let (Some(i0), Some(i1), Some(i2)) = (i0, i1, i2) else {
+                continue;
+            };
+            if i0 < vv.len() && i1 < vv.len() && i2 < vv.len() {
+                push_tri(&mut tris, vv[i0], vv[i1], vv[i2]);
+            }
+        }
+    }
+
+    if tris.is_empty() {
+        return None;
+    }
+    let mut xmin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+    let mut zmin = f64::INFINITY;
+    let mut zmax = f64::NEG_INFINITY;
+    for t in &tris {
+        for p in [t.a, t.b, t.c] {
+            xmin = xmin.min(p[0]);
+            xmax = xmax.max(p[0]);
+            ymin = ymin.min(p[1]);
+            ymax = ymax.max(p[1]);
+            zmin = zmin.min(p[2]);
+            zmax = zmax.max(p[2]);
+        }
+    }
+    Some(TriangleMesh {
+        tris,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        zmin,
+        zmax,
+    })
+}
+
+fn point_in_triangle_2d(px: f64, py: f64, a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
+    let v0 = [c[0] - a[0], c[1] - a[1]];
+    let v1 = [b[0] - a[0], b[1] - a[1]];
+    let v2 = [px - a[0], py - a[1]];
+    let dot00 = v0[0] * v0[0] + v0[1] * v0[1];
+    let dot01 = v0[0] * v1[0] + v0[1] * v1[1];
+    let dot02 = v0[0] * v2[0] + v0[1] * v2[1];
+    let dot11 = v1[0] * v1[0] + v1[1] * v1[1];
+    let dot12 = v1[0] * v2[0] + v1[1] * v2[1];
+    let denom = dot00 * dot11 - dot01 * dot01;
+    if denom.abs() < 1e-12 {
+        return false;
+    }
+    let inv = 1.0 / denom;
+    let u = (dot11 * dot02 - dot01 * dot12) * inv;
+    let v = (dot00 * dot12 - dot01 * dot02) * inv;
+    u >= -1e-9 && v >= -1e-9 && (u + v) <= 1.0 + 1e-9
+}
+
+fn z_at_xy_on_triangle(x: f64, y: f64, tri: &Triangle3) -> Option<f64> {
+    let a = tri.a;
+    let b = tri.b;
+    let c = tri.c;
+    let v0 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let v1 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let v2 = [x - a[0], y - a[1], 0.0];
+    let d00 = v0[0] * v0[0] + v0[1] * v0[1];
+    let d01 = v0[0] * v1[0] + v0[1] * v1[1];
+    let d11 = v1[0] * v1[0] + v1[1] * v1[1];
+    let d20 = v2[0] * v0[0] + v2[1] * v0[1];
+    let d21 = v2[0] * v1[0] + v2[1] * v1[1];
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    let u = 1.0 - v - w;
+    if u < -1e-9 || v < -1e-9 || w < -1e-9 {
+        return None;
+    }
+    Some(u * a[2] + v * b[2] + w * c[2])
+}
+
+fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bool {
+    if x < mesh.xmin || x > mesh.xmax || y < mesh.ymin || y > mesh.ymax || z < mesh.zmin || z > mesh.zmax {
+        return false;
+    }
+    let mut z_hits = Vec::<f64>::new();
+    for tri in &mesh.tris {
+        let tri_xmin = tri.a[0].min(tri.b[0]).min(tri.c[0]);
+        let tri_xmax = tri.a[0].max(tri.b[0]).max(tri.c[0]);
+        let tri_ymin = tri.a[1].min(tri.b[1]).min(tri.c[1]);
+        let tri_ymax = tri.a[1].max(tri.b[1]).max(tri.c[1]);
+        if x < tri_xmin || x > tri_xmax || y < tri_ymin || y > tri_ymax {
+            continue;
+        }
+        if !point_in_triangle_2d(
+            x,
+            y,
+            [tri.a[0], tri.a[1]],
+            [tri.b[0], tri.b[1]],
+            [tri.c[0], tri.c[1]],
+        ) {
+            continue;
+        }
+        if let Some(zh) = z_at_xy_on_triangle(x, y, tri) {
+            z_hits.push(zh);
+        }
+    }
+    if z_hits.is_empty() {
+        return false;
+    }
+    z_hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mut i = 0usize;
+    while i + 1 < z_hits.len() {
+        let z0 = z_hits[i];
+        let z1 = z_hits[i + 1];
+        if z >= z0.min(z1) && z <= z0.max(z1) {
+            return true;
+        }
+        i += 2;
+    }
+    false
+}
+
+fn anisotropic_distance(x: f64, y: f64, z: f64, sx: f64, sy: f64, sz: f64, p: &ModelParams) -> f64 {
+    let mut dx = x - sx;
+    let mut dy = y - sy;
+    let dz = z - sz;
+    if p.search_azimuth_deg.abs() > 1e-9 {
+        let az = p.search_azimuth_deg.to_radians();
+        let c = az.cos();
+        let s = az.sin();
+        let rx = c * dx + s * dy;
+        let ry = -s * dx + c * dy;
+        dx = rx;
+        dy = ry;
+    }
+    let ax = dx / p.anisotropy_x.max(1e-6);
+    let ay = dy / p.anisotropy_y.max(1e-6);
+    let az = dz / p.anisotropy_z.max(1e-6);
+    (ax * ax + ay * ay + az * az).sqrt()
+}
+
 fn estimate_value_with_support(
     samples: &[GradeSample],
     x: f64,
@@ -485,16 +718,17 @@ fn estimate_value_with_support(
     z: f64,
     p: &ModelParams,
 ) -> Option<(f64, NeighborStats)> {
-    let mut near: Vec<(f64, f64)> = Vec::new();
+    let mut near: Vec<(f64, f64, f64)> = Vec::new();
     for s in samples {
+        let d_model = anisotropic_distance(x, y, z, s.x, s.y, s.z, p);
+        if p.search_radius_m > 0.0 && d_model > p.search_radius_m {
+            continue;
+        }
         let dx = x - s.x;
         let dy = y - s.y;
         let dz = z - s.z;
-        let d = (dx * dx + dy * dy + dz * dz).sqrt();
-        if p.search_radius_m > 0.0 && d > p.search_radius_m {
-            continue;
-        }
-        near.push((d, s.value));
+        let d_true = (dx * dx + dy * dy + dz * dz).sqrt();
+        near.push((d_model, d_true, s.value));
     }
     if near.is_empty() {
         return None;
@@ -507,10 +741,10 @@ fn estimate_value_with_support(
         return None;
     }
     if near[0].0 <= 1e-9 || p.estimation_method.eq_ignore_ascii_case("nearest") {
-        let nearest = near[0].0;
-        let mean = near.iter().map(|(d, _)| *d).sum::<f64>() / near.len() as f64;
+        let nearest = near[0].1;
+        let mean = near.iter().map(|(_, d, _)| *d).sum::<f64>() / near.len() as f64;
         return Some((
-            near[0].1,
+            near[0].2,
             NeighborStats {
                 n_used: near.len(),
                 nearest_m: nearest,
@@ -520,7 +754,7 @@ fn estimate_value_with_support(
     }
     let mut num = 0.0;
     let mut den = 0.0;
-    for (d, v) in &near {
+    for (d, _, v) in &near {
         let w = 1.0 / d.max(1e-9).powf(p.idw_power);
         num += w * *v;
         den += w;
@@ -528,8 +762,8 @@ fn estimate_value_with_support(
     if den <= 0.0 {
         return None;
     }
-    let nearest = near[0].0;
-    let mean = near.iter().map(|(d, _)| *d).sum::<f64>() / near.len() as f64;
+    let nearest = near[0].1;
+    let mean = near.iter().map(|(_, d, _)| *d).sum::<f64>() / near.len() as f64;
     Some((
         num / den,
         NeighborStats {
@@ -713,6 +947,7 @@ pub async fn run_block_grade_model(
     let mut best_terrain: Option<SurfaceGrid> = None;
     let mut project_epsg: Option<i32> = None;
     let mut input_domain_polygon: Option<DomainPolygon> = None;
+    let mut input_domain_mesh: Option<TriangleMesh> = None;
 
     for ar in &job.input_artifact_refs {
         let root = super::runtime::read_json_artifact(ctx, &ar.key).await?;
@@ -734,6 +969,9 @@ pub async fn run_block_grade_model(
         }
         if input_domain_polygon.is_none() {
             input_domain_polygon = parse_domain_polygon(&root);
+        }
+        if input_domain_mesh.is_none() {
+            input_domain_mesh = parse_triangle_mesh(&root);
         }
         for row in collect_rows(&root) {
             if let Some(obj) = row.as_object() {
@@ -853,6 +1091,24 @@ pub async fn run_block_grade_model(
             "domain_mode=input_domain_mask but no input polygon/AOI mask was found".into(),
         ));
     }
+    if params
+        .domain_constraint_mode
+        .eq_ignore_ascii_case("mesh_containment")
+        && input_domain_mesh.is_none()
+    {
+        return Err(NodeError::InvalidConfig(
+            "domain_constraint_mode=mesh_containment but no triangle mesh was found upstream"
+                .into(),
+        ));
+    }
+    if params
+        .domain_constraint_mode
+        .eq_ignore_ascii_case("mesh_clipping_planes")
+    {
+        return Err(NodeError::InvalidConfig(
+            "domain_constraint_mode=mesh_clipping_planes is reserved for next step (mesh_containment is available now)".into(),
+        ));
+    }
 
     let block_diag_m = (dx * dx + dy * dy + dz * dz).sqrt();
 
@@ -893,6 +1149,16 @@ pub async fn run_block_grade_model(
                             if z > top_z {
                                 continue;
                             }
+                        }
+                    }
+                }
+                if params
+                    .domain_constraint_mode
+                    .eq_ignore_ascii_case("mesh_containment")
+                {
+                    if let Some(mesh) = input_domain_mesh.as_ref() {
+                        if !point_inside_mesh_vertical(x, y, z, mesh) {
+                            continue;
                         }
                     }
                 }
@@ -1174,8 +1440,12 @@ pub async fn run_block_grade_model(
         "key_parameters": {
             "estimation_method": params.estimation_method,
             "idw_power": params.idw_power,
-            "search_radius_m": params.search_radius_m,
-            "min_samples": params.min_samples,
+                "search_radius_m": params.search_radius_m,
+                "search_azimuth_deg": params.search_azimuth_deg,
+                "anisotropy_x": params.anisotropy_x,
+                "anisotropy_y": params.anisotropy_y,
+                "anisotropy_z": params.anisotropy_z,
+                "min_samples": params.min_samples,
             "max_samples": params.max_samples,
             "clip_mode": params.clip_mode,
             "sg_mode": params.sg_mode,
@@ -1197,48 +1467,79 @@ pub async fn run_block_grade_model(
             }
         }
     });
-    let summary_payload = json!({
-        "cutoff_grade": params.cutoff_grade,
-        "sg_constant": params.sg_constant,
-        "grade_unit": params.grade_unit,
-        "grade_unit_factor_to_fraction": grade_unit_factor,
-        "troy_oz_per_tonne": troy_oz_per_tonne,
-        "element_field": element_field,
-        "estimation_method": params.estimation_method,
-        "idw_power": params.idw_power,
-        "search_radius_m": params.search_radius_m,
-        "min_samples": params.min_samples,
-        "max_samples": params.max_samples,
-        "clip_mode": params.clip_mode,
-            "domain_mode": params.domain_mode,
-            "hull_buffer_m": params.hull_buffer_m,
-            "extrapolation_buffer_m": params.extrapolation_buffer_m,
-            "domain_constraint_mode": params.domain_constraint_mode,
-            "sg_mode": params.sg_mode,
-        "sg_field": params.sg_field,
-        "block_size_m": { "x": dx, "y": dy, "z": dz },
-        "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },
-        "estimated_blocks": render_blocks.len(),
-        "estimated_cells_before_filter": total,
-        "above_cutoff_blocks": above_cutoff_blocks,
-        "mean_grade": mean_grade,
-        "min_grade": min_grade,
-        "max_grade": max_grade,
-        "total_tonnage_t": total_tonnage,
-        "total_contained_unscaled": total_contained_unscaled,
-        "total_contained_metal_t": total_contained_metal_t,
-        "total_contained_metal_oz": total_contained_metal_oz,
-        "above_cutoff_tonnage_t": above_cutoff_tonnage,
-        "above_cutoff_contained_unscaled": above_cutoff_contained_unscaled,
-        "above_cutoff_contained_metal_t": above_cutoff_contained_metal_t,
-        "above_cutoff_contained_metal_oz": above_cutoff_contained_metal_oz,
-        "mean_n_samples_used": mean_n_samples_used,
-        "mean_nearest_sample_distance_m": mean_nearest_sample_distance_m,
-        "mean_sample_distance_m": mean_sample_distance_m,
-        "confidence_high_blocks": conf_high,
-        "confidence_medium_blocks": conf_medium,
-        "confidence_low_blocks": conf_low
-    });
+    let mut summary_map = Map::<String, Value>::new();
+    summary_map.insert("cutoff_grade".into(), json!(params.cutoff_grade));
+    summary_map.insert("sg_constant".into(), json!(params.sg_constant));
+    summary_map.insert("grade_unit".into(), json!(params.grade_unit));
+    summary_map.insert(
+        "grade_unit_factor_to_fraction".into(),
+        json!(grade_unit_factor),
+    );
+    summary_map.insert("troy_oz_per_tonne".into(), json!(troy_oz_per_tonne));
+    summary_map.insert("element_field".into(), json!(element_field));
+    summary_map.insert("estimation_method".into(), json!(params.estimation_method));
+    summary_map.insert("idw_power".into(), json!(params.idw_power));
+    summary_map.insert("search_radius_m".into(), json!(params.search_radius_m));
+    summary_map.insert("search_azimuth_deg".into(), json!(params.search_azimuth_deg));
+    summary_map.insert("anisotropy_x".into(), json!(params.anisotropy_x));
+    summary_map.insert("anisotropy_y".into(), json!(params.anisotropy_y));
+    summary_map.insert("anisotropy_z".into(), json!(params.anisotropy_z));
+    summary_map.insert("min_samples".into(), json!(params.min_samples));
+    summary_map.insert("max_samples".into(), json!(params.max_samples));
+    summary_map.insert("clip_mode".into(), json!(params.clip_mode));
+    summary_map.insert("domain_mode".into(), json!(params.domain_mode));
+    summary_map.insert("hull_buffer_m".into(), json!(params.hull_buffer_m));
+    summary_map.insert(
+        "extrapolation_buffer_m".into(),
+        json!(params.extrapolation_buffer_m),
+    );
+    summary_map.insert(
+        "domain_constraint_mode".into(),
+        json!(params.domain_constraint_mode),
+    );
+    summary_map.insert("sg_mode".into(), json!(params.sg_mode));
+    summary_map.insert("sg_field".into(), json!(params.sg_field));
+    summary_map.insert("block_size_m".into(), json!({ "x": dx, "y": dy, "z": dz }));
+    summary_map.insert(
+        "grid_shape".into(),
+        json!({ "nx": grid.0, "ny": grid.1, "nz": grid.2 }),
+    );
+    summary_map.insert("estimated_blocks".into(), json!(render_blocks.len()));
+    summary_map.insert("estimated_cells_before_filter".into(), json!(total));
+    summary_map.insert("above_cutoff_blocks".into(), json!(above_cutoff_blocks));
+    summary_map.insert("mean_grade".into(), json!(mean_grade));
+    summary_map.insert("min_grade".into(), json!(min_grade));
+    summary_map.insert("max_grade".into(), json!(max_grade));
+    summary_map.insert("total_tonnage_t".into(), json!(total_tonnage));
+    summary_map.insert(
+        "total_contained_unscaled".into(),
+        json!(total_contained_unscaled),
+    );
+    summary_map.insert("total_contained_metal_t".into(), json!(total_contained_metal_t));
+    summary_map.insert("total_contained_metal_oz".into(), json!(total_contained_metal_oz));
+    summary_map.insert("above_cutoff_tonnage_t".into(), json!(above_cutoff_tonnage));
+    summary_map.insert(
+        "above_cutoff_contained_unscaled".into(),
+        json!(above_cutoff_contained_unscaled),
+    );
+    summary_map.insert(
+        "above_cutoff_contained_metal_t".into(),
+        json!(above_cutoff_contained_metal_t),
+    );
+    summary_map.insert(
+        "above_cutoff_contained_metal_oz".into(),
+        json!(above_cutoff_contained_metal_oz),
+    );
+    summary_map.insert("mean_n_samples_used".into(), json!(mean_n_samples_used));
+    summary_map.insert(
+        "mean_nearest_sample_distance_m".into(),
+        json!(mean_nearest_sample_distance_m),
+    );
+    summary_map.insert("mean_sample_distance_m".into(), json!(mean_sample_distance_m));
+    summary_map.insert("confidence_high_blocks".into(), json!(conf_high));
+    summary_map.insert("confidence_medium_blocks".into(), json!(conf_medium));
+    summary_map.insert("confidence_low_blocks".into(), json!(conf_low));
+    let summary_payload = Value::Object(summary_map);
     let variogram_payload_inner = json!({
         "bins": variogram_bins,
         "lags": params.variogram_lags,

@@ -437,6 +437,21 @@ export function NodeInspector({
   const [bgSearchRadiusM, setBgSearchRadiusM] = useState<string>(
     () => (typeof initialUi.search_radius_m === "number" ? String(initialUi.search_radius_m) : "0")
   );
+  const [bgSearchAzimuthDeg, setBgSearchAzimuthDeg] = useState<string>(
+    () =>
+      typeof initialUi.search_azimuth_deg === "number"
+        ? String(initialUi.search_azimuth_deg)
+        : "0"
+  );
+  const [bgAnisotropyX, setBgAnisotropyX] = useState<string>(
+    () => (typeof initialUi.anisotropy_x === "number" ? String(initialUi.anisotropy_x) : "1")
+  );
+  const [bgAnisotropyY, setBgAnisotropyY] = useState<string>(
+    () => (typeof initialUi.anisotropy_y === "number" ? String(initialUi.anisotropy_y) : "1")
+  );
+  const [bgAnisotropyZ, setBgAnisotropyZ] = useState<string>(
+    () => (typeof initialUi.anisotropy_z === "number" ? String(initialUi.anisotropy_z) : "1")
+  );
   const [bgMinSamples, setBgMinSamples] = useState<string>(
     () => (typeof initialUi.min_samples === "number" ? String(initialUi.min_samples) : "3")
   );
@@ -745,6 +760,12 @@ export function NodeInspector({
     setBgEstimationMethod(typeof u.estimation_method === "string" ? u.estimation_method : "idw");
     setBgIdwPower(typeof u.idw_power === "number" ? String(u.idw_power) : "2");
     setBgSearchRadiusM(typeof u.search_radius_m === "number" ? String(u.search_radius_m) : "0");
+    setBgSearchAzimuthDeg(
+      typeof u.search_azimuth_deg === "number" ? String(u.search_azimuth_deg) : "0"
+    );
+    setBgAnisotropyX(typeof u.anisotropy_x === "number" ? String(u.anisotropy_x) : "1");
+    setBgAnisotropyY(typeof u.anisotropy_y === "number" ? String(u.anisotropy_y) : "1");
+    setBgAnisotropyZ(typeof u.anisotropy_z === "number" ? String(u.anisotropy_z) : "1");
     setBgMinSamples(typeof u.min_samples === "number" ? String(u.min_samples) : "3");
     setBgMaxSamples(typeof u.max_samples === "number" ? String(u.max_samples) : "24");
     setBgGradeMin(typeof u.grade_min === "number" ? String(u.grade_min) : "");
@@ -1177,6 +1198,10 @@ export function NodeInspector({
       ui.estimation_method = bgEstimationMethod === "nearest" ? "nearest" : "idw";
       ui.idw_power = Math.max(1, Math.min(4, n(bgIdwPower, 2)));
       ui.search_radius_m = Math.max(0, n(bgSearchRadiusM, 0));
+      ui.search_azimuth_deg = n(bgSearchAzimuthDeg, 0);
+      ui.anisotropy_x = Math.max(0.05, n(bgAnisotropyX, 1));
+      ui.anisotropy_y = Math.max(0.05, n(bgAnisotropyY, 1));
+      ui.anisotropy_z = Math.max(0.05, n(bgAnisotropyZ, 1));
       ui.min_samples = Math.max(1, Math.trunc(n(bgMinSamples, 3)));
       ui.max_samples = Math.max(
         Math.trunc(n(bgMinSamples, 3)),
@@ -1327,6 +1352,10 @@ export function NodeInspector({
     bgEstimationMethod,
     bgIdwPower,
     bgSearchRadiusM,
+    bgSearchAzimuthDeg,
+    bgAnisotropyX,
+    bgAnisotropyY,
+    bgAnisotropyZ,
     bgMinSamples,
     bgMaxSamples,
     bgGradeMin,
@@ -2920,6 +2949,17 @@ export function NodeInspector({
                   />
                 </label>
                 <label style={lab}>
+                  <span style={labSpan}>Search azimuth (deg)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgSearchAzimuthDeg}
+                    onChange={(e) => setBgSearchAzimuthDeg(e.target.value)}
+                    placeholder="0"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
                   <span style={labSpan}>Max blocks</span>
                   <input
                     type="text"
@@ -2927,6 +2967,41 @@ export function NodeInspector({
                     value={bgMaxBlocks}
                     onChange={(e) => setBgMaxBlocks(e.target.value)}
                     placeholder="45000"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Anisotropy X</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgAnisotropyX}
+                    onChange={(e) => setBgAnisotropyX(e.target.value)}
+                    placeholder="1.0"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Anisotropy Y</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgAnisotropyY}
+                    onChange={(e) => setBgAnisotropyY(e.target.value)}
+                    placeholder="1.0"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Anisotropy Z</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgAnisotropyZ}
+                    onChange={(e) => setBgAnisotropyZ(e.target.value)}
+                    placeholder="1.0"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>
