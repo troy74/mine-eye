@@ -59,20 +59,47 @@ pub async fn run_artifact_ingest(
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            job.input_payload
+                .as_ref()
+                .and_then(|p| p.get("csv_artifact_key"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        })
         .ok_or_else(|| NodeError::InvalidConfig("artifact_ingest missing csv_artifact_key".into()))?;
 
     let source_hash = ui
         .get("csv_artifact_hash")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| {
+            job.input_payload
+                .as_ref()
+                .and_then(|p| p.get("csv_artifact_hash"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        });
     let filename = ui
         .get("csv_filename")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            job.input_payload
+                .as_ref()
+                .and_then(|p| p.get("csv_filename"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("uploaded_data")
         .to_string();
     let media_type = ui
         .get("csv_media_type")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            job.input_payload
+                .as_ref()
+                .and_then(|p| p.get("csv_media_type"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("application/octet-stream")
         .to_string();
 
@@ -81,6 +108,12 @@ pub async fn run_artifact_ingest(
     let format = ui
         .get("csv_format")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            job.input_payload
+                .as_ref()
+                .and_then(|p| p.get("csv_format"))
+                .and_then(|v| v.as_str())
+        })
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| detect_format(&filename, &media_type, &sample_text));
@@ -88,6 +121,12 @@ pub async fn run_artifact_ingest(
     let delim = ui
         .get("csv_delimiter")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            job.input_payload
+                .as_ref()
+                .and_then(|p| p.get("csv_delimiter"))
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or(",");
     let delimiter = infer_delimiter(delim, &format);
 

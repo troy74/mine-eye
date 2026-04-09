@@ -1741,6 +1741,16 @@ export function NodeInspector({
           };
         }
       }
+      if (kind === "artifact_ingest" && csvArtifactKey.trim().length > 0) {
+        inputPayloads[node.id] = {
+          csv_artifact_key: csvArtifactKey,
+          csv_artifact_hash: csvArtifactHash || undefined,
+          csv_filename: csvName || undefined,
+          csv_media_type: csvMediaType || undefined,
+          csv_format: csvFormat || undefined,
+          csv_delimiter: csvDelimiter || ",",
+        };
+      }
       const res = await runGraph(graphId, {
         dirtyRoots: [node.id],
         includeManual: true,
@@ -1761,7 +1771,7 @@ export function NodeInspector({
     } finally {
       setRunBusy(false);
     }
-  }, [csvCapable, headers, csvRows, kind, crsMode, projectEpsg, sourceCustomEpsg, graphId, node.id, onPipelineQueued]);
+  }, [csvCapable, headers, csvRows, kind, crsMode, projectEpsg, sourceCustomEpsg, graphId, node.id, onPipelineQueued, csvArtifactKey, csvArtifactHash, csvName, csvMediaType, csvFormat, csvDelimiter]);
 
   const selectCol = (field: string, label: string) => (
     <label style={lab}>
