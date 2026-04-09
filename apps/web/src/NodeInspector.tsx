@@ -497,6 +497,24 @@ export function NodeInspector({
         ? String(initialUi.extrapolation_buffer_m)
         : "20"
   );
+  const [bgCompositeLengthM, setBgCompositeLengthM] = useState<string>(
+    () =>
+      typeof initialUi.composite_length_m === "number"
+        ? String(initialUi.composite_length_m)
+        : "0"
+  );
+  const [bgTopCutMode, setBgTopCutMode] = useState<string>(
+    () => (typeof initialUi.top_cut_mode === "string" ? initialUi.top_cut_mode : "none")
+  );
+  const [bgTopCutValue, setBgTopCutValue] = useState<string>(
+    () => (typeof initialUi.top_cut_value === "number" ? String(initialUi.top_cut_value) : "")
+  );
+  const [bgTopCutPercentile, setBgTopCutPercentile] = useState<string>(
+    () =>
+      typeof initialUi.top_cut_percentile === "number"
+        ? String(initialUi.top_cut_percentile)
+        : "99.5"
+  );
   const [bgSensitivityMin, setBgSensitivityMin] = useState<string>(
     () =>
       typeof initialUi.sensitivity_min_cutoff === "number"
@@ -783,6 +801,14 @@ export function NodeInspector({
     setBgHullBufferM(typeof u.hull_buffer_m === "number" ? String(u.hull_buffer_m) : "0");
     setBgExtrapolationBufferM(
       typeof u.extrapolation_buffer_m === "number" ? String(u.extrapolation_buffer_m) : "20"
+    );
+    setBgCompositeLengthM(
+      typeof u.composite_length_m === "number" ? String(u.composite_length_m) : "0"
+    );
+    setBgTopCutMode(typeof u.top_cut_mode === "string" ? u.top_cut_mode : "none");
+    setBgTopCutValue(typeof u.top_cut_value === "number" ? String(u.top_cut_value) : "");
+    setBgTopCutPercentile(
+      typeof u.top_cut_percentile === "number" ? String(u.top_cut_percentile) : "99.5"
     );
     setBgSensitivityMin(
       typeof u.sensitivity_min_cutoff === "number" ? String(u.sensitivity_min_cutoff) : ""
@@ -1217,6 +1243,10 @@ export function NodeInspector({
       ui.domain_constraint_mode = bgDomainConstraintMode;
       ui.hull_buffer_m = Math.max(0, n(bgHullBufferM, 0));
       ui.extrapolation_buffer_m = Math.max(0, n(bgExtrapolationBufferM, 20));
+      ui.composite_length_m = Math.max(0, n(bgCompositeLengthM, 0));
+      ui.top_cut_mode = bgTopCutMode;
+      ui.top_cut_value = bgTopCutValue.trim().length > 0 ? n(bgTopCutValue, 0) : undefined;
+      ui.top_cut_percentile = Math.max(50, Math.min(100, n(bgTopCutPercentile, 99.5)));
       ui.sensitivity_min_cutoff =
         bgSensitivityMin.trim().length > 0 ? n(bgSensitivityMin, 0) : undefined;
       ui.sensitivity_max_cutoff =
@@ -1368,6 +1398,10 @@ export function NodeInspector({
     bgDomainConstraintMode,
     bgHullBufferM,
     bgExtrapolationBufferM,
+    bgCompositeLengthM,
+    bgTopCutMode,
+    bgTopCutValue,
+    bgTopCutPercentile,
     bgSensitivityMin,
     bgSensitivityMax,
     bgSensitivitySteps,
@@ -3081,6 +3115,51 @@ export function NodeInspector({
                     value={bgExtrapolationBufferM}
                     onChange={(e) => setBgExtrapolationBufferM(e.target.value)}
                     placeholder="20"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Composite length (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgCompositeLengthM}
+                    onChange={(e) => setBgCompositeLengthM(e.target.value)}
+                    placeholder="0 (off)"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Top-cut mode</span>
+                  <select value={bgTopCutMode} onChange={(e) => setBgTopCutMode(e.target.value)} style={sel}>
+                    <option value="none">None</option>
+                    <option value="hard_cap">Hard cap (value)</option>
+                    <option value="percentile">Percentile cap</option>
+                  </select>
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Top-cut value</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgTopCutValue}
+                    onChange={(e) => setBgTopCutValue(e.target.value)}
+                    placeholder="used for hard cap"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Top-cut percentile</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgTopCutPercentile}
+                    onChange={(e) => setBgTopCutPercentile(e.target.value)}
+                    placeholder="99.5"
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>

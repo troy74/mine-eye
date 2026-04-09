@@ -15,6 +15,20 @@ struct GradeSample {
 }
 
 #[derive(Clone)]
+struct SampleRecord {
+    x: f64,
+    y: f64,
+    z: f64,
+    value: f64,
+    hole_id: Option<String>,
+    from_m: Option<f64>,
+    to_m: Option<f64>,
+    depth_m: Option<f64>,
+    support_m: f64,
+    sg_value: Option<f64>,
+}
+
+#[derive(Clone)]
 struct SurfaceGrid {
     nx: usize,
     ny: usize,
@@ -80,6 +94,10 @@ struct ModelParams {
     variogram_lags: usize,
     variogram_max_pairs: usize,
     variogram_max_range_m: f64,
+    composite_length_m: f64,
+    top_cut_mode: String,
+    top_cut_value: Option<f64>,
+    top_cut_percentile: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -315,6 +333,10 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         variogram_lags: parse_usize("/node_ui/variogram_lags", 12).clamp(6, 40),
         variogram_max_pairs: parse_usize("/node_ui/variogram_max_pairs", 300000).clamp(2000, 3_000_000),
         variogram_max_range_m: parse_f64("/node_ui/variogram_max_range_m", 0.0).max(0.0),
+        composite_length_m: parse_f64("/node_ui/composite_length_m", 0.0).max(0.0),
+        top_cut_mode: parse_str("/node_ui/top_cut_mode", "none"),
+        top_cut_value: ui("/node_ui/top_cut_value").and_then(parse_numeric_value),
+        top_cut_percentile: parse_f64("/node_ui/top_cut_percentile", 99.5).clamp(50.0, 100.0),
     }
 }
 
@@ -924,6 +946,168 @@ fn compute_bins(values: &[f64]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn percentile_value(values: &[f64], pct: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p = pct.clamp(0.0, 100.0) / 100.0;
+    let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+    sorted.get(idx).copied()
+}
+
+fn composite_records(records: &[SampleRecord], composite_length_m: f64) -> Vec<SampleRecord> {
+    if composite_length_m <= 0.0 || records.len() < 2 {
+        return records.to_vec();
+    }
+    let mut groups: BTreeMap<String, Vec<&SampleRecord>> = BTreeMap::new();
+    for (i, r) in records.iter().enumerate() {
+        let key = r
+            .hole_id
+            .as_ref()
+            .map(|h| format!("hole:{h}"))
+            .unwrap_or_else(|| format!("row:{i}"));
+        groups.entry(key).or_default().push(r);
+    }
+
+    let mut out: Vec<SampleRecord> = Vec::new();
+    for (_key, mut g) in groups {
+        g.sort_by(|a, b| {
+            let da = a
+                .from_m
+                .or(a.depth_m)
+                .unwrap_or(f64::INFINITY);
+            let db = b
+                .from_m
+                .or(b.depth_m)
+                .unwrap_or(f64::INFINITY);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if g.len() == 1 {
+            out.push(g[0].clone());
+            continue;
+        }
+
+        let mut acc_len = 0.0;
+        let mut acc_x = 0.0;
+        let mut acc_y = 0.0;
+        let mut acc_z = 0.0;
+        let mut acc_g = 0.0;
+        let mut acc_sg = 0.0;
+        let mut acc_sg_w = 0.0;
+        let mut from_start: Option<f64> = None;
+        let mut depth_start: Option<f64> = None;
+        let mut to_last: Option<f64> = None;
+        let mut depth_last: Option<f64> = None;
+        let hole_id = g[0].hole_id.clone();
+
+        let flush = |out: &mut Vec<SampleRecord>,
+                     acc_len: &mut f64,
+                     acc_x: &mut f64,
+                     acc_y: &mut f64,
+                     acc_z: &mut f64,
+                     acc_g: &mut f64,
+                     acc_sg: &mut f64,
+                     acc_sg_w: &mut f64,
+                     from_start: &mut Option<f64>,
+                     depth_start: &mut Option<f64>,
+                     to_last: &mut Option<f64>,
+                     depth_last: &mut Option<f64>,
+                     hole_id: &Option<String>| {
+            if *acc_len <= 0.0 {
+                return;
+            }
+            let sg_value = if *acc_sg_w > 0.0 {
+                Some(*acc_sg / *acc_sg_w)
+            } else {
+                None
+            };
+            out.push(SampleRecord {
+                x: *acc_x / *acc_len,
+                y: *acc_y / *acc_len,
+                z: *acc_z / *acc_len,
+                value: *acc_g / *acc_len,
+                hole_id: hole_id.clone(),
+                from_m: *from_start,
+                to_m: *to_last,
+                depth_m: match (*depth_start, *depth_last) {
+                    (Some(a), Some(b)) => Some(0.5 * (a + b)),
+                    (Some(a), None) => Some(a),
+                    _ => None,
+                },
+                support_m: *acc_len,
+                sg_value,
+            });
+            *acc_len = 0.0;
+            *acc_x = 0.0;
+            *acc_y = 0.0;
+            *acc_z = 0.0;
+            *acc_g = 0.0;
+            *acc_sg = 0.0;
+            *acc_sg_w = 0.0;
+            *from_start = None;
+            *depth_start = None;
+            *to_last = None;
+            *depth_last = None;
+        };
+
+        for r in g {
+            let w = r.support_m.max(1e-6);
+            if from_start.is_none() {
+                from_start = r.from_m;
+            }
+            if depth_start.is_none() {
+                depth_start = r.depth_m;
+            }
+            to_last = r.to_m.or(r.depth_m);
+            depth_last = r.depth_m;
+            acc_len += w;
+            acc_x += r.x * w;
+            acc_y += r.y * w;
+            acc_z += r.z * w;
+            acc_g += r.value * w;
+            if let Some(sgv) = r.sg_value {
+                acc_sg += sgv * w;
+                acc_sg_w += w;
+            }
+            if acc_len >= composite_length_m {
+                flush(
+                    &mut out,
+                    &mut acc_len,
+                    &mut acc_x,
+                    &mut acc_y,
+                    &mut acc_z,
+                    &mut acc_g,
+                    &mut acc_sg,
+                    &mut acc_sg_w,
+                    &mut from_start,
+                    &mut depth_start,
+                    &mut to_last,
+                    &mut depth_last,
+                    &hole_id,
+                );
+            }
+        }
+        flush(
+            &mut out,
+            &mut acc_len,
+            &mut acc_x,
+            &mut acc_y,
+            &mut acc_z,
+            &mut acc_g,
+            &mut acc_sg,
+            &mut acc_sg_w,
+            &mut from_start,
+            &mut depth_start,
+            &mut to_last,
+            &mut depth_last,
+            &hole_id,
+        );
+    }
+    out
+}
+
 fn grade_unit_factor_to_fraction(unit: &str) -> f64 {
     match unit.to_ascii_lowercase().as_str() {
         "percent" | "%" => 1e-2,
@@ -995,8 +1179,7 @@ pub async fn run_block_grade_model(
         ));
     };
 
-    let mut samples: Vec<GradeSample> = Vec::new();
-    let mut sg_samples: Vec<GradeSample> = Vec::new();
+    let mut sample_records: Vec<SampleRecord> = Vec::new();
     for row in all_rows {
         let Some(obj) = row.as_object() else {
             continue;
@@ -1018,29 +1201,99 @@ pub async fn run_block_grade_model(
             grade_value = lookup_numeric_case_insensitive(obj, &element_field);
         }
         if let Some(value) = grade_value {
-            samples.push(GradeSample { x, y, z, value });
-            if params.sg_mode.eq_ignore_ascii_case("field") {
+            let hole_id = obj
+                .get("hole_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let from_m = obj.get("from_m").and_then(parse_numeric_value);
+            let to_m = obj.get("to_m").and_then(parse_numeric_value);
+            let depth_m = obj.get("depth_m").and_then(parse_numeric_value);
+            let support_m = match (from_m, to_m) {
+                (Some(f), Some(t)) if t > f => (t - f).max(1e-6),
+                _ => 1.0,
+            };
+            let sg_value = if params.sg_mode.eq_ignore_ascii_case("field") {
                 if let Some(sg_field) = params.sg_field.as_ref() {
-                    let mut sg_value = None;
+                    let mut sg = None;
                     if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
-                        sg_value = lookup_numeric_case_insensitive(attrs, sg_field);
+                        sg = lookup_numeric_case_insensitive(attrs, sg_field);
                     }
-                    if sg_value.is_none() {
-                        sg_value = lookup_numeric_case_insensitive(obj, sg_field);
+                    if sg.is_none() {
+                        sg = lookup_numeric_case_insensitive(obj, sg_field);
                     }
-                    if let Some(sgv) = sg_value.filter(|v| v.is_finite() && *v > 0.1 && *v < 12.0) {
-                        sg_samples.push(GradeSample { x, y, z, value: sgv });
-                    }
+                    sg.filter(|v| v.is_finite() && *v > 0.1 && *v < 12.0)
+                } else {
+                    None
                 }
-            }
+            } else {
+                None
+            };
+            sample_records.push(SampleRecord {
+                x,
+                y,
+                z,
+                value,
+                hole_id,
+                from_m,
+                to_m,
+                depth_m,
+                support_m,
+                sg_value,
+            });
         }
     }
 
-    if samples.is_empty() {
+    if sample_records.is_empty() {
         return Err(NodeError::InvalidConfig(format!(
             "block_grade_model found no usable values for element_field `{}`",
             element_field
         )));
+    }
+
+    let input_sample_count = sample_records.len();
+    let sample_records = composite_records(&sample_records, params.composite_length_m);
+    let composited_sample_count = sample_records.len();
+
+    let mut cap_threshold_applied: Option<f64> = None;
+    if !params.top_cut_mode.eq_ignore_ascii_case("none") {
+        if params.top_cut_mode.eq_ignore_ascii_case("hard_cap") {
+            if let Some(v) = params.top_cut_value.filter(|x| x.is_finite()) {
+                cap_threshold_applied = Some(v);
+            }
+        } else if params.top_cut_mode.eq_ignore_ascii_case("percentile") {
+            let values = sample_records.iter().map(|r| r.value).collect::<Vec<_>>();
+            cap_threshold_applied = percentile_value(&values, params.top_cut_percentile);
+        }
+    }
+
+    let mut samples: Vec<GradeSample> = Vec::with_capacity(sample_records.len());
+    let mut sg_samples: Vec<GradeSample> = Vec::new();
+    let mut capped_sample_count = 0usize;
+    for r in sample_records {
+        let mut v = r.value;
+        if let Some(cap) = cap_threshold_applied {
+            if v > cap {
+                v = cap;
+                capped_sample_count += 1;
+            }
+        }
+        samples.push(GradeSample {
+            x: r.x,
+            y: r.y,
+            z: r.z,
+            value: v,
+        });
+        if params.sg_mode.eq_ignore_ascii_case("field") {
+            if let Some(sgv) = r.sg_value {
+                sg_samples.push(GradeSample {
+                    x: r.x,
+                    y: r.y,
+                    z: r.z,
+                    value: sgv,
+                });
+            }
+        }
     }
 
     let mut extent = infer_extent(&samples, best_terrain.as_ref())
@@ -1450,13 +1703,21 @@ pub async fn run_block_grade_model(
             "clip_mode": params.clip_mode,
             "sg_mode": params.sg_mode,
             "sg_field": params.sg_field,
-            "sg_constant": params.sg_constant,
+                "sg_constant": params.sg_constant,
                 "domain_mode": params.domain_mode,
                 "hull_buffer_m": params.hull_buffer_m,
                 "extrapolation_buffer_m": params.extrapolation_buffer_m,
-                "domain_constraint_mode": params.domain_constraint_mode
+                "domain_constraint_mode": params.domain_constraint_mode,
+                "composite_length_m": params.composite_length_m,
+                "top_cut_mode": params.top_cut_mode,
+                "top_cut_value": params.top_cut_value,
+                "top_cut_percentile": params.top_cut_percentile,
+                "top_cut_applied": cap_threshold_applied
             },
         "support_diagnostics": {
+            "input_sample_count": input_sample_count,
+            "composited_sample_count": composited_sample_count,
+            "capped_sample_count": capped_sample_count,
             "mean_n_samples_used": mean_n_samples_used,
             "mean_nearest_sample_distance_m": mean_nearest_sample_distance_m,
             "mean_sample_distance_m": mean_sample_distance_m,
@@ -1497,6 +1758,14 @@ pub async fn run_block_grade_model(
         "domain_constraint_mode".into(),
         json!(params.domain_constraint_mode),
     );
+    summary_map.insert("composite_length_m".into(), json!(params.composite_length_m));
+    summary_map.insert("top_cut_mode".into(), json!(params.top_cut_mode));
+    summary_map.insert("top_cut_value".into(), json!(params.top_cut_value));
+    summary_map.insert(
+        "top_cut_percentile".into(),
+        json!(params.top_cut_percentile),
+    );
+    summary_map.insert("top_cut_applied".into(), json!(cap_threshold_applied));
     summary_map.insert("sg_mode".into(), json!(params.sg_mode));
     summary_map.insert("sg_field".into(), json!(params.sg_field));
     summary_map.insert("block_size_m".into(), json!({ "x": dx, "y": dy, "z": dz }));
@@ -1531,6 +1800,9 @@ pub async fn run_block_grade_model(
         json!(above_cutoff_contained_metal_oz),
     );
     summary_map.insert("mean_n_samples_used".into(), json!(mean_n_samples_used));
+    summary_map.insert("input_sample_count".into(), json!(input_sample_count));
+    summary_map.insert("composited_sample_count".into(), json!(composited_sample_count));
+    summary_map.insert("capped_sample_count".into(), json!(capped_sample_count));
     summary_map.insert(
         "mean_nearest_sample_distance_m".into(),
         json!(mean_nearest_sample_distance_m),
