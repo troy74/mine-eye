@@ -1,8 +1,9 @@
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use mine_eye_nodes::{ExecutionContext, NodeExecutor, NodeExecutorRegistry};
+use mine_eye_nodes::{ExecutionContext, NodeExecutor, NodeExecutorRegistry, ProgressUpdate};
 use mine_eye_store::{JobQueue, PgJobQueue, PgStore};
 use mine_eye_types::{CacheState, ExecutionState, JobStatus};
 use sqlx::postgres::PgPoolOptions;
@@ -29,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         .connect(&database_url)
         .await?;
     let store = PgStore::new(pool.clone());
-    let jobs = PgJobQueue::new(pool);
+    let jobs = Arc::new(PgJobQueue::new(pool));
     let executor = NodeExecutorRegistry::new();
     let artifact_path = PathBuf::from(&artifact_root);
 
@@ -38,11 +39,48 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("worker started, polling job_queue");
 
     loop {
-        let ctx = ExecutionContext {
-            artifact_root: artifact_path.as_path(),
-        };
         match jobs.claim_next().await {
             Ok(Some((row_id, mut envelope))) => {
+                let jobs_for_progress = jobs.clone();
+                let row_id_for_progress = row_id;
+                let (hb_tx, mut hb_rx) = tokio::sync::oneshot::channel::<()>();
+                let hb_jobs = jobs.clone();
+                tokio::spawn(async move {
+                    let started = tokio::time::Instant::now();
+                    loop {
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                                let _ = hb_jobs.update_progress(
+                                    row_id_for_progress,
+                                    "running",
+                                    None,
+                                    Some("Worker heartbeat"),
+                                    Some(serde_json::json!({"elapsed_s": started.elapsed().as_secs()})),
+                                ).await;
+                            }
+                            _ = &mut hb_rx => {
+                                break;
+                            }
+                        }
+                    }
+                });
+                let ctx = ExecutionContext {
+                    artifact_root: artifact_path.as_path(),
+                    progress: Some(Arc::new(move |u: ProgressUpdate| {
+                        let jobs = jobs_for_progress.clone();
+                        tokio::spawn(async move {
+                            let _ = jobs
+                                .update_progress(
+                                    row_id_for_progress,
+                                    &u.stage,
+                                    u.percent,
+                                    u.message.as_deref(),
+                                    u.stats,
+                                )
+                                .await;
+                        });
+                    })),
+                };
                 tracing::info!(
                     job_id = %envelope.job_id,
                     run_id = %envelope.run_id,
@@ -72,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 let result = executor.execute(&ctx, &envelope).await;
+                let _ = hb_tx.send(());
 
                 match result {
                     Ok(r) => {

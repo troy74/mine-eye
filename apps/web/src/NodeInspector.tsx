@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { parseCsv } from "./csvParse";
 import type { ApiNode, ArtifactEntry, ChartTemplate } from "./graphApi";
-import { api, listChartTemplates, patchNodeParams, runGraph, uploadTabularArtifact } from "./graphApi";
+import { api, getNodeJobRuntime, listChartTemplates, patchNodeParams, runGraph, uploadTabularArtifact } from "./graphApi";
 import { CrsPicker } from "./CrsPicker";
 import { extractHeatmapMeasureCandidatesFromJson } from "./spatialExtract";
 import { NodeOutputPanel } from "./NodeOutputPanel";
@@ -610,6 +610,12 @@ export function NodeInspector({
         ? String(initialUi.resample_spacing_m)
         : "0"
   );
+  const [mmDecimatePct, setMmDecimatePct] = useState<string>(
+    () =>
+      typeof initialUi.decimate_pct === "number"
+        ? String(initialUi.decimate_pct)
+        : "100"
+  );
   const [mmLlmEnabled, setMmLlmEnabled] = useState<boolean>(
     () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : false)
   );
@@ -658,6 +664,7 @@ export function NodeInspector({
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg] = useState<string | null>(null);
   const [runErr, setRunErr] = useState<string | null>(null);
+  const [jobRuntimeText, setJobRuntimeText] = useState<string | null>(null);
 
   useEffect(() => {
     const u = getUiParams(node);
@@ -904,6 +911,7 @@ export function NodeInspector({
     setMmResampleSpacingM(
       typeof u.resample_spacing_m === "number" ? String(u.resample_spacing_m) : "0"
     );
+    setMmDecimatePct(typeof u.decimate_pct === "number" ? String(u.decimate_pct) : "100");
     setMmLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : false);
     setMdTitle(typeof u.title === "string" ? u.title : "Semantic JSON Report");
     setMdLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : true);
@@ -945,7 +953,56 @@ export function NodeInspector({
     setPolicyErr(null);
     setRunMsg(null);
     setRunErr(null);
+    setJobRuntimeText(null);
   }, [node.id]);
+
+  useEffect(() => {
+    let stop = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      if (stop) return;
+      try {
+        const rt = await getNodeJobRuntime(graphId, node.id);
+        if (stop) return;
+        if (!rt) {
+          setJobRuntimeText(null);
+        } else {
+          const p = rt.progress;
+          const pct =
+            typeof p?.percent === "number" && Number.isFinite(p.percent)
+              ? `${Math.round(p.percent * 100)}%`
+              : "";
+          const stage = p?.stage || rt.status;
+          const msg = p?.message || "";
+          const elapsed =
+            rt.started_at && !rt.finished_at
+              ? Math.max(
+                  0,
+                  Math.round(
+                    (Date.now() - new Date(rt.started_at).getTime()) / 1000
+                  )
+                )
+              : 0;
+          setJobRuntimeText(
+            `${stage}${pct ? ` · ${pct}` : ""}${msg ? ` · ${msg}` : ""}${
+              elapsed > 0 ? ` · ${elapsed}s` : ""
+            }`
+          );
+        }
+      } catch {
+        // ignore polling failures
+      } finally {
+        if (!stop) {
+          timer = window.setTimeout(poll, 2000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      stop = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [graphId, node.id, node.execution]);
 
   useEffect(() => {
     if (!isHeatmapNode) {
@@ -1409,6 +1466,7 @@ export function NodeInspector({
       ui.despike_sigma = Math.max(2, Math.min(20, n(mmDespikeSigma, 6)));
       ui.smooth_window_m = Math.max(0, n(mmSmoothWindowM, 0));
       ui.resample_spacing_m = Math.max(0, n(mmResampleSpacingM, 0));
+      ui.decimate_pct = Math.max(1, Math.min(100, n(mmDecimatePct, 100)));
       ui.llm_enabled = mmLlmEnabled;
     } else if (isMdViewerNode) {
       ui.title = mdTitle.trim() || "Semantic JSON Report";
@@ -1571,6 +1629,7 @@ export function NodeInspector({
     mmDespikeSigma,
     mmSmoothWindowM,
     mmResampleSpacingM,
+    mmDecimatePct,
     mmLlmEnabled,
     isPlotChartNode,
     chartTemplateKey,
@@ -2180,6 +2239,11 @@ export function NodeInspector({
               {policyErr && <p style={{ color: "#f85149", marginTop: 8, fontSize: 11 }}>{policyErr}</p>}
               {runMsg && <p style={{ color: "#3fb950", marginTop: 8, fontSize: 11 }}>{runMsg}</p>}
               {runErr && <p style={{ color: "#f85149", marginTop: 8, fontSize: 11 }}>{runErr}</p>}
+              {jobRuntimeText && (
+                <p style={{ color: "#9fb3c8", marginTop: 8, fontSize: 11 }}>
+                  Runtime: {jobRuntimeText}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -3621,6 +3685,17 @@ export function NodeInspector({
                   value={mmResampleSpacingM}
                   onChange={(e) => setMmResampleSpacingM(e.target.value)}
                   placeholder="0"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Preview decimation (%)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmDecimatePct}
+                  onChange={(e) => setMmDecimatePct(e.target.value)}
+                  placeholder="100"
                   style={{ ...sel, fontFamily: "inherit" }}
                 />
               </label>

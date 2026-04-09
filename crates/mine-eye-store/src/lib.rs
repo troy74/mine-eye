@@ -6,6 +6,6 @@ mod object_store;
 mod pg;
 
 pub use error::StoreError;
-pub use jobs::{JobQueue, PgJobQueue};
+pub use jobs::{JobQueue, JobRuntimeStatus, PgJobQueue};
 pub use object_store::{LocalFsObjectStore, ObjectStore};
 pub use pg::PgStore;

@@ -477,6 +477,10 @@ async fn main() -> anyhow::Result<()> {
             "/graphs/{graph_id}/nodes/{node_id}",
             patch(patch_node_params).delete(delete_node),
         )
+        .route(
+            "/graphs/{graph_id}/nodes/{node_id}/job-runtime",
+            get(get_node_job_runtime),
+        )
         .route("/graphs/{graph_id}/edges", post(add_edge))
         .route("/graphs/{graph_id}/edges/{edge_id}", delete(delete_edge))
         .route("/graphs/{graph_id}/run", post(run_graph))
@@ -2208,6 +2212,38 @@ async fn list_artifacts(
             });
         }
     }
+    Ok(Json(out))
+}
+
+#[derive(Serialize)]
+struct NodeJobRuntimeDto {
+    job_id: String,
+    status: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    started_at: Option<chrono::DateTime<chrono::Utc>>,
+    finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    progress: Option<serde_json::Value>,
+}
+
+async fn get_node_job_runtime(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((graph_id, node_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Option<NodeJobRuntimeDto>>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
+    let rt = s
+        .jobs
+        .latest_for_node(graph_id, node_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let out = rt.map(|r| NodeJobRuntimeDto {
+        job_id: r.job_id.to_string(),
+        status: r.status,
+        created_at: r.created_at,
+        started_at: r.started_at,
+        finished_at: r.finished_at,
+        progress: r.progress,
+    });
     Ok(Json(out))
 }
 

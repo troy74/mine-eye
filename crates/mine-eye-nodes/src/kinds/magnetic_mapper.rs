@@ -110,6 +110,7 @@ struct Params {
     despike_sigma: f64,
     smooth_window_m: f64,
     resample_spacing_m: f64,
+    decimate_pct: f64,
     llm_enabled: bool,
 }
 
@@ -167,6 +168,7 @@ fn parse_params(job: &JobEnvelope) -> Params {
         despike_sigma: parse_f64("/node_ui/despike_sigma", 6.0).clamp(2.0, 20.0),
         smooth_window_m: parse_f64("/node_ui/smooth_window_m", 0.0).max(0.0),
         resample_spacing_m: parse_f64("/node_ui/resample_spacing_m", 0.0).max(0.0),
+        decimate_pct: parse_f64("/node_ui/decimate_pct", 100.0).clamp(1.0, 100.0),
         llm_enabled: ui("/node_ui/llm_enabled")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
@@ -347,6 +349,12 @@ pub async fn run_magnetic_mapper(
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
     let params = parse_params(job);
+    ctx.report_progress(
+        "load_input",
+        Some(0.02),
+        Some("Loading magnetic rows".to_string()),
+        None,
+    );
     let payload_derived;
     let payload = if let Some(p) = job.input_payload.as_ref() {
         p
@@ -602,6 +610,12 @@ pub async fn run_magnetic_mapper(
             "magnetic_mapper retained no parseable points after coordinate normalization".into(),
         ));
     }
+    ctx.report_progress(
+        "normalize_points",
+        Some(0.16),
+        Some("Coordinate normalization complete".to_string()),
+        Some(json!({ "points": pts.len() })),
+    );
 
     let mut mvals = pts.iter().map(|p| p.m.abs()).collect::<Vec<_>>();
     let med_abs = median(&mut mvals).unwrap_or(0.0);
@@ -746,6 +760,40 @@ pub async fn run_magnetic_mapper(
             "magnetic_mapper produced too few points after QA/despike".into(),
         ));
     }
+    ctx.report_progress(
+        "qa_cleanup",
+        Some(0.32),
+        Some("QA / despike / resample complete".to_string()),
+        Some(json!({ "kept_points": cleaned.len() })),
+    );
+
+    let before_decimate = cleaned.len();
+    if params.decimate_pct < 99.999 {
+        let mut by_line = HashMap::<String, Vec<Pt>>::new();
+        for p in cleaned {
+            by_line.entry(p.line_id.clone()).or_default().push(p);
+        }
+        let mut reduced = Vec::<Pt>::new();
+        let stride = (100.0 / params.decimate_pct).round().max(1.0) as usize;
+        for (_line, mut lp) in by_line {
+            lp.sort_by(|a, b| {
+                a.along_m
+                    .partial_cmp(&b.along_m)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if lp.len() <= 2 || stride <= 1 {
+                reduced.extend(lp);
+                continue;
+            }
+            let llen = lp.len();
+            for (i, p) in lp.into_iter().enumerate() {
+                if i == 0 || i + 1 == llen || i % stride == 0 {
+                    reduced.push(p);
+                }
+            }
+        }
+        cleaned = reduced;
+    }
 
     let mut xmin = f64::INFINITY;
     let mut xmax = f64::NEG_INFINITY;
@@ -765,6 +813,13 @@ pub async fn run_magnetic_mapper(
     let nx = (((xmax - xmin) / params.grid_resolution_m).ceil() as usize).max(4);
     let ny = (((ymax - ymin) / params.grid_resolution_m).ceil() as usize).max(4);
     let mut grid_m = vec![None; nx * ny];
+    ctx.report_progress(
+        "grid_interpolation",
+        Some(0.38),
+        Some("Interpolating grid".to_string()),
+        Some(json!({ "nx": nx, "ny": ny, "cells": nx * ny })),
+    );
+    let progress_stride = (ny / 24).max(1);
     for iy in 0..ny {
         let y = ymin + iy as f64 * params.grid_resolution_m;
         for ix in 0..nx {
@@ -777,6 +832,15 @@ pub async fn run_magnetic_mapper(
                 params.idw_power,
                 params.search_radius_m,
                 params.max_points,
+            );
+        }
+        if iy % progress_stride == 0 {
+            let frac = iy as f64 / ny as f64;
+            ctx.report_progress(
+                "grid_interpolation",
+                Some(0.38 + 0.40 * frac),
+                Some("Interpolating grid".to_string()),
+                Some(json!({ "row": iy, "rows": ny })),
             );
         }
     }
@@ -824,6 +888,12 @@ pub async fn run_magnetic_mapper(
             }
         }
     }
+    ctx.report_progress(
+        "derivatives",
+        Some(0.84),
+        Some("Derivatives computed".to_string()),
+        None,
+    );
 
     for p in &mut cleaned {
         if let Some(v) = bilinear(nx, ny, xmin, xmax, ymin, ymax, &grid_fvd, p.x, p.y) {
@@ -887,6 +957,8 @@ pub async fn run_magnetic_mapper(
         "malformed_dropped": malformed,
         "non_monotonic_dropped": non_monotonic_drop,
         "despike_dropped": despike_drop,
+        "decimate_pct": params.decimate_pct,
+        "decimated_dropped": before_decimate.saturating_sub(cleaned.len()),
         "line_count": total_lines,
         "coord_mode": if use_projected { "projected_xy" } else { "latlon_to_utm" },
         "target_epsg": target_crs,
@@ -935,6 +1007,8 @@ pub async fn run_magnetic_mapper(
             "malformed_dropped": malformed,
             "non_monotonic_dropped": non_monotonic_drop,
             "despike_dropped": despike_drop,
+            "decimate_pct": params.decimate_pct,
+            "decimated_dropped": before_decimate.saturating_sub(cleaned.len()),
             "line_count": total_lines,
             "coordinate_mode": if use_projected { "projected_xy" } else { "latlon_to_utm" },
             "target_epsg": target_crs,
@@ -953,6 +1027,7 @@ pub async fn run_magnetic_mapper(
             "despike_sigma": params.despike_sigma,
             "smooth_window_m": params.smooth_window_m,
             "resample_spacing_m": params.resample_spacing_m
+            ,"decimate_pct": params.decimate_pct
         },
         "field_selection": {
             "x": x_key, "y": y_key, "lat": lat_key, "lon": lon_key,
@@ -978,6 +1053,12 @@ pub async fn run_magnetic_mapper(
     let points_ref = super::runtime::write_artifact(ctx, &points_key, &points_bytes, Some("application/json")).await?;
     let grid_ref = super::runtime::write_artifact(ctx, &grid_key, &grid_bytes, Some("application/json")).await?;
     let report_ref = super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json")).await?;
+    ctx.report_progress(
+        "write_outputs",
+        Some(0.97),
+        Some("Writing artifacts".to_string()),
+        None,
+    );
 
     Ok(JobResult {
         job_id: job.job_id,

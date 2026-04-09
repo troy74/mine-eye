@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use mine_eye_types::{JobEnvelope, JobResult};
+use serde_json::Value;
 use crate::kinds::{
     run_artifact_ingest,
     run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
@@ -22,6 +23,34 @@ use crate::NodeError;
 
 pub struct ExecutionContext<'a> {
     pub artifact_root: &'a Path,
+    pub progress: Option<Arc<dyn Fn(ProgressUpdate) + Send + Sync>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProgressUpdate {
+    pub stage: String,
+    pub percent: Option<f64>,
+    pub message: Option<String>,
+    pub stats: Option<Value>,
+}
+
+impl<'a> ExecutionContext<'a> {
+    pub fn report_progress(
+        &self,
+        stage: impl Into<String>,
+        percent: Option<f64>,
+        message: Option<String>,
+        stats: Option<Value>,
+    ) {
+        if let Some(cb) = &self.progress {
+            cb(ProgressUpdate {
+                stage: stage.into(),
+                percent,
+                message,
+                stats,
+            });
+        }
+    }
 }
 
 #[async_trait]

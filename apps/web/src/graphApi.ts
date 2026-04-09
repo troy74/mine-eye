@@ -193,6 +193,21 @@ export type RunGraphResponse = {
   skipped_manual: string[];
 };
 
+export type NodeJobRuntime = {
+  job_id: string;
+  status: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  progress?: {
+    stage?: string;
+    percent?: number | null;
+    message?: string;
+    stats?: Record<string, unknown> | null;
+    updated_at?: string;
+  } | null;
+};
+
 /**
  * Enqueue jobs for dirty nodes. Omit `dirty_roots` to treat every node as a root (full pipeline).
  * Pass one or more node ids to re-run that node and everything downstream of it.
@@ -221,6 +236,17 @@ export async function runGraph(
     throw new Error(t || `Run failed: ${r.status}`);
   }
   return r.json() as Promise<RunGraphResponse>;
+}
+
+export async function getNodeJobRuntime(
+  graphId: string,
+  nodeId: string
+): Promise<NodeJobRuntime | null> {
+  const r = await fetch(api(`/graphs/${graphId}/nodes/${nodeId}/job-runtime`), {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error((await r.text()) || `Runtime ${r.status}`);
+  return (await r.json()) as NodeJobRuntime | null;
 }
 
 function normalizeNode(raw: unknown): ApiNode {

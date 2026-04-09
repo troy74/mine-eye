@@ -1,14 +1,38 @@
 use mine_eye_types::{JobEnvelope, JobResult, JobStatus};
+use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::StoreError;
+
+#[derive(Debug, Clone)]
+pub struct JobRuntimeStatus {
+    pub job_id: Uuid,
+    pub status: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub progress: Option<Value>,
+}
 
 #[async_trait::async_trait]
 pub trait JobQueue: Send + Sync {
     async fn enqueue(&self, envelope: &JobEnvelope) -> Result<Uuid, StoreError>;
     async fn claim_next(&self) -> Result<Option<(Uuid, JobEnvelope)>, StoreError>;
     async fn complete(&self, job_row_id: Uuid, result: &JobResult) -> Result<(), StoreError>;
+    async fn update_progress(
+        &self,
+        job_row_id: Uuid,
+        stage: &str,
+        percent: Option<f64>,
+        message: Option<&str>,
+        stats: Option<Value>,
+    ) -> Result<(), StoreError>;
+    async fn latest_for_node(
+        &self,
+        graph_id: Uuid,
+        node_id: Uuid,
+    ) -> Result<Option<JobRuntimeStatus>, StoreError>;
 }
 
 pub struct PgJobQueue {
@@ -86,9 +110,26 @@ impl JobQueue for PgJobQueue {
         };
 
         sqlx::query(
-            r#"UPDATE job_queue SET status = 'running', started_at = now() WHERE id = $1"#,
+            r#"
+            UPDATE job_queue
+            SET status = 'running',
+                started_at = now(),
+                payload = jsonb_set(
+                    payload,
+                    '{runtime_progress}',
+                    $2::jsonb,
+                    true
+                )
+            WHERE id = $1
+            "#,
         )
         .bind(row_id)
+        .bind(json!({
+            "stage": "queued_to_running",
+            "percent": 0.01,
+            "message": "Job claimed by worker",
+            "updated_at": chrono::Utc::now(),
+        }))
         .execute(&mut *tx)
         .await?;
 
@@ -110,6 +151,12 @@ impl JobQueue for PgJobQueue {
             r#"
             UPDATE job_queue
             SET status = $2,
+                payload = jsonb_set(
+                    payload,
+                    '{runtime_progress}',
+                    $5::jsonb,
+                    true
+                ),
                 result = $3,
                 error_message = $4,
                 finished_at = now()
@@ -120,8 +167,80 @@ impl JobQueue for PgJobQueue {
         .bind(status_str)
         .bind(result_json)
         .bind(&result.error_message)
+        .bind(json!({
+            "stage": if result.status == JobStatus::Succeeded { "completed" } else { "failed" },
+            "percent": if result.status == JobStatus::Succeeded { 1.0 } else { 0.0 },
+            "message": result.error_message.clone().unwrap_or_else(|| "Job finished".to_string()),
+            "updated_at": chrono::Utc::now(),
+        }))
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn update_progress(
+        &self,
+        job_row_id: Uuid,
+        stage: &str,
+        percent: Option<f64>,
+        message: Option<&str>,
+        stats: Option<Value>,
+    ) -> Result<(), StoreError> {
+        let progress = json!({
+            "stage": stage,
+            "percent": percent.map(|p| p.clamp(0.0, 1.0)),
+            "message": message.unwrap_or(""),
+            "stats": stats.unwrap_or(Value::Null),
+            "updated_at": chrono::Utc::now(),
+        });
+        sqlx::query(
+            r#"
+            UPDATE job_queue
+            SET payload = jsonb_set(payload, '{runtime_progress}', $2::jsonb, true)
+            WHERE id = $1
+            "#,
+        )
+        .bind(job_row_id)
+        .bind(progress)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn latest_for_node(
+        &self,
+        graph_id: Uuid,
+        node_id: Uuid,
+    ) -> Result<Option<JobRuntimeStatus>, StoreError> {
+        let row: Option<(Uuid, String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>, Option<Value>)> = sqlx::query_as(
+            r#"
+            SELECT
+              id,
+              status,
+              created_at,
+              started_at,
+              finished_at,
+              payload->'runtime_progress' as progress
+            FROM job_queue
+            WHERE graph_id = $1
+              AND node_id = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(graph_id)
+        .bind(node_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(job_id, status, created_at, started_at, finished_at, progress)| JobRuntimeStatus {
+                job_id,
+                status,
+                created_at,
+                started_at,
+                finished_at,
+                progress,
+            },
+        ))
     }
 }
