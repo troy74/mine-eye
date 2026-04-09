@@ -974,18 +974,27 @@ export function NodeInspector({
               : "";
           const stage = p?.stage || rt.status;
           const msg = p?.message || "";
+          const startedMs = rt.started_at ? new Date(rt.started_at).getTime() : null;
+          const progressMs =
+            typeof p?.updated_at === "string" ? new Date(p.updated_at).getTime() : null;
+          const hbAge =
+            progressMs && Number.isFinite(progressMs)
+              ? Math.max(0, Math.round((Date.now() - progressMs) / 1000))
+              : null;
+          const stale = rt.status === "running" && (hbAge === null || hbAge > 20);
           const elapsed =
-            rt.started_at && !rt.finished_at
-              ? Math.max(
-                  0,
-                  Math.round(
-                    (Date.now() - new Date(rt.started_at).getTime()) / 1000
-                  )
-                )
+            startedMs && Number.isFinite(startedMs)
+              ? stale
+                ? progressMs && Number.isFinite(progressMs)
+                  ? Math.max(0, Math.round((progressMs - startedMs) / 1000))
+                  : 0
+                : Math.max(0, Math.round((Date.now() - startedMs) / 1000))
               : 0;
           setJobRuntimeText(
             `${stage}${pct ? ` · ${pct}` : ""}${msg ? ` · ${msg}` : ""}${
               elapsed > 0 ? ` · ${elapsed}s` : ""
+            }${
+              hbAge !== null ? stale ? ` · stale heartbeat (${hbAge}s)` : ` · heartbeat ${hbAge}s ago` : ""
             }`
           );
         }
