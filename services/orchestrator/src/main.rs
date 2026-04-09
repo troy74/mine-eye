@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -30,6 +30,7 @@ use mine_eye_types::{
     QualityPolicy, RecomputePolicy, SemanticPortType, WorkspaceStatus,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::chrono;
 use tokio::sync::RwLock;
@@ -479,6 +480,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphs/{graph_id}/edges", post(add_edge))
         .route("/graphs/{graph_id}/edges/{edge_id}", delete(delete_edge))
         .route("/graphs/{graph_id}/run", post(run_graph))
+        .route("/graphs/{graph_id}/uploads/tabular", post(upload_tabular_file))
         .route("/graphs/{graph_id}/artifacts", get(list_artifacts))
         .route(
             "/graphs/{graph_id}/viewers/{viewer_node_id}/manifest",
@@ -493,6 +495,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/ai/suggestions/{id}/confirm", post(ai_confirm))
         .route("/demo/seed", post(demo_seed))
         .nest_service("/files", immutable_files)
+        .layer(DefaultBodyLimit::max(300 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -1897,6 +1900,14 @@ async fn run_graph(
                 if let Some(p) = ingest_synth::synthesize_input_payload(node, project_crs.as_ref())
                 {
                     job.input_payload = Some(p);
+                } else if let Some(p) = ingest_synth::synthesize_input_payload_from_artifact(
+                    node,
+                    project_crs.as_ref(),
+                    &s.artifact_root,
+                )
+                .await
+                {
+                    job.input_payload = Some(p);
                 }
             }
         }
@@ -1940,6 +1951,164 @@ struct ArtifactEntry {
     key: String,
     url: String,
     content_hash: String,
+}
+
+#[derive(Serialize)]
+struct TabularUploadResp {
+    artifact_key: String,
+    content_hash: String,
+    media_type: String,
+    filename: String,
+    size_bytes: usize,
+    delimiter: String,
+    headers: Vec<String>,
+    preview_rows: Vec<Vec<String>>,
+    tail_rows: Vec<Vec<String>>,
+    line_count_estimate: usize,
+}
+
+fn hash_bytes(data: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(data);
+    hex::encode(h.finalize())
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+            out.push(c);
+        } else if c.is_whitespace() {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "upload.csv".to_string()
+    } else {
+        out
+    }
+}
+
+fn detect_delimiter_from_sample(sample: &str) -> u8 {
+    let cands = [b',', b';', b'\t', b'|'];
+    let mut best = (b',', 0usize);
+    for d in cands {
+        let score = sample
+            .lines()
+            .take(30)
+            .map(|l| l.as_bytes().iter().filter(|b| **b == d).count())
+            .sum::<usize>();
+        if score > best.1 {
+            best = (d, score);
+        }
+    }
+    best.0
+}
+
+fn profile_tabular_bytes(bytes: &[u8]) -> (u8, Vec<String>, Vec<Vec<String>>, Vec<Vec<String>>, usize) {
+    let text = String::from_utf8_lossy(bytes);
+    let delim = detect_delimiter_from_sample(&text);
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(std::io::Cursor::new(bytes));
+    let headers = rdr
+        .headers()
+        .ok()
+        .map(|h| h.iter().map(|s| s.trim().to_string()).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    let mut preview_rows = Vec::<Vec<String>>::new();
+    let mut ring = std::collections::VecDeque::<Vec<String>>::new();
+    let mut count = 0usize;
+    for rec in rdr.records().flatten() {
+        let row = rec.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        if preview_rows.len() < 12 {
+            preview_rows.push(row.clone());
+        }
+        if ring.len() >= 12 {
+            ring.pop_front();
+        }
+        ring.push_back(row);
+        count += 1;
+    }
+    let tail_rows = ring.into_iter().collect::<Vec<_>>();
+    (delim, headers, preview_rows, tail_rows, count)
+}
+
+async fn upload_tabular_file(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(graph_id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> Result<Json<TabularUploadResp>, (StatusCode, String)> {
+    require_graph_access(&s, &auth, graph_id).await?;
+
+    let mut filename = "upload.csv".to_string();
+    let mut media_type = "text/csv".to_string();
+    let mut bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let name = field.name().unwrap_or_default().to_string();
+        if name != "file" {
+            continue;
+        }
+        if let Some(fname) = field.file_name() {
+            filename = sanitize_filename(fname);
+        }
+        if let Some(ct) = field.content_type() {
+            media_type = ct.to_string();
+        }
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        bytes = Some(data.to_vec());
+        break;
+    }
+    let data = bytes.ok_or_else(|| (StatusCode::BAD_REQUEST, "multipart field `file` is required".to_string()))?;
+    let size_bytes = data.len();
+    if size_bytes == 0 {
+        return Err((StatusCode::BAD_REQUEST, "empty upload".to_string()));
+    }
+    if size_bytes > 256 * 1024 * 1024 {
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "max upload size is 256 MB".to_string()));
+    }
+
+    let content_hash = hash_bytes(&data);
+    let key = format!(
+        "graphs/{}/uploads/{}-{}",
+        graph_id,
+        &content_hash[..16],
+        filename
+    );
+    let path = s.artifact_root.join(&key);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (delim, headers, preview_rows, tail_rows, line_count_estimate) = profile_tabular_bytes(&data);
+    Ok(Json(TabularUploadResp {
+        artifact_key: key,
+        content_hash,
+        media_type,
+        filename,
+        size_bytes,
+        delimiter: (delim as char).to_string(),
+        headers,
+        preview_rows,
+        tail_rows,
+        line_count_estimate,
+    }))
 }
 
 async fn list_artifacts(

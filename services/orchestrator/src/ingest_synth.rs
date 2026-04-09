@@ -5,6 +5,7 @@ use mine_eye_types::{
     CollarRecord, CrsRecord, IntervalSampleRecord, NodeRecord, SurveyStationRecord,
 };
 use serde_json::{json, Map, Value};
+use std::path::Path;
 
 pub fn synthesize_input_payload(
     node: &NodeRecord,
@@ -17,6 +18,79 @@ pub fn synthesize_input_payload(
         "assay_ingest" => assay_payload_from_ui(node),
         "magnetic_mapper" => magnetic_payload_from_ui(node, project_crs),
         _ => None,
+    }
+}
+
+pub async fn synthesize_input_payload_from_artifact(
+    node: &NodeRecord,
+    project_crs: Option<&CrsRecord>,
+    artifact_root: &Path,
+) -> Option<Value> {
+    if node.config.kind != "magnetic_mapper" {
+        return None;
+    }
+    let ui = node.config.params.get("ui")?;
+    let key = ui.get("csv_artifact_key")?.as_str()?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let raw = tokio::fs::read(artifact_root.join(key)).await.ok()?;
+    let delim = ui
+        .get("csv_delimiter")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.as_bytes().first().copied())
+        .unwrap_or(b',');
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delim)
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(std::io::Cursor::new(raw));
+    let headers = rdr
+        .headers()
+        .ok()
+        .map(|h| h.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
+
+    let use_project = ui
+        .get("use_project_crs")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let source_crs = if use_project {
+        project_crs
+            .cloned()
+            .unwrap_or_else(|| CrsRecord::epsg(4326))
+    } else {
+        let epsg = ui
+            .get("source_crs_epsg")
+            .and_then(|v| v.as_u64())
+            .map(|u| u as i32)
+            .unwrap_or(4326);
+        CrsRecord::epsg(epsg)
+    };
+
+    let mut rows = Vec::<Value>::new();
+    for rec in rdr.records().flatten() {
+        let mut obj = Map::new();
+        for (i, h) in headers.iter().enumerate() {
+            if let Some(cell) = rec.get(i) {
+                let raw = cell.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = raw.replace(',', ".").parse::<f64>() {
+                    obj.insert(h.clone(), json!(v));
+                } else {
+                    obj.insert(h.clone(), json!(raw));
+                }
+            }
+        }
+        if !obj.is_empty() {
+            rows.push(Value::Object(obj));
+        }
+    }
+    if rows.is_empty() {
+        None
+    } else {
+        Some(json!({ "rows": rows, "source_crs": source_crs }))
     }
 }
 

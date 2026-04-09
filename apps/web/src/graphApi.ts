@@ -161,6 +161,19 @@ export type ChartTemplate = {
   updated_at: string;
 };
 
+export type TabularUploadResponse = {
+  artifact_key: string;
+  content_hash: string;
+  media_type: string;
+  filename: string;
+  size_bytes: number;
+  delimiter: string;
+  headers: string[];
+  preview_rows: string[][];
+  tail_rows: string[][];
+  line_count_estimate: number;
+};
+
 /** One row from `GET /graphs/:id/artifacts` (same paths the worker writes under). */
 export type ArtifactEntry = {
   node_id: string;
@@ -492,6 +505,23 @@ export async function patchNodeParams(
     throw new Error(`PATCH failed: ${r.status}${detail ? ` — ${detail}` : ""}`);
   }
   return normalizeNode(await r.json());
+}
+
+export async function uploadTabularArtifact(
+  graphId: string,
+  file: File
+): Promise<TabularUploadResponse> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const r = await fetch(api(`/graphs/${graphId}/uploads/tabular`), {
+    method: "POST",
+    body: form,
+  });
+  if (!r.ok) {
+    const detail = await r.text().catch(() => "");
+    throw new Error(`Upload failed: ${r.status}${detail ? ` — ${detail}` : ""}`);
+  }
+  return (await r.json()) as TabularUploadResponse;
 }
 
 function normalizeEdge(raw: unknown): ApiEdge {
