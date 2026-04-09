@@ -97,6 +97,7 @@ export function NodeInspector({
   const isAoiNode = kind === "aoi";
   const isBlockGradeModelNode = kind === "block_grade_model";
   const isMagneticMapperNode = kind === "magnetic_mapper";
+  const isArtifactIngestNode = kind === "artifact_ingest";
   const isMdViewerNode = kind === "md_viewer";
   const isPlotChartNode = kind === "plot_chart";
   const hasConfigTab =
@@ -156,6 +157,15 @@ export function NodeInspector({
   );
   const [csvDelimiter, setCsvDelimiter] = useState<string>(
     () => (typeof initialUi.csv_delimiter === "string" ? initialUi.csv_delimiter : ",")
+  );
+  const [csvFormat, setCsvFormat] = useState<string>(
+    () => (typeof initialUi.csv_format === "string" ? initialUi.csv_format : "")
+  );
+  const [csvMediaType, setCsvMediaType] = useState<string>(
+    () => (typeof initialUi.csv_media_type === "string" ? initialUi.csv_media_type : "")
+  );
+  const [csvPreviewText, setCsvPreviewText] = useState<string>(
+    () => (typeof initialUi.csv_preview_text === "string" ? initialUi.csv_preview_text : "")
   );
   const [heatMeasure, setHeatMeasure] = useState<string>(
     () => (typeof initialUi.measure === "string" ? initialUi.measure : "")
@@ -909,6 +919,9 @@ export function NodeInspector({
     setCsvArtifactKey(typeof u.csv_artifact_key === "string" ? u.csv_artifact_key : "");
     setCsvArtifactHash(typeof u.csv_artifact_hash === "string" ? u.csv_artifact_hash : "");
     setCsvDelimiter(typeof u.csv_delimiter === "string" ? u.csv_delimiter : ",");
+    setCsvFormat(typeof u.csv_format === "string" ? u.csv_format : "");
+    setCsvMediaType(typeof u.csv_media_type === "string" ? u.csv_media_type : "");
+    setCsvPreviewText(typeof u.csv_preview_text === "string" ? u.csv_preview_text : "");
     const h = u.csv_headers;
     if (Array.isArray(h) && h.every((x) => typeof x === "string")) {
       setHeaders(h as string[]);
@@ -1145,13 +1158,16 @@ export function NodeInspector({
       if (!file) return;
       setErr(null);
       setCsvName(file.name);
-      const shouldUpload = isMagneticMapperNode || file.size > 8 * 1024 * 1024;
+      const shouldUpload = isMagneticMapperNode || isArtifactIngestNode || file.size > 8 * 1024 * 1024;
       if (shouldUpload) {
         try {
           const up = await uploadTabularArtifact(graphId, file);
           setCsvArtifactKey(up.artifact_key);
           setCsvArtifactHash(up.content_hash);
           setCsvDelimiter(up.delimiter || ",");
+          setCsvFormat(up.format || "");
+          setCsvMediaType(up.media_type || "");
+          setCsvPreviewText(up.preview_text || "");
           setHeaders(up.headers ?? []);
           setCsvRows([]);
           setPreviewRows(up.preview_rows ?? []);
@@ -1175,10 +1191,13 @@ export function NodeInspector({
         setPreviewRows(rows.slice(0, 8));
         setCsvArtifactKey("");
         setCsvArtifactHash("");
+        setCsvFormat("");
+        setCsvMediaType(file.type || "");
+        setCsvPreviewText(text.slice(0, 2500));
       };
       reader.readAsText(file, "UTF-8");
     },
-    [graphId, isMagneticMapperNode]
+    [graphId, isArtifactIngestNode, isMagneticMapperNode]
   );
 
   const applySave = useCallback(async () => {
@@ -1211,6 +1230,9 @@ export function NodeInspector({
       csv_artifact_key: usingArtifact ? csvArtifactKey : undefined,
       csv_artifact_hash: usingArtifact ? csvArtifactHash : undefined,
       csv_delimiter: usingArtifact ? csvDelimiter : undefined,
+      csv_format: usingArtifact ? csvFormat : undefined,
+      csv_media_type: usingArtifact ? csvMediaType : undefined,
+      csv_preview_text: usingArtifact ? csvPreviewText : undefined,
       csv_headers: headers.length ? headers : undefined,
       csv_rows: rowsForNode,
       csv_preview_rows: usingArtifact ? previewRows.slice(0, 8) : csvRows.slice(0, 8),
@@ -1433,6 +1455,9 @@ export function NodeInspector({
     csvArtifactKey,
     csvArtifactHash,
     csvDelimiter,
+    csvFormat,
+    csvMediaType,
+    csvPreviewText,
     headers,
     csvRows,
     previewRows,
@@ -2170,10 +2195,10 @@ export function NodeInspector({
             {csvCapable && (
               <>
                 <label style={fileLab}>
-                  <span style={labSpan}>Load CSV file</span>
+                  <span style={labSpan}>Load file</span>
                   <input
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".csv,.tsv,.txt,.json,.geojson,text/csv,text/tab-separated-values,text/plain,application/json,application/geo+json"
                     onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
                     style={{ fontSize: 11 }}
                   />
@@ -2185,7 +2210,12 @@ export function NodeInspector({
                 )}
                 {csvArtifactKey && (
                   <div style={{ fontSize: 11, opacity: 0.75, marginBottom: 10 }}>
-                    Artifact source: <code>{csvArtifactKey}</code> · hash <code>{csvArtifactHash.slice(0, 12)}</code>
+                    Artifact source: <code>{csvArtifactKey}</code> · hash <code>{csvArtifactHash.slice(0, 12)}</code> · format <code>{csvFormat || "auto"}</code>
+                  </div>
+                )}
+                {kind === "artifact_ingest" && (
+                  <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 10 }}>
+                    This node emits a pointer-first table artifact and an ingest audit report for downstream mapping/model nodes.
                   </div>
                 )}
                 {kind === "collar_ingest" && (

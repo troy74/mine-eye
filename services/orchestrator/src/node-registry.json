@@ -94,6 +94,34 @@
       "plugin_source": "core"
     },
     {
+      "kind": "artifact_ingest",
+      "category": "input",
+      "label": "Artifact ingest",
+      "role": "Acquisition · ingest large tabular/JSON file to workspace artifact pointer",
+      "menu": {
+        "enabled": true,
+        "order": 31
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "table",
+            "label": "Table pointer",
+            "semantic": "table"
+          },
+          {
+            "id": "report",
+            "label": "Ingest report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "ingest",
+      "plugin_source": "core"
+    },
+    {
       "kind": "magnetic_mapper",
       "category": "input",
       "label": "Magnetic mapper",
@@ -103,7 +131,13 @@
         "order": 32
       },
       "ports": {
-        "inputs": [],
+        "inputs": [
+          {
+            "id": "in",
+            "label": "Input",
+            "semantic": "table"
+          }
+        ],
         "outputs": [
           {
             "id": "mag_points",

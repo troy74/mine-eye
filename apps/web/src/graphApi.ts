@@ -133,6 +133,10 @@ export type AiChatReqAttachment = {
   mime: string;
   size: number;
   text?: string;
+  artifact_key?: string;
+  content_hash?: string;
+  format?: string;
+  preview_text?: string;
 };
 
 export type AiChatToolEvent = {
@@ -167,10 +171,12 @@ export type TabularUploadResponse = {
   media_type: string;
   filename: string;
   size_bytes: number;
+  format: string;
   delimiter: string;
   headers: string[];
   preview_rows: string[][];
   tail_rows: string[][];
+  preview_text: string;
   line_count_estimate: number;
 };
 

@@ -7,12 +7,12 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { aiChat, type AiChatToolEvent } from "./graphApi";
+import { aiChat, uploadTabularArtifact, type AiChatToolEvent } from "./graphApi";
 
 const CHAT_KEY = (projectLocalId: string) => `mineeye:chat:v1:${projectLocalId}`;
 const CHAT_APPLY_KEY = (projectLocalId: string) => `mineeye:chat:apply:v1:${projectLocalId}`;
 const CHAT_ONBOARD_KEY = (projectLocalId: string) => `mineeye:chat:onboard:v1:${projectLocalId}`;
-const MAX_CHAT_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_CHAT_FILE_BYTES = 256 * 1024 * 1024;
 
 export type ChatAttachment = {
   name: string;
@@ -20,6 +20,10 @@ export type ChatAttachment = {
   size: number;
   text?: string;
   dataUrl?: string;
+  artifact_key?: string;
+  content_hash?: string;
+  format?: string;
+  preview_text?: string;
 };
 
 export type ChatMessage = {
@@ -125,7 +129,7 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
       const attachments: ChatAttachment[] = [];
       for (const f of list) {
         if (f.size > MAX_CHAT_FILE_BYTES) {
-          setFileErr(`${f.name} is too large (max 32 MB per file).`);
+          setFileErr(`${f.name} is too large (max 256 MB per file).`);
           return;
         }
         if (f.type.startsWith("image/")) {
@@ -142,8 +146,35 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
             dataUrl,
           });
         } else {
-          let text: string | undefined;
           const lower = f.name.toLowerCase();
+          const uploadable =
+            !!graphId &&
+            (f.type.startsWith("text/") ||
+              f.type.includes("json") ||
+              lower.endsWith(".csv") ||
+              lower.endsWith(".tsv") ||
+              lower.endsWith(".txt") ||
+              lower.endsWith(".json") ||
+              lower.endsWith(".geojson"));
+          if (uploadable && graphId) {
+            try {
+              const up = await uploadTabularArtifact(graphId, f);
+              attachments.push({
+                name: f.name,
+                mime: f.type || "application/octet-stream",
+                size: f.size,
+                artifact_key: up.artifact_key,
+                content_hash: up.content_hash,
+                format: up.format,
+                preview_text: up.preview_text,
+                text: up.preview_text,
+              });
+              continue;
+            } catch {
+              // fallback to inline text preview
+            }
+          }
+          let text: string | undefined;
           const probablyText =
             f.type.startsWith("text/") ||
             f.type.includes("json") ||
@@ -170,7 +201,7 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
       }
       setPendingAttachments((prev) => [...prev, ...attachments]);
     },
-    [projectLocalId]
+    [graphId, projectLocalId]
   );
 
   const sendText = useCallback(async () => {
@@ -203,6 +234,10 @@ export function AgentChat({ projectLocalId, projectName, graphId, activeBranchId
               mime: a.mime,
               size: a.size,
               text: a.text,
+              artifact_key: a.artifact_key,
+              content_hash: a.content_hash,
+              format: a.format,
+              preview_text: a.preview_text,
             })) ?? [],
         })),
         apply_mutations: applyMutations,

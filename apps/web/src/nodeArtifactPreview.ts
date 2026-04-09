@@ -11,6 +11,8 @@ export function preferredArtifactSuffix(kind: string): string | null {
       return "surface_samples.json";
     case "assay_ingest":
       return "assays.json";
+    case "artifact_ingest":
+      return "artifact_ingest_table_pointer.json";
     case "desurvey_trajectory":
       return "trajectory.json";
     case "drillhole_model":

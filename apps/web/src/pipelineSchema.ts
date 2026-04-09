@@ -18,6 +18,7 @@
 export const PIPELINE_GEOMETRY_NOTES = `Collar → point (x,y,z) + optional az/dip + id · Survey → segment (az, dip, length/depth) + id · Desurvey → 3D trace/tubes · Assay → multi-measure at interval centres matched to hole+depth.`;
 
 export const ACQUISITION_CSV_KINDS = [
+  "artifact_ingest",
   "collar_ingest",
   "survey_ingest",
   "surface_sample_ingest",

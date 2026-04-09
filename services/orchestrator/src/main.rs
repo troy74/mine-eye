@@ -535,6 +535,7 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "survey_ingest"
                     | "surface_sample_ingest"
                     | "assay_ingest"
+                    | "artifact_ingest"
                     | "magnetic_mapper"
                     | "data_model_transform"
                     | "assay_heatmap"
@@ -544,7 +545,7 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "tilebroker"
             );
             let edit_tab = match kind {
-                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" | "magnetic_mapper" => "mapping",
+                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" | "artifact_ingest" | "magnetic_mapper" => "mapping",
                 "data_model_transform" | "assay_heatmap" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
                 _ => "summary",
             };
@@ -1960,10 +1961,12 @@ struct TabularUploadResp {
     media_type: String,
     filename: String,
     size_bytes: usize,
+    format: String,
     delimiter: String,
     headers: Vec<String>,
     preview_rows: Vec<Vec<String>>,
     tail_rows: Vec<Vec<String>>,
+    preview_text: String,
     line_count_estimate: usize,
 }
 
@@ -2037,6 +2040,49 @@ fn profile_tabular_bytes(bytes: &[u8]) -> (u8, Vec<String>, Vec<Vec<String>>, Ve
     (delim, headers, preview_rows, tail_rows, count)
 }
 
+fn detect_format(filename: &str, media_type: &str, sample: &str) -> String {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".geojson") || media_type.contains("geo+json") {
+        return "geojson".to_string();
+    }
+    if lower.ends_with(".json") || media_type.contains("json") {
+        return "json".to_string();
+    }
+    if lower.ends_with(".tsv") {
+        return "tsv".to_string();
+    }
+    if lower.ends_with(".csv") {
+        return "csv".to_string();
+    }
+    if sample.lines().take(20).all(|l| l.contains('\t')) {
+        return "tsv".to_string();
+    }
+    if sample.lines().take(20).all(|l| l.contains(',')) {
+        return "csv".to_string();
+    }
+    "fixed_width_or_text".to_string()
+}
+
+fn preview_text_from_rows(headers: &[String], top: &[Vec<String>], tail: &[Vec<String>]) -> String {
+    let mut out = String::new();
+    if !headers.is_empty() {
+        out.push_str(&headers.join(" | "));
+        out.push('\n');
+    }
+    for r in top.iter().take(6) {
+        out.push_str(&r.join(" | "));
+        out.push('\n');
+    }
+    if !tail.is_empty() {
+        out.push_str("...\n");
+    }
+    for r in tail.iter().rev().take(4).rev() {
+        out.push_str(&r.join(" | "));
+        out.push('\n');
+    }
+    out.chars().take(2500).collect()
+}
+
 async fn upload_tabular_file(
     State(s): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -2079,10 +2125,18 @@ async fn upload_tabular_file(
         return Err((StatusCode::PAYLOAD_TOO_LARGE, "max upload size is 256 MB".to_string()));
     }
 
+    let ws_id = s
+        .store
+        .graph_workspace_meta(graph_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(|(_, ws, _)| ws)
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "workspace not found for graph".to_string()))?;
+
     let content_hash = hash_bytes(&data);
     let key = format!(
-        "graphs/{}/uploads/{}-{}",
-        graph_id,
+        "workspaces/{}/uploads/{}-{}",
+        ws_id,
         &content_hash[..16],
         filename
     );
@@ -2096,17 +2150,33 @@ async fn upload_tabular_file(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let sample_text = String::from_utf8_lossy(&data);
+    let fmt = detect_format(&filename, &media_type, &sample_text);
     let (delim, headers, preview_rows, tail_rows, line_count_estimate) = profile_tabular_bytes(&data);
+    let preview_text = if headers.is_empty() && preview_rows.is_empty() {
+        sample_text
+            .lines()
+            .take(20)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .take(2500)
+            .collect()
+    } else {
+        preview_text_from_rows(&headers, &preview_rows, &tail_rows)
+    };
     Ok(Json(TabularUploadResp {
         artifact_key: key,
         content_hash,
         media_type,
         filename,
         size_bytes,
+        format: fmt,
         delimiter: (delim as char).to_string(),
         headers,
         preview_rows,
         tail_rows,
+        preview_text,
         line_count_estimate,
     }))
 }

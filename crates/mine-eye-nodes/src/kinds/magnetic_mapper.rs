@@ -9,6 +9,96 @@ use crate::crs_transform::transform_xy;
 use crate::executor::ExecutionContext;
 use crate::NodeError;
 
+fn rows_from_csv_bytes(bytes: &[u8], delimiter: u8) -> Option<Vec<Value>> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(std::io::Cursor::new(bytes));
+    let headers = rdr
+        .headers()
+        .ok()
+        .map(|h| h.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
+    let mut rows = Vec::new();
+    for rec in rdr.records().flatten() {
+        let mut obj = Map::new();
+        for (i, h) in headers.iter().enumerate() {
+            if let Some(cell) = rec.get(i) {
+                let raw = cell.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = raw.replace(',', ".").parse::<f64>() {
+                    obj.insert(h.clone(), json!(v));
+                } else {
+                    obj.insert(h.clone(), json!(raw));
+                }
+            }
+        }
+        if !obj.is_empty() {
+            rows.push(Value::Object(obj));
+        }
+    }
+    if rows.is_empty() {
+        None
+    } else {
+        Some(rows)
+    }
+}
+
+async fn rows_from_upstream(ctx: &ExecutionContext<'_>, job: &JobEnvelope) -> Option<Value> {
+    for ar in &job.input_artifact_refs {
+        let Ok(raw) = super::runtime::read_artifact_bytes(ctx, &ar.key).await else {
+            continue;
+        };
+        let ext = ar.key.to_ascii_lowercase();
+        if ext.ends_with(".json") {
+            let Ok(v) = serde_json::from_slice::<Value>(&raw) else {
+                continue;
+            };
+            if let Some(rows) = v.pointer("/rows").and_then(|x| x.as_array()) {
+                return Some(json!({
+                    "rows": rows,
+                    "source_crs": v.get("source_crs").cloned().unwrap_or(Value::Null)
+                }));
+            }
+            if let Some(points) = v.pointer("/points").and_then(|x| x.as_array()) {
+                return Some(json!({
+                    "rows": points,
+                    "source_crs": v.get("source_crs").cloned().unwrap_or(Value::Null)
+                }));
+            }
+            let src_key = v
+                .pointer("/source/artifact_key")
+                .and_then(|x| x.as_str())
+                .or_else(|| v.get("artifact_key").and_then(|x| x.as_str()));
+            if let Some(k) = src_key {
+                let src_raw = super::runtime::read_artifact_bytes(ctx, k).await.ok()?;
+                let delimiter = v
+                    .pointer("/source/delimiter")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.as_bytes().first().copied())
+                    .unwrap_or(b',');
+                if let Some(rows) = rows_from_csv_bytes(&src_raw, delimiter) {
+                    return Some(json!({
+                        "rows": rows,
+                        "source_crs": v.get("source_crs").cloned().unwrap_or(Value::Null)
+                    }));
+                }
+            }
+        } else if ext.ends_with(".csv") || ext.ends_with(".tsv") || ext.ends_with(".txt") {
+            let delimiter = if ext.ends_with(".tsv") { b'\t' } else { b',' };
+            if let Some(rows) = rows_from_csv_bytes(&raw, delimiter) {
+                return Some(json!({
+                    "rows": rows,
+                    "source_crs": job.project_crs
+                }));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Clone)]
 struct Params {
     mapping: Map<String, Value>,
@@ -257,10 +347,17 @@ pub async fn run_magnetic_mapper(
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
     let params = parse_params(job);
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for magnetic_mapper".into()))?;
+    let payload_derived;
+    let payload = if let Some(p) = job.input_payload.as_ref() {
+        p
+    } else if let Some(p) = rows_from_upstream(ctx, job).await {
+        payload_derived = p;
+        &payload_derived
+    } else {
+        return Err(NodeError::InvalidConfig(
+            "missing input_payload for magnetic_mapper".into(),
+        ));
+    };
     let rows = payload
         .pointer("/rows")
         .and_then(|v| v.as_array())

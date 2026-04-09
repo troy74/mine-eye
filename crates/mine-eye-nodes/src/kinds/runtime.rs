@@ -73,6 +73,15 @@ pub(crate) async fn read_json_artifact(
     Ok(v)
 }
 
+pub(crate) async fn read_artifact_bytes(
+    ctx: &ExecutionContext<'_>,
+    key: &str,
+) -> Result<Vec<u8>, NodeError> {
+    let path = ctx.artifact_root.join(key);
+    let raw = fs::read(&path).await?;
+    Ok(raw)
+}
+
 pub(crate) async fn collect_drillhole_inputs(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,

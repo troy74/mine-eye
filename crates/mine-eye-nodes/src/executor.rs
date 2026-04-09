@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use mine_eye_types::{JobEnvelope, JobResult};
 use crate::kinds::{
+    run_artifact_ingest,
     run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
     run_dem_fetch, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_data_model_transform,
@@ -51,6 +52,7 @@ impl RegistryExecutor {
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
         inner.insert("magnetic_mapper".into(), Arc::new(MagneticMapperExecutor));
+        inner.insert("artifact_ingest".into(), Arc::new(ArtifactIngestExecutor));
         inner.insert("data_model_transform".into(), Arc::new(DataModelTransformExecutor));
         inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
         inner.insert("surface_iso_extract".into(), Arc::new(SurfaceIsoExtractExecutor));
@@ -143,6 +145,19 @@ impl NodeExecutor for MagneticMapperExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_magnetic_mapper(ctx, job).await
+    }
+}
+
+struct ArtifactIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for ArtifactIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_artifact_ingest(ctx, job).await
     }
 }
 

@@ -1160,6 +1160,7 @@ name = "mine-eye-nodes"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "csv",
  "hex",
  "mine-eye-types",
  "proj",

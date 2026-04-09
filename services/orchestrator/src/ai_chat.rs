@@ -48,6 +48,14 @@ pub struct AiChatAttachment {
     pub size: u64,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub artifact_key: Option<String>,
+    #[serde(default)]
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub preview_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,7 +178,7 @@ pub async fn run_ai_chat(
     if clipped.len() > MAX_CONTEXT_MESSAGES {
         clipped = clipped[clipped.len() - MAX_CONTEXT_MESSAGES..].to_vec();
     }
-    let uploaded_docs = collect_uploaded_docs(&clipped);
+    let uploaded_docs = collect_uploaded_docs(&clipped, artifact_root).await;
     for m in clipped {
         let role = match m.role.as_str() {
             "assistant" => "assistant",
@@ -2799,7 +2807,7 @@ fn safe_artifact_path(artifact_root: &Path, key: &str) -> Result<PathBuf, String
     Ok(artifact_root.join(rel))
 }
 
-fn collect_uploaded_docs(messages: &[AiChatMessage]) -> Vec<UploadedDoc> {
+async fn collect_uploaded_docs(messages: &[AiChatMessage], artifact_root: &Path) -> Vec<UploadedDoc> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for m in messages {
@@ -2808,11 +2816,17 @@ fn collect_uploaded_docs(messages: &[AiChatMessage]) -> Vec<UploadedDoc> {
             if !seen.insert(key) {
                 continue;
             }
-            let text = a
-                .text
-                .as_deref()
-                .map(|s| truncate(s, MAX_UPLOAD_TEXT_CHARS))
-                .unwrap_or_default();
+            let text = if let Some(t) = a.text.as_deref() {
+                truncate(t, MAX_UPLOAD_TEXT_CHARS)
+            } else if let Some(t) = a.preview_text.as_deref() {
+                truncate(t, MAX_UPLOAD_TEXT_CHARS)
+            } else if let Some(k) = a.artifact_key.as_deref() {
+                read_artifact_preview_text(artifact_root, k, MAX_UPLOAD_TEXT_CHARS)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             out.push(UploadedDoc {
                 name: a.name.clone(),
                 mime: a.mime.clone(),
@@ -2833,13 +2847,17 @@ fn render_chat_message_content(m: &AiChatMessage) -> String {
     for a in m.attachments.iter().take(6) {
         let chars = a.text.as_ref().map(|t| t.chars().count()).unwrap_or(0);
         lines.push(format!(
-            "- {} (mime={}, size_kb={}, text_chars={})",
+            "- {} (mime={}, size_kb={}, text_chars={}, artifact_key={}, content_hash={}, format={})",
             a.name,
             if a.mime.is_empty() { "unknown" } else { &a.mime },
             a.size / 1024,
-            chars
+            chars,
+            a.artifact_key.as_deref().unwrap_or("-"),
+            a.content_hash.as_deref().map(|s| &s[..s.len().min(12)]).unwrap_or("-"),
+            a.format.as_deref().unwrap_or("-")
         ));
-        if let Some(t) = a.text.as_deref() {
+        let txt = a.text.as_deref().or(a.preview_text.as_deref());
+        if let Some(t) = txt {
             let preview = t.lines().take(6).collect::<Vec<_>>().join("\n");
             if !preview.trim().is_empty() {
                 lines.push(format!("  preview:\n{}", truncate(&preview, 900)));
@@ -2851,6 +2869,30 @@ fn render_chat_message_content(m: &AiChatMessage) -> String {
     }
     out.push_str(&lines.join("\n"));
     out
+}
+
+async fn read_artifact_preview_text(
+    artifact_root: &Path,
+    key: &str,
+    max_chars: usize,
+) -> Option<String> {
+    let path = safe_artifact_path(artifact_root, key).ok()?;
+    let raw = tokio::fs::read(&path).await.ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    let mut out = String::new();
+    for line in text.lines().take(20) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if text.lines().count() > 24 {
+        out.push_str("...\n");
+        let tail = text.lines().rev().take(6).collect::<Vec<_>>();
+        for line in tail.into_iter().rev() {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Some(truncate(&out, max_chars))
 }
 
 fn extract_content_text(content: Option<&serde_json::Value>) -> String {
