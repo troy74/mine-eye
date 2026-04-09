@@ -12,6 +12,7 @@ use crate::NodeError;
 struct ChartParams {
     template_key: String,
     template_snapshot: Option<Value>,
+    data_fragment: Option<String>,
     data_json_pointer: Option<String>,
     title: Option<String>,
     llm_enabled: bool,
@@ -34,6 +35,10 @@ fn parse_params(job: &JobEnvelope) -> ChartParams {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "variogram".to_string()),
         template_snapshot: ui("/node_ui/template_snapshot").cloned(),
+        data_fragment: ui("/node_ui/data_fragment")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
         data_json_pointer: ui("/node_ui/data_json_pointer")
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
@@ -539,7 +544,15 @@ pub async fn run_plot_chart(
 
     let (mut rows, pointer_used) = extract_array_rows(
         &source,
-        params.data_json_pointer.as_deref(),
+        params
+            .data_json_pointer
+            .as_deref()
+            .or_else(|| {
+                params
+                    .data_fragment
+                    .as_deref()
+                    .filter(|f| !f.eq_ignore_ascii_case("auto") && !f.eq_ignore_ascii_case("custom"))
+            }),
         &candidate_ptrs,
     );
     if rows.is_empty() {

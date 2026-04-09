@@ -68,6 +68,8 @@ struct ModelParams {
     max_blocks: usize,
     domain_mode: String,
     hull_buffer_m: f64,
+    extrapolation_buffer_m: f64,
+    domain_constraint_mode: String,
     sensitivity_min_cutoff: Option<f64>,
     sensitivity_max_cutoff: Option<f64>,
     sensitivity_steps: usize,
@@ -111,6 +113,20 @@ impl Extent3D {
             ymax: self.ymax + dy * p,
             zmin: self.zmin - dz * p,
             zmax: self.zmax + dz * p,
+        }
+    }
+
+    fn with_absolute_padding(self, x_m: f64, y_m: f64, z_m: f64) -> Self {
+        let px = x_m.max(0.0);
+        let py = y_m.max(0.0);
+        let pz = z_m.max(0.0);
+        Self {
+            xmin: self.xmin - px,
+            xmax: self.xmax + px,
+            ymin: self.ymin - py,
+            ymax: self.ymax + py,
+            zmin: self.zmin - pz,
+            zmax: self.zmax + pz,
         }
     }
 }
@@ -265,6 +281,8 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         max_blocks: parse_usize("/node_ui/max_blocks", 45000).clamp(1000, 250000),
         domain_mode: parse_str("/node_ui/domain_mode", "full_extent"),
         hull_buffer_m: parse_f64("/node_ui/hull_buffer_m", 0.0).max(0.0),
+        extrapolation_buffer_m: parse_f64("/node_ui/extrapolation_buffer_m", 20.0).max(0.0),
+        domain_constraint_mode: parse_str("/node_ui/domain_constraint_mode", "none"),
         sensitivity_min_cutoff: ui("/node_ui/sensitivity_min_cutoff").and_then(parse_numeric_value),
         sensitivity_max_cutoff: ui("/node_ui/sensitivity_max_cutoff").and_then(parse_numeric_value),
         sensitivity_steps: parse_usize("/node_ui/sensitivity_steps", 8).clamp(3, 40),
@@ -787,9 +805,22 @@ pub async fn run_block_grade_model(
         )));
     }
 
-    let extent = infer_extent(&samples, best_terrain.as_ref())
+    let mut extent = infer_extent(&samples, best_terrain.as_ref())
         .ok_or_else(|| NodeError::InvalidConfig("unable to infer model extent".into()))?
         .with_padding(0.05);
+
+    // Allow controlled extrapolation beyond sample extents.
+    let ext_xy = if params.extrapolation_buffer_m > 0.0 {
+        params.extrapolation_buffer_m
+    } else {
+        params.block_size_x.max(params.block_size_y)
+    };
+    let ext_z = if params.extrapolation_buffer_m > 0.0 {
+        params.extrapolation_buffer_m
+    } else {
+        params.block_size_z
+    };
+    extent = extent.with_absolute_padding(ext_xy, ext_xy, ext_z);
 
     let mut dx = params.block_size_x;
     let mut dy = params.block_size_y;
@@ -1150,9 +1181,11 @@ pub async fn run_block_grade_model(
             "sg_mode": params.sg_mode,
             "sg_field": params.sg_field,
             "sg_constant": params.sg_constant,
-            "domain_mode": params.domain_mode,
-            "hull_buffer_m": params.hull_buffer_m
-        },
+                "domain_mode": params.domain_mode,
+                "hull_buffer_m": params.hull_buffer_m,
+                "extrapolation_buffer_m": params.extrapolation_buffer_m,
+                "domain_constraint_mode": params.domain_constraint_mode
+            },
         "support_diagnostics": {
             "mean_n_samples_used": mean_n_samples_used,
             "mean_nearest_sample_distance_m": mean_nearest_sample_distance_m,
@@ -1177,9 +1210,11 @@ pub async fn run_block_grade_model(
         "min_samples": params.min_samples,
         "max_samples": params.max_samples,
         "clip_mode": params.clip_mode,
-        "domain_mode": params.domain_mode,
-        "hull_buffer_m": params.hull_buffer_m,
-        "sg_mode": params.sg_mode,
+            "domain_mode": params.domain_mode,
+            "hull_buffer_m": params.hull_buffer_m,
+            "extrapolation_buffer_m": params.extrapolation_buffer_m,
+            "domain_constraint_mode": params.domain_constraint_mode,
+            "sg_mode": params.sg_mode,
         "sg_field": params.sg_field,
         "block_size_m": { "x": dx, "y": dy, "z": dz },
         "grid_shape": { "nx": grid.0, "ny": grid.1, "nz": grid.2 },

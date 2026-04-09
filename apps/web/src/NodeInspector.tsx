@@ -467,8 +467,20 @@ export function NodeInspector({
   const [bgDomainMode, setBgDomainMode] = useState<string>(
     () => (typeof initialUi.domain_mode === "string" ? initialUi.domain_mode : "full_extent")
   );
+  const [bgDomainConstraintMode, setBgDomainConstraintMode] = useState<string>(
+    () =>
+      typeof initialUi.domain_constraint_mode === "string"
+        ? initialUi.domain_constraint_mode
+        : "none"
+  );
   const [bgHullBufferM, setBgHullBufferM] = useState<string>(
     () => (typeof initialUi.hull_buffer_m === "number" ? String(initialUi.hull_buffer_m) : "0")
+  );
+  const [bgExtrapolationBufferM, setBgExtrapolationBufferM] = useState<string>(
+    () =>
+      typeof initialUi.extrapolation_buffer_m === "number"
+        ? String(initialUi.extrapolation_buffer_m)
+        : "20"
   );
   const [bgSensitivityMin, setBgSensitivityMin] = useState<string>(
     () =>
@@ -521,6 +533,9 @@ export function NodeInspector({
   );
   const [chartDataPointer, setChartDataPointer] = useState<string>(
     () => (typeof initialUi.data_json_pointer === "string" ? initialUi.data_json_pointer : "")
+  );
+  const [chartDataFragment, setChartDataFragment] = useState<string>(
+    () => (typeof initialUi.data_fragment === "string" ? initialUi.data_fragment : "auto")
   );
   const [chartTitle, setChartTitle] = useState<string>(
     () => (typeof initialUi.title === "string" ? initialUi.title : "")
@@ -741,7 +756,13 @@ export function NodeInspector({
     setBgPalette(typeof u.palette === "string" ? u.palette : "viridis");
     setBgMaxBlocks(typeof u.max_blocks === "number" ? String(u.max_blocks) : "45000");
     setBgDomainMode(typeof u.domain_mode === "string" ? u.domain_mode : "full_extent");
+    setBgDomainConstraintMode(
+      typeof u.domain_constraint_mode === "string" ? u.domain_constraint_mode : "none"
+    );
     setBgHullBufferM(typeof u.hull_buffer_m === "number" ? String(u.hull_buffer_m) : "0");
+    setBgExtrapolationBufferM(
+      typeof u.extrapolation_buffer_m === "number" ? String(u.extrapolation_buffer_m) : "20"
+    );
     setBgSensitivityMin(
       typeof u.sensitivity_min_cutoff === "number" ? String(u.sensitivity_min_cutoff) : ""
     );
@@ -761,6 +782,7 @@ export function NodeInspector({
     setChartTemplateKey(typeof u.template_key === "string" ? u.template_key : "variogram");
     setChartTemplateId(typeof u.template_id === "string" ? u.template_id : "");
     setChartDataPointer(typeof u.data_json_pointer === "string" ? u.data_json_pointer : "");
+    setChartDataFragment(typeof u.data_fragment === "string" ? u.data_fragment : "auto");
     setChartTitle(typeof u.title === "string" ? u.title : "");
     setChartLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : false);
     setChartObjective(typeof u.user_objective === "string" ? u.user_objective : "");
@@ -976,6 +998,27 @@ export function NodeInspector({
     }
   }, [isPlotChartNode, chartTemplates, chartTemplateId, chartTemplateKey, chartDataPointer]);
 
+  const chartFragmentOptions = useMemo(() => {
+    const picked =
+      chartTemplates.find((t) => t.id === chartTemplateId) ??
+      chartTemplates.find((t) => t.key === chartTemplateKey) ??
+      null;
+    const ptrs = new Set<string>([
+      "/variogram/bins",
+      "/cutoff_sensitivity",
+      "/grade_histogram",
+      "/summary",
+      "/semantic_summary",
+      "/points",
+      "/rows",
+      "/bins",
+    ]);
+    const fromTemplate = (picked?.template_schema?.default_data_pointer_candidates as unknown[] | undefined)
+      ?.filter((x): x is string => typeof x === "string");
+    for (const p of fromTemplate ?? []) ptrs.add(p);
+    return ["auto", "custom", ...Array.from(ptrs)];
+  }, [chartTemplates, chartTemplateId, chartTemplateKey]);
+
   const onPickFile = useCallback(
     (file: File | null) => {
       if (!file) return;
@@ -1146,7 +1189,9 @@ export function NodeInspector({
       ui.palette = bgPalette;
       ui.max_blocks = Math.max(1000, Math.trunc(n(bgMaxBlocks, 45000)));
       ui.domain_mode = bgDomainMode;
+      ui.domain_constraint_mode = bgDomainConstraintMode;
       ui.hull_buffer_m = Math.max(0, n(bgHullBufferM, 0));
+      ui.extrapolation_buffer_m = Math.max(0, n(bgExtrapolationBufferM, 20));
       ui.sensitivity_min_cutoff =
         bgSensitivityMin.trim().length > 0 ? n(bgSensitivityMin, 0) : undefined;
       ui.sensitivity_max_cutoff =
@@ -1163,6 +1208,7 @@ export function NodeInspector({
       ui.template_key = chartTemplateKey || "variogram";
       ui.template_id = picked?.id;
       ui.template_snapshot = picked?.template_schema;
+      ui.data_fragment = chartDataFragment;
       ui.data_json_pointer = chartDataPointer.trim() || undefined;
       ui.title = chartTitle.trim() || undefined;
       ui.llm_enabled = chartLlmEnabled;
@@ -1290,7 +1336,9 @@ export function NodeInspector({
     bgPalette,
     bgMaxBlocks,
     bgDomainMode,
+    bgDomainConstraintMode,
     bgHullBufferM,
+    bgExtrapolationBufferM,
     bgSensitivityMin,
     bgSensitivityMax,
     bgSensitivitySteps,
@@ -1300,6 +1348,7 @@ export function NodeInspector({
     isPlotChartNode,
     chartTemplateKey,
     chartTemplateId,
+    chartDataFragment,
     chartDataPointer,
     chartTitle,
     chartLlmEnabled,
@@ -2950,6 +2999,32 @@ export function NodeInspector({
                   />
                 </label>
                 <label style={lab}>
+                  <span style={labSpan}>Extrapolation buffer (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={bgExtrapolationBufferM}
+                    onChange={(e) => setBgExtrapolationBufferM(e.target.value)}
+                    placeholder="20"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Domain constraint source</span>
+                  <select
+                    value={bgDomainConstraintMode}
+                    onChange={(e) => setBgDomainConstraintMode(e.target.value)}
+                    style={sel}
+                  >
+                    <option value="none">None (current)</option>
+                    <option value="polygon_mask">Polygon/AOI mask</option>
+                    <option value="mesh_containment">Containing mesh (future)</option>
+                    <option value="mesh_clipping_planes">Clipping planes (future)</option>
+                  </select>
+                </label>
+                <label style={lab}>
                   <span style={labSpan}>Clip mode</span>
                   <select value={bgClipMode} onChange={(e) => setBgClipMode(e.target.value)} style={sel}>
                     <option value="topography">Topography (ground)</option>
@@ -3125,11 +3200,36 @@ export function NodeInspector({
                 </select>
               </label>
               <label style={lab}>
+                <span style={labSpan}>Data fragment</span>
+                <select
+                  value={chartDataFragment}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setChartDataFragment(v);
+                    if (v === "auto") {
+                      setChartDataPointer("");
+                    } else {
+                      setChartDataPointer(v);
+                    }
+                  }}
+                  style={sel}
+                >
+                  {chartFragmentOptions.map((p) => (
+                    <option key={p} value={p}>
+                      {p === "auto" ? "Auto" : p === "custom" ? "Custom (manual pointer)" : p}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={lab}>
                 <span style={labSpan}>Data JSON pointer</span>
                 <input
                   type="text"
                   value={chartDataPointer}
-                  onChange={(e) => setChartDataPointer(e.target.value)}
+                  onChange={(e) => {
+                    setChartDataPointer(e.target.value);
+                    setChartDataFragment("custom");
+                  }}
                   placeholder="/variogram/bins"
                   style={{ ...sel, fontFamily: "inherit" }}
                 />

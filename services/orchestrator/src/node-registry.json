@@ -199,7 +199,7 @@
       "kind": "block_grade_model",
       "category": "model",
       "label": "Block grade model",
-      "role": "Model · 3D grade field → clipped block model + centers + resource report",
+      "role": "Model · 3D grade field → constrained block model + centers + resource report",
       "menu": {
         "enabled": true,
         "order": 56
@@ -215,6 +215,12 @@
             "id": "terrain_in",
             "label": "Terrain (optional clip)",
             "semantic": "surface",
+            "optional": true
+          },
+          {
+            "id": "domain_mesh_in",
+            "label": "Domain mesh (future constraint)",
+            "semantic": "mesh",
             "optional": true
           }
         ],
