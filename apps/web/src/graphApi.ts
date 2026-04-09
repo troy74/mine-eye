@@ -205,6 +205,7 @@ export type NodeJobRuntime = {
     message?: string;
     stats?: Record<string, unknown> | null;
     updated_at?: string;
+    heartbeat_at?: string;
   } | null;
 };
 

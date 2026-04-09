@@ -46,17 +46,10 @@ async fn main() -> anyhow::Result<()> {
                 let (hb_tx, mut hb_rx) = tokio::sync::oneshot::channel::<()>();
                 let hb_jobs = jobs.clone();
                 tokio::spawn(async move {
-                    let started = tokio::time::Instant::now();
                     loop {
                         tokio::select! {
                             _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                                let _ = hb_jobs.update_progress(
-                                    row_id_for_progress,
-                                    "running",
-                                    None,
-                                    Some("Worker heartbeat"),
-                                    Some(serde_json::json!({"elapsed_s": started.elapsed().as_secs()})),
-                                ).await;
+                                let _ = hb_jobs.touch_heartbeat(row_id_for_progress).await;
                             }
                             _ = &mut hb_rx => {
                                 break;

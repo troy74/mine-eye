@@ -28,6 +28,7 @@ pub trait JobQueue: Send + Sync {
         message: Option<&str>,
         stats: Option<Value>,
     ) -> Result<(), StoreError>;
+    async fn touch_heartbeat(&self, job_row_id: Uuid) -> Result<(), StoreError>;
     async fn latest_for_node(
         &self,
         graph_id: Uuid,
@@ -129,6 +130,7 @@ impl JobQueue for PgJobQueue {
             "percent": 0.01,
             "message": "Job claimed by worker",
             "updated_at": chrono::Utc::now(),
+            "heartbeat_at": chrono::Utc::now(),
         }))
         .execute(&mut *tx)
         .await?;
@@ -172,6 +174,7 @@ impl JobQueue for PgJobQueue {
             "percent": if result.status == JobStatus::Succeeded { 1.0 } else { 0.0 },
             "message": result.error_message.clone().unwrap_or_else(|| "Job finished".to_string()),
             "updated_at": chrono::Utc::now(),
+            "heartbeat_at": chrono::Utc::now(),
         }))
         .execute(&self.pool)
         .await?;
@@ -192,6 +195,7 @@ impl JobQueue for PgJobQueue {
             "message": message.unwrap_or(""),
             "stats": stats.unwrap_or(Value::Null),
             "updated_at": chrono::Utc::now(),
+            "heartbeat_at": chrono::Utc::now(),
         });
         sqlx::query(
             r#"
@@ -202,6 +206,25 @@ impl JobQueue for PgJobQueue {
         )
         .bind(job_row_id)
         .bind(progress)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn touch_heartbeat(&self, job_row_id: Uuid) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            UPDATE job_queue
+            SET payload = jsonb_set(
+                COALESCE(payload, '{}'::jsonb),
+                '{runtime_progress,heartbeat_at}',
+                to_jsonb(now()),
+                true
+            )
+            WHERE id = $1
+            "#,
+        )
+        .bind(job_row_id)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -977,9 +977,11 @@ export function NodeInspector({
           const startedMs = rt.started_at ? new Date(rt.started_at).getTime() : null;
           const progressMs =
             typeof p?.updated_at === "string" ? new Date(p.updated_at).getTime() : null;
+          const heartbeatMs =
+            typeof p?.heartbeat_at === "string" ? new Date(p.heartbeat_at).getTime() : progressMs;
           const hbAge =
-            progressMs && Number.isFinite(progressMs)
-              ? Math.max(0, Math.round((Date.now() - progressMs) / 1000))
+            heartbeatMs && Number.isFinite(heartbeatMs)
+              ? Math.max(0, Math.round((Date.now() - heartbeatMs) / 1000))
               : null;
           const stale = rt.status === "running" && (hbAge === null || hbAge > 20);
           const elapsed =
