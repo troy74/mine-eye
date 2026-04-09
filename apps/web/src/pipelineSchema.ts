@@ -22,6 +22,7 @@ export const ACQUISITION_CSV_KINDS = [
   "survey_ingest",
   "surface_sample_ingest",
   "assay_ingest",
+  "magnetic_mapper",
 ] as const;
 
 export type AcquisitionCsvKind = (typeof ACQUISITION_CSV_KINDS)[number];

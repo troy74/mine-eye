@@ -532,6 +532,7 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "survey_ingest"
                     | "surface_sample_ingest"
                     | "assay_ingest"
+                    | "magnetic_mapper"
                     | "data_model_transform"
                     | "assay_heatmap"
                     | "terrain_adjust"
@@ -540,7 +541,7 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "tilebroker"
             );
             let edit_tab = match kind {
-                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" => "mapping",
+                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" | "magnetic_mapper" => "mapping",
                 "data_model_transform" | "assay_heatmap" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
                 _ => "summary",
             };

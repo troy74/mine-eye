@@ -4,7 +4,7 @@
 use mine_eye_types::{
     CollarRecord, CrsRecord, IntervalSampleRecord, NodeRecord, SurveyStationRecord,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 pub fn synthesize_input_payload(
     node: &NodeRecord,
@@ -15,6 +15,7 @@ pub fn synthesize_input_payload(
         "survey_ingest" => survey_payload_from_ui(node),
         "surface_sample_ingest" => surface_sample_payload_from_ui(node, project_crs),
         "assay_ingest" => assay_payload_from_ui(node),
+        "magnetic_mapper" => magnetic_payload_from_ui(node, project_crs),
         _ => None,
     }
 }
@@ -390,5 +391,56 @@ fn surface_sample_payload_from_ui(
         None
     } else {
         Some(json!({ "points": points }))
+    }
+}
+
+fn magnetic_payload_from_ui(node: &NodeRecord, project_crs: Option<&CrsRecord>) -> Option<Value> {
+    let ui = node.config.params.get("ui")?;
+    let headers: Vec<String> = serde_json::from_value(ui.get("csv_headers")?.clone()).ok()?;
+    if headers.is_empty() {
+        return None;
+    }
+    let rows: Vec<Vec<String>> = rows_from_ui(ui)?;
+    let use_project = ui
+        .get("use_project_crs")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let source_crs = if use_project {
+        project_crs
+            .cloned()
+            .unwrap_or_else(|| CrsRecord::epsg(4326))
+    } else {
+        let epsg = ui
+            .get("source_crs_epsg")
+            .and_then(|v| v.as_u64())
+            .map(|u| u as i32)
+            .unwrap_or(4326);
+        CrsRecord::epsg(epsg)
+    };
+    let mut out_rows = Vec::<Value>::new();
+    for row in rows {
+        let mut obj = Map::new();
+        for (i, h) in headers.iter().enumerate() {
+            if i >= row.len() {
+                continue;
+            }
+            let raw = row[i].trim();
+            if raw.is_empty() {
+                continue;
+            }
+            if let Ok(v) = raw.replace(',', ".").parse::<f64>() {
+                obj.insert(h.clone(), json!(v));
+            } else {
+                obj.insert(h.clone(), json!(raw));
+            }
+        }
+        if !obj.is_empty() {
+            out_rows.push(Value::Object(obj));
+        }
+    }
+    if out_rows.is_empty() {
+        None
+    } else {
+        Some(json!({ "rows": out_rows, "source_crs": source_crs }))
     }
 }

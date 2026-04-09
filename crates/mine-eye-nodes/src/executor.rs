@@ -8,6 +8,7 @@ use crate::kinds::{
     run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
     run_dem_fetch, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_data_model_transform,
+    run_magnetic_mapper,
     run_block_grade_model,
     run_plot_chart,
     run_md_viewer,
@@ -49,6 +50,7 @@ impl RegistryExecutor {
             Arc::new(SurfaceSampleIngestExecutor),
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
+        inner.insert("magnetic_mapper".into(), Arc::new(MagneticMapperExecutor));
         inner.insert("data_model_transform".into(), Arc::new(DataModelTransformExecutor));
         inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
         inner.insert("surface_iso_extract".into(), Arc::new(SurfaceIsoExtractExecutor));
@@ -128,6 +130,19 @@ impl NodeExecutor for AssayIngestExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_assay_ingest(ctx, job).await
+    }
+}
+
+struct MagneticMapperExecutor;
+
+#[async_trait]
+impl NodeExecutor for MagneticMapperExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_magnetic_mapper(ctx, job).await
     }
 }
 

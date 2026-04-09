@@ -94,6 +94,39 @@
       "plugin_source": "core"
     },
     {
+      "kind": "magnetic_mapper",
+      "category": "input",
+      "label": "Magnetic mapper",
+      "role": "Acquisition · airborne magnetics ingest + cleanup + grid + derivatives",
+      "menu": {
+        "enabled": true,
+        "order": 32
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "mag_points",
+            "label": "Mag points",
+            "semantic": "point_set"
+          },
+          {
+            "id": "mag_grid",
+            "label": "Mag grid",
+            "semantic": "table"
+          },
+          {
+            "id": "mag_report",
+            "label": "Mag report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
       "kind": "data_model_transform",
       "category": "transform",
       "label": "Data model transform",

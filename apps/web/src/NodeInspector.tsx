@@ -96,10 +96,11 @@ export function NodeInspector({
   const isTilebrokerNode = kind === "tilebroker";
   const isAoiNode = kind === "aoi";
   const isBlockGradeModelNode = kind === "block_grade_model";
+  const isMagneticMapperNode = kind === "magnetic_mapper";
   const isMdViewerNode = kind === "md_viewer";
   const isPlotChartNode = kind === "plot_chart";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMdViewerNode || isPlotChartNode;
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isMdViewerNode || isPlotChartNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -551,6 +552,48 @@ export function NodeInspector({
         ? String(initialUi.variogram_max_range_m)
         : "0"
   );
+  const [mmGridMethod, setMmGridMethod] = useState<string>(
+    () => (typeof initialUi.grid_method === "string" ? initialUi.grid_method : "idw")
+  );
+  const [mmGridResolutionM, setMmGridResolutionM] = useState<string>(
+    () =>
+      typeof initialUi.grid_resolution_m === "number"
+        ? String(initialUi.grid_resolution_m)
+        : "25"
+  );
+  const [mmIdwPower, setMmIdwPower] = useState<string>(
+    () => (typeof initialUi.idw_power === "number" ? String(initialUi.idw_power) : "2")
+  );
+  const [mmSearchRadiusM, setMmSearchRadiusM] = useState<string>(
+    () =>
+      typeof initialUi.search_radius_m === "number"
+        ? String(initialUi.search_radius_m)
+        : "0"
+  );
+  const [mmMaxPoints, setMmMaxPoints] = useState<string>(
+    () => (typeof initialUi.max_points === "number" ? String(initialUi.max_points) : "32")
+  );
+  const [mmDespikeSigma, setMmDespikeSigma] = useState<string>(
+    () =>
+      typeof initialUi.despike_sigma === "number"
+        ? String(initialUi.despike_sigma)
+        : "6"
+  );
+  const [mmSmoothWindowM, setMmSmoothWindowM] = useState<string>(
+    () =>
+      typeof initialUi.smooth_window_m === "number"
+        ? String(initialUi.smooth_window_m)
+        : "0"
+  );
+  const [mmResampleSpacingM, setMmResampleSpacingM] = useState<string>(
+    () =>
+      typeof initialUi.resample_spacing_m === "number"
+        ? String(initialUi.resample_spacing_m)
+        : "0"
+  );
+  const [mmLlmEnabled, setMmLlmEnabled] = useState<boolean>(
+    () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : false)
+  );
   const [mdTitle, setMdTitle] = useState<string>(
     () => (typeof initialUi.title === "string" ? initialUi.title : "Semantic JSON Report")
   );
@@ -824,6 +867,25 @@ export function NodeInspector({
     setBgVariogramRange(
       typeof u.variogram_max_range_m === "number" ? String(u.variogram_max_range_m) : "0"
     );
+    setMmGridMethod(typeof u.grid_method === "string" ? u.grid_method : "idw");
+    setMmGridResolutionM(
+      typeof u.grid_resolution_m === "number" ? String(u.grid_resolution_m) : "25"
+    );
+    setMmIdwPower(typeof u.idw_power === "number" ? String(u.idw_power) : "2");
+    setMmSearchRadiusM(
+      typeof u.search_radius_m === "number" ? String(u.search_radius_m) : "0"
+    );
+    setMmMaxPoints(typeof u.max_points === "number" ? String(u.max_points) : "32");
+    setMmDespikeSigma(
+      typeof u.despike_sigma === "number" ? String(u.despike_sigma) : "6"
+    );
+    setMmSmoothWindowM(
+      typeof u.smooth_window_m === "number" ? String(u.smooth_window_m) : "0"
+    );
+    setMmResampleSpacingM(
+      typeof u.resample_spacing_m === "number" ? String(u.resample_spacing_m) : "0"
+    );
+    setMmLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : false);
     setMdTitle(typeof u.title === "string" ? u.title : "Semantic JSON Report");
     setMdLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : true);
     setChartTemplateKey(typeof u.template_key === "string" ? u.template_key : "variogram");
@@ -1270,6 +1332,16 @@ export function NodeInspector({
       ui.user_objective = chartObjective.trim() || undefined;
       ui.max_context_rows = Math.max(3, Math.min(40, Math.trunc(n(chartMaxContextRows, 8))));
       ui.max_render_rows = Math.max(100, Math.min(50000, Math.trunc(n(chartMaxRenderRows, 3000))));
+    } else if (isMagneticMapperNode) {
+      ui.grid_method = mmGridMethod === "minimum_curvature" ? "minimum_curvature" : "idw";
+      ui.grid_resolution_m = Math.max(1, n(mmGridResolutionM, 25));
+      ui.idw_power = Math.max(1, Math.min(6, n(mmIdwPower, 2)));
+      ui.search_radius_m = Math.max(0, n(mmSearchRadiusM, 0));
+      ui.max_points = Math.max(4, Math.min(256, Math.trunc(n(mmMaxPoints, 32))));
+      ui.despike_sigma = Math.max(2, Math.min(20, n(mmDespikeSigma, 6)));
+      ui.smooth_window_m = Math.max(0, n(mmSmoothWindowM, 0));
+      ui.resample_spacing_m = Math.max(0, n(mmResampleSpacingM, 0));
+      ui.llm_enabled = mmLlmEnabled;
     } else if (isMdViewerNode) {
       ui.title = mdTitle.trim() || "Semantic JSON Report";
       ui.llm_enabled = mdLlmEnabled;
@@ -1408,6 +1480,16 @@ export function NodeInspector({
     bgVariogramLags,
     bgVariogramMaxPairs,
     bgVariogramRange,
+    isMagneticMapperNode,
+    mmGridMethod,
+    mmGridResolutionM,
+    mmIdwPower,
+    mmSearchRadiusM,
+    mmMaxPoints,
+    mmDespikeSigma,
+    mmSmoothWindowM,
+    mmResampleSpacingM,
+    mmLlmEnabled,
     isPlotChartNode,
     chartTemplateKey,
     chartTemplateId,
@@ -2052,6 +2134,22 @@ export function NodeInspector({
                     {selectCol("hole_id", "Hole id")}
                     {selectCol("from_m", "From depth (m)")}
                     {selectCol("to_m", "To depth (m)")}
+                  </div>
+                )}
+                {kind === "magnetic_mapper" && (
+                  <div style={mapGrid}>
+                    {selectCol("line_id", "Flight line id")}
+                    {selectCol("utc", "UTC / timestamp")}
+                    {selectCol("fid", "FID / sequence")}
+                    {selectCol("x", "Projected X / Easting")}
+                    {selectCol("y", "Projected Y / Northing")}
+                    {selectCol("lon", "Longitude (WGS84)")}
+                    {selectCol("lat", "Latitude (WGS84)")}
+                    {selectCol("tmf", "TMF / total field")}
+                    {selectCol("mag_lev", "MAG_LEV fallback")}
+                    {selectCol("igrf", "IGRF (optional)")}
+                    {selectCol("radar", "Radar / clearance Z")}
+                    {selectCol("gps_alt", "GPS altitude Z fallback")}
                   </div>
                 )}
                 {previewRows.length > 0 && (
@@ -3308,6 +3406,108 @@ export function NodeInspector({
               <p style={{ opacity: 0.65, fontSize: 11, marginTop: 0 }}>
                 If disabled or API call fails, the node emits deterministic fallback summary markdown.
               </p>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isMagneticMapperNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Clean and map airborne magnetic survey data to render-ready points and gridded products.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Grid method</span>
+                <select value={mmGridMethod} onChange={(e) => setMmGridMethod(e.target.value)} style={sel}>
+                  <option value="idw">IDW</option>
+                  <option value="minimum_curvature">Minimum curvature (smoothed)</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Grid resolution (m)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmGridResolutionM}
+                  onChange={(e) => setMmGridResolutionM(e.target.value)}
+                  placeholder="25"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>IDW power</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmIdwPower}
+                  onChange={(e) => setMmIdwPower(e.target.value)}
+                  placeholder="2"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Search radius (m, 0=auto)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmSearchRadiusM}
+                  onChange={(e) => setMmSearchRadiusM(e.target.value)}
+                  placeholder="0"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Max points per cell</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={mmMaxPoints}
+                  onChange={(e) => setMmMaxPoints(e.target.value)}
+                  placeholder="32"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Despike sigma</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmDespikeSigma}
+                  onChange={(e) => setMmDespikeSigma(e.target.value)}
+                  placeholder="6"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Smoothing window (m)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmSmoothWindowM}
+                  onChange={(e) => setMmSmoothWindowM(e.target.value)}
+                  placeholder="0"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Resample spacing (m)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={mmResampleSpacingM}
+                  onChange={(e) => setMmResampleSpacingM(e.target.value)}
+                  placeholder="0"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <input
+                  type="checkbox"
+                  checked={mmLlmEnabled}
+                  onChange={(e) => setMmLlmEnabled(e.target.checked)}
+                />
+                <span style={{ marginLeft: 6 }}>LLM assist for QA commentary/mutation hints</span>
+              </label>
             </div>
           </div>
         )}
