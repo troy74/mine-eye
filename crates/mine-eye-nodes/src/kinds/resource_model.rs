@@ -206,6 +206,37 @@ fn parse_surface_grid(root: &serde_json::Value) -> Option<SurfaceGrid> {
     })
 }
 
+fn surface_grid_priority(root: &serde_json::Value, project_epsg: Option<i32>) -> i32 {
+    let mut p = 0i32;
+    let t = root
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if root.get("confidence_grid").is_some() {
+        p += 120; // DEM-like terrain outputs
+    }
+    if t.contains("terrain") || t.contains("dem") {
+        p += 80;
+    }
+    if t.contains("heatmap") || t.contains("assay") {
+        p -= 120; // avoid scalar surfaces as topography
+    }
+    if let (Some(pe), Some(ce)) = (
+        project_epsg,
+        root.pointer("/crs/epsg")
+            .and_then(parse_numeric_value)
+            .map(|v| v as i32),
+    ) {
+        if pe == ce {
+            p += 25;
+        } else {
+            p -= 40;
+        }
+    }
+    p
+}
+
 fn collect_rows<'a>(root: &'a serde_json::Value) -> Vec<&'a serde_json::Value> {
     let mut out = Vec::new();
     if let Some(arr) = root.get("assay_points").and_then(|v| v.as_array()) {
@@ -1129,6 +1160,8 @@ pub async fn run_block_grade_model(
     let mut all_rows: Vec<serde_json::Value> = Vec::new();
     let mut numeric_fields = BTreeSet::new();
     let mut best_terrain: Option<SurfaceGrid> = None;
+    let mut best_terrain_priority = i32::MIN;
+    let mut best_terrain_cells = 0usize;
     let mut project_epsg: Option<i32> = None;
     let mut input_domain_polygon: Option<DomainPolygon> = None;
     let mut input_domain_mesh: Option<TriangleMesh> = None;
@@ -1143,12 +1176,14 @@ pub async fn run_block_grade_model(
         }
         if let Some(sg) = parse_surface_grid(&root) {
             let cells = sg.nx.saturating_mul(sg.ny);
-            let best_cells = best_terrain
-                .as_ref()
-                .map(|g| g.nx.saturating_mul(g.ny))
-                .unwrap_or(0);
-            if cells > best_cells {
+            let pri = surface_grid_priority(
+                &root,
+                project_epsg.or(job.project_crs.as_ref().and_then(|c| c.epsg)),
+            );
+            if pri > best_terrain_priority || (pri == best_terrain_priority && cells > best_terrain_cells) {
                 best_terrain = Some(sg);
+                best_terrain_priority = pri;
+                best_terrain_cells = cells;
             }
         }
         if input_domain_polygon.is_none() {
@@ -1399,7 +1434,7 @@ pub async fn run_block_grade_model(
                             x,
                             y,
                         ) {
-                            if z > top_z {
+                            if z + 0.5 * dz > top_z {
                                 continue;
                             }
                         }
