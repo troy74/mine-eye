@@ -184,6 +184,11 @@ Notes:
   - `affine_xy_z` (bias + tilt)
 - `dem_fetch` now emits `confidence_grid` (`class_ids` + `scores`) for overlay
   rendering in viewers.
+- `heatmap_raster_tile_cache` builds cached heatmap rasters + XYZ tile pyramids from generic XY point measures and emits both:
+  - `raster_tile_manifest.json` (cache metadata + render defaults)
+  - `heatmap_imagery_drape.json` (`scene3d.tilebroker_response.v1` contract for 3D drape wiring)
+- Workspace-level cache defaults are available from the top-right settings cog
+  (`/workspaces/{ws_id}/cache-settings`) and control defaults for max bytes, tile count, zoom range, retention, and auto-prune behavior.
 
 ### 4) Start web app
 
@@ -259,6 +264,23 @@ For deterministic draped terrain scenes:
 6. `threejs_display_node` consuming wired contracts/layers
 
 This ordering keeps AOI, terrain, and imagery explicit and reproducible.
+
+## Recommended Magnetic Pipeline (Current)
+
+For airborne magnetic workflows with large tabular inputs:
+
+1. `observation_ingest` (pointer-first ingest of large source table + schema/audit)
+2. `magnetic_model` (cleanup, despike/smoothing, interpolation, derivatives)
+3. `plan_view_2d` for 2D review (or `threejs_display_node` for 3D context)
+
+Notes:
+- `magnetic_model` emits both full and lightweight `.preview` artifacts (for responsive viewer behavior).
+- In magnetic 2D heatmap controls, measure options are intentionally constrained to:
+  - `M`
+  - `TMF`
+  - `fvd`
+  - `grad_mag`
+  - `tilt`
 
 ## Current Scope
 

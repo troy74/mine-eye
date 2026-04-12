@@ -6,11 +6,12 @@ use async_trait::async_trait;
 use mine_eye_types::{JobEnvelope, JobResult};
 use serde_json::Value;
 use crate::kinds::{
-    run_artifact_ingest,
+    run_observation_ingest,
     run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
     run_dem_fetch, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_data_model_transform,
-    run_magnetic_mapper,
+    run_heatmap_raster_tile_cache,
+    run_magnetic_model,
     run_block_grade_model,
     run_plot_chart,
     run_md_viewer,
@@ -80,10 +81,11 @@ impl RegistryExecutor {
             Arc::new(SurfaceSampleIngestExecutor),
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
-        inner.insert("magnetic_mapper".into(), Arc::new(MagneticMapperExecutor));
-        inner.insert("artifact_ingest".into(), Arc::new(ArtifactIngestExecutor));
+        inner.insert("magnetic_model".into(), Arc::new(MagneticModelExecutor));
+        inner.insert("observation_ingest".into(), Arc::new(ObservationIngestExecutor));
         inner.insert("data_model_transform".into(), Arc::new(DataModelTransformExecutor));
         inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
+        inner.insert("heatmap_raster_tile_cache".into(), Arc::new(HeatmapRasterTileCacheExecutor));
         inner.insert("surface_iso_extract".into(), Arc::new(SurfaceIsoExtractExecutor));
         inner.insert("terrain_adjust".into(), Arc::new(TerrainAdjustExecutor));
         inner.insert("xyz_to_surface".into(), Arc::new(XyzToSurfaceExecutor));
@@ -164,29 +166,29 @@ impl NodeExecutor for AssayIngestExecutor {
     }
 }
 
-struct MagneticMapperExecutor;
+struct MagneticModelExecutor;
 
 #[async_trait]
-impl NodeExecutor for MagneticMapperExecutor {
+impl NodeExecutor for MagneticModelExecutor {
     async fn execute(
         &self,
         ctx: &ExecutionContext<'_>,
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
-        run_magnetic_mapper(ctx, job).await
+        run_magnetic_model(ctx, job).await
     }
 }
 
-struct ArtifactIngestExecutor;
+struct ObservationIngestExecutor;
 
 #[async_trait]
-impl NodeExecutor for ArtifactIngestExecutor {
+impl NodeExecutor for ObservationIngestExecutor {
     async fn execute(
         &self,
         ctx: &ExecutionContext<'_>,
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
-        run_artifact_ingest(ctx, job).await
+        run_observation_ingest(ctx, job).await
     }
 }
 
@@ -226,6 +228,19 @@ impl NodeExecutor for AssayHeatmapExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_assay_heatmap(ctx, job).await
+    }
+}
+
+struct HeatmapRasterTileCacheExecutor;
+
+#[async_trait]
+impl NodeExecutor for HeatmapRasterTileCacheExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_heatmap_raster_tile_cache(ctx, job).await
     }
 }
 

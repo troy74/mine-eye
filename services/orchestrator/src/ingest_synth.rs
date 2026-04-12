@@ -16,7 +16,7 @@ pub fn synthesize_input_payload(
         "survey_ingest" => survey_payload_from_ui(node),
         "surface_sample_ingest" => surface_sample_payload_from_ui(node, project_crs),
         "assay_ingest" => assay_payload_from_ui(node),
-        "magnetic_mapper" => magnetic_payload_from_ui(node, project_crs),
+        "magnetic_model" => magnetic_payload_from_ui(node, project_crs),
         _ => None,
     }
 }
@@ -26,7 +26,7 @@ pub async fn synthesize_input_payload_from_artifact(
     project_crs: Option<&CrsRecord>,
     artifact_root: &Path,
 ) -> Option<Value> {
-    if node.config.kind != "magnetic_mapper" {
+    if node.config.kind != "magnetic_model" {
         return None;
     }
     let ui = node.config.params.get("ui")?;

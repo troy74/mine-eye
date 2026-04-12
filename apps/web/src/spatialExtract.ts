@@ -86,6 +86,36 @@ export function epsgFromCollarJson(text: string): number | null {
   }
 }
 
+/** Best-effort EPSG extraction from common top-level and row-level CRS carriers. */
+export function epsgFromAnyJson(text: string): number | null {
+  try {
+    const root = JSON.parse(text) as Record<string, unknown>;
+    const top = (obj: Record<string, unknown> | null | undefined): number | null => {
+      if (!obj) return null;
+      const e = obj.epsg;
+      return typeof e === "number" && Number.isFinite(e) ? Math.trunc(e) : null;
+    };
+    const asObj = (v: unknown): Record<string, unknown> | null =>
+      v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+
+    const direct =
+      top(asObj(root.crs)) ??
+      top(asObj(root.source_crs)) ??
+      top(asObj(root.parsed_crs)) ??
+      top(asObj(root.output_crs));
+    if (direct) return direct;
+
+    const tryArray = (arr: unknown): number | null => {
+      if (!Array.isArray(arr) || !arr[0] || typeof arr[0] !== "object") return null;
+      const c = (arr[0] as Record<string, unknown>).crs;
+      return top(asObj(c));
+    };
+    return tryArray(root.collars) ?? tryArray(root.points) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Generic x,y points for plan-view (no collar-specific lookup — used for viewer inputs only). */
 export type PlanViewPoint = { x: number; y: number; label: string };
 export type MeasuredPlanPoint = {

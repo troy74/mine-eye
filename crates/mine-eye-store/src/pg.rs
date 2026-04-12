@@ -351,6 +351,42 @@ impl PgStore {
         Ok(())
     }
 
+    pub async fn workspace_cache_settings(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(
+            r#"
+            SELECT cache_settings
+            FROM workspaces
+            WHERE id = $1
+            "#,
+        )
+        .bind(workspace_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(v,)| v))
+    }
+
+    pub async fn update_workspace_cache_settings(
+        &self,
+        workspace_id: Uuid,
+        cache_settings: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"
+            UPDATE workspaces
+            SET cache_settings = $2
+            WHERE id = $1
+            "#,
+        )
+        .bind(workspace_id)
+        .bind(cache_settings)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn workspace_belongs_to_organization(
         &self,
         workspace_id: Uuid,

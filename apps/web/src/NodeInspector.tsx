@@ -96,12 +96,13 @@ export function NodeInspector({
   const isTilebrokerNode = kind === "tilebroker";
   const isAoiNode = kind === "aoi";
   const isBlockGradeModelNode = kind === "block_grade_model";
-  const isMagneticMapperNode = kind === "magnetic_mapper";
-  const isArtifactIngestNode = kind === "artifact_ingest";
+  const isMagneticMapperNode = kind === "magnetic_model";
+  const isHeatmapRasterTileCacheNode = kind === "heatmap_raster_tile_cache";
+  const isArtifactIngestNode = kind === "observation_ingest";
   const isMdViewerNode = kind === "md_viewer";
   const isPlotChartNode = kind === "plot_chart";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isMdViewerNode || isPlotChartNode;
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isHeatmapRasterTileCacheNode || isMdViewerNode || isPlotChartNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -592,6 +593,9 @@ export function NodeInspector({
   const [mmMaxPoints, setMmMaxPoints] = useState<string>(
     () => (typeof initialUi.max_points === "number" ? String(initialUi.max_points) : "32")
   );
+  const [mmMaxGridCells, setMmMaxGridCells] = useState<string>(
+    () => (typeof initialUi.max_grid_cells === "number" ? String(initialUi.max_grid_cells) : "250000")
+  );
   const [mmDespikeSigma, setMmDespikeSigma] = useState<string>(
     () =>
       typeof initialUi.despike_sigma === "number"
@@ -618,6 +622,45 @@ export function NodeInspector({
   );
   const [mmLlmEnabled, setMmLlmEnabled] = useState<boolean>(
     () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : false)
+  );
+  const [rtcMeasure, setRtcMeasure] = useState<string>(
+    () => (typeof initialUi.measure === "string" ? initialUi.measure : "")
+  );
+  const [rtcMethod, setRtcMethod] = useState<string>(
+    () => (typeof initialUi.method === "string" ? initialUi.method : "idw")
+  );
+  const [rtcPalette, setRtcPalette] = useState<string>(
+    () => (typeof initialUi.palette === "string" ? initialUi.palette : "terrain")
+  );
+  const [rtcOpacity, setRtcOpacity] = useState<string>(
+    () => (typeof initialUi.opacity === "number" ? String(initialUi.opacity) : "0.72")
+  );
+  const [rtcGridNx, setRtcGridNx] = useState<string>(
+    () => (typeof initialUi.grid_nx === "number" ? String(initialUi.grid_nx) : "384")
+  );
+  const [rtcGridNy, setRtcGridNy] = useState<string>(
+    () => (typeof initialUi.grid_ny === "number" ? String(initialUi.grid_ny) : "384")
+  );
+  const [rtcClampLowPct, setRtcClampLowPct] = useState<string>(
+    () => (typeof initialUi.clamp_low_pct === "number" ? String(initialUi.clamp_low_pct) : "2")
+  );
+  const [rtcClampHighPct, setRtcClampHighPct] = useState<string>(
+    () => (typeof initialUi.clamp_high_pct === "number" ? String(initialUi.clamp_high_pct) : "98")
+  );
+  const [rtcIdwPower, setRtcIdwPower] = useState<string>(
+    () => (typeof initialUi.idw_power === "number" ? String(initialUi.idw_power) : "2")
+  );
+  const [rtcMaxPoints, setRtcMaxPoints] = useState<string>(
+    () => (typeof initialUi.max_points === "number" ? String(initialUi.max_points) : "32")
+  );
+  const [rtcTileSize, setRtcTileSize] = useState<string>(
+    () => (typeof initialUi.tile_size === "number" ? String(initialUi.tile_size) : "256")
+  );
+  const [rtcMinZoom, setRtcMinZoom] = useState<string>(
+    () => (typeof initialUi.min_zoom === "number" ? String(initialUi.min_zoom) : "0")
+  );
+  const [rtcMaxZoom, setRtcMaxZoom] = useState<string>(
+    () => (typeof initialUi.max_zoom === "number" ? String(initialUi.max_zoom) : "4")
   );
   const [mdTitle, setMdTitle] = useState<string>(
     () => (typeof initialUi.title === "string" ? initialUi.title : "Semantic JSON Report")
@@ -913,6 +956,19 @@ export function NodeInspector({
     );
     setMmDecimatePct(typeof u.decimate_pct === "number" ? String(u.decimate_pct) : "100");
     setMmLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : false);
+    setRtcMeasure(typeof u.measure === "string" ? u.measure : "");
+    setRtcMethod(typeof u.method === "string" ? u.method : "idw");
+    setRtcPalette(typeof u.palette === "string" ? u.palette : "terrain");
+    setRtcOpacity(typeof u.opacity === "number" ? String(u.opacity) : "0.72");
+    setRtcGridNx(typeof u.grid_nx === "number" ? String(u.grid_nx) : "384");
+    setRtcGridNy(typeof u.grid_ny === "number" ? String(u.grid_ny) : "384");
+    setRtcClampLowPct(typeof u.clamp_low_pct === "number" ? String(u.clamp_low_pct) : "2");
+    setRtcClampHighPct(typeof u.clamp_high_pct === "number" ? String(u.clamp_high_pct) : "98");
+    setRtcIdwPower(typeof u.idw_power === "number" ? String(u.idw_power) : "2");
+    setRtcMaxPoints(typeof u.max_points === "number" ? String(u.max_points) : "32");
+    setRtcTileSize(typeof u.tile_size === "number" ? String(u.tile_size) : "256");
+    setRtcMinZoom(typeof u.min_zoom === "number" ? String(u.min_zoom) : "0");
+    setRtcMaxZoom(typeof u.max_zoom === "number" ? String(u.max_zoom) : "4");
     setMdTitle(typeof u.title === "string" ? u.title : "Semantic JSON Report");
     setMdLlmEnabled(typeof u.llm_enabled === "boolean" ? u.llm_enabled : true);
     setChartTemplateKey(typeof u.template_key === "string" ? u.template_key : "variogram");
@@ -1474,11 +1530,29 @@ export function NodeInspector({
       ui.idw_power = Math.max(1, Math.min(6, n(mmIdwPower, 2)));
       ui.search_radius_m = Math.max(0, n(mmSearchRadiusM, 0));
       ui.max_points = Math.max(4, Math.min(256, Math.trunc(n(mmMaxPoints, 32))));
+      ui.max_grid_cells = Math.max(10000, Math.min(2000000, Math.trunc(n(mmMaxGridCells, 250000))));
       ui.despike_sigma = Math.max(2, Math.min(20, n(mmDespikeSigma, 6)));
       ui.smooth_window_m = Math.max(0, n(mmSmoothWindowM, 0));
       ui.resample_spacing_m = Math.max(0, n(mmResampleSpacingM, 0));
       ui.decimate_pct = Math.max(1, Math.min(100, n(mmDecimatePct, 100)));
       ui.llm_enabled = mmLlmEnabled;
+    } else if (isHeatmapRasterTileCacheNode) {
+      ui.measure = rtcMeasure.trim() || undefined;
+      ui.method = rtcMethod === "nearest" ? "nearest" : "idw";
+      ui.palette = rtcPalette.trim() || "terrain";
+      ui.opacity = Math.max(0.05, Math.min(1, n(rtcOpacity, 0.72)));
+      ui.grid_nx = Math.max(64, Math.min(2048, Math.trunc(n(rtcGridNx, 384))));
+      ui.grid_ny = Math.max(64, Math.min(2048, Math.trunc(n(rtcGridNy, 384))));
+      ui.clamp_low_pct = Math.max(0, Math.min(100, n(rtcClampLowPct, 2)));
+      ui.clamp_high_pct = Math.max(0, Math.min(100, n(rtcClampHighPct, 98)));
+      ui.idw_power = Math.max(1, Math.min(6, n(rtcIdwPower, 2)));
+      ui.max_points = Math.max(4, Math.min(256, Math.trunc(n(rtcMaxPoints, 32))));
+      ui.tile_size = Math.max(128, Math.min(512, Math.trunc(n(rtcTileSize, 256))));
+      ui.min_zoom = Math.max(0, Math.min(10, Math.trunc(n(rtcMinZoom, 0))));
+      ui.max_zoom = Math.max(
+        Math.max(0, Math.min(10, Math.trunc(n(rtcMinZoom, 0)))),
+        Math.min(12, Math.trunc(n(rtcMaxZoom, 4)))
+      );
     } else if (isMdViewerNode) {
       ui.title = mdTitle.trim() || "Semantic JSON Report";
       ui.llm_enabled = mdLlmEnabled;
@@ -1637,11 +1711,26 @@ export function NodeInspector({
     mmIdwPower,
     mmSearchRadiusM,
     mmMaxPoints,
+    mmMaxGridCells,
     mmDespikeSigma,
     mmSmoothWindowM,
     mmResampleSpacingM,
     mmDecimatePct,
     mmLlmEnabled,
+    isHeatmapRasterTileCacheNode,
+    rtcMeasure,
+    rtcMethod,
+    rtcPalette,
+    rtcOpacity,
+    rtcGridNx,
+    rtcGridNy,
+    rtcClampLowPct,
+    rtcClampHighPct,
+    rtcIdwPower,
+    rtcMaxPoints,
+    rtcTileSize,
+    rtcMinZoom,
+    rtcMaxZoom,
     isPlotChartNode,
     chartTemplateKey,
     chartTemplateId,
@@ -1721,7 +1810,7 @@ export function NodeInspector({
           const n = Number(t.replace(",", "."));
           return Number.isFinite(n) ? n : t;
         };
-        if (kind === "magnetic_mapper") {
+        if (kind === "magnetic_model") {
           const rows = csvRows.map((r) => {
             const obj: Record<string, unknown> = {};
             headers.forEach((h, i) => {
@@ -1741,7 +1830,7 @@ export function NodeInspector({
           };
         }
       }
-      if (kind === "artifact_ingest" && csvArtifactKey.trim().length > 0) {
+      if (kind === "observation_ingest" && csvArtifactKey.trim().length > 0) {
         inputPayloads[node.id] = {
           csv_artifact_key: csvArtifactKey,
           csv_artifact_hash: csvArtifactHash || undefined,
@@ -1853,14 +1942,18 @@ export function NodeInspector({
               ? "Tilebroker"
               : isAoiNode
                 ? "AOI"
-                : isBlockGradeModelNode
-                  ? "Block model"
+                  : isBlockGradeModelNode
+                    ? "Block model"
+                  : isMagneticMapperNode
+                    ? "Mag model"
+                  : isHeatmapRasterTileCacheNode
+                    ? "Heatmap tiles"
                   : isMdViewerNode
                     ? "Report"
                     : isPlotChartNode
                       ? "Chart"
               : "Config",
-    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMdViewerNode, isPlotChartNode]
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMagneticMapperNode, isHeatmapRasterTileCacheNode, isMdViewerNode, isPlotChartNode]
   );
 
   const tabs = useMemo(() => {
@@ -2298,9 +2391,20 @@ export function NodeInspector({
                     Artifact source: <code>{csvArtifactKey}</code> · hash <code>{csvArtifactHash.slice(0, 12)}</code> · format <code>{csvFormat || "auto"}</code>
                   </div>
                 )}
-                {kind === "artifact_ingest" && (
+                {kind === "observation_ingest" && (
                   <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 10 }}>
-                    This node emits a pointer-first table artifact and an ingest audit report for downstream mapping/model nodes.
+                    This node emits observation points, a table pointer artifact, and an ingest audit report for downstream modeling nodes.
+                  </div>
+                )}
+                {kind === "observation_ingest" && (
+                  <div style={mapGrid}>
+                    {selectCol("x", "Projected X / Easting")}
+                    {selectCol("y", "Projected Y / Northing")}
+                    {selectCol("z", "Z / elevation (optional)")}
+                    {selectCol("lon", "Longitude (WGS84 fallback)")}
+                    {selectCol("lat", "Latitude (WGS84 fallback)")}
+                    {selectCol("t", "Timestamp (optional)")}
+                    {selectCol("line_id", "Line / segment id (optional)")}
                   </div>
                 )}
                 {kind === "collar_ingest" && (
@@ -2345,7 +2449,7 @@ export function NodeInspector({
                     {selectCol("to_m", "To depth (m)")}
                   </div>
                 )}
-                {kind === "magnetic_mapper" && (
+                {kind === "magnetic_model" && (
                   <div style={mapGrid}>
                     {selectCol("line_id", "Flight line id")}
                     {selectCol("utc", "UTC / timestamp")}
@@ -3677,6 +3781,17 @@ export function NodeInspector({
                 />
               </label>
               <label style={lab}>
+                <span style={labSpan}>Max grid cells</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={mmMaxGridCells}
+                  onChange={(e) => setMmMaxGridCells(e.target.value)}
+                  placeholder="250000"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
                 <span style={labSpan}>Despike sigma</span>
                 <input
                   type="text"
@@ -3727,6 +3842,152 @@ export function NodeInspector({
                   onChange={(e) => setMmLlmEnabled(e.target.checked)}
                 />
                 <span style={{ marginLeft: 6 }}>LLM assist for QA commentary/mutation hints</span>
+              </label>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isHeatmapRasterTileCacheNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Build a cached raster + tile pyramid from XY points for fast 2D heatmaps and 3D drape overlays.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Measure field</span>
+                <input
+                  type="text"
+                  value={rtcMeasure}
+                  onChange={(e) => setRtcMeasure(e.target.value)}
+                  placeholder="auto-select first numeric measure"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Interpolation method</span>
+                <select value={rtcMethod} onChange={(e) => setRtcMethod(e.target.value)} style={sel}>
+                  <option value="idw">IDW</option>
+                  <option value="nearest">Nearest</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Palette</span>
+                <select value={rtcPalette} onChange={(e) => setRtcPalette(e.target.value)} style={sel}>
+                  <option value="terrain">Terrain</option>
+                  <option value="rainbow">Rainbow</option>
+                  <option value="viridis">Viridis</option>
+                  <option value="inferno">Inferno</option>
+                </select>
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Opacity (0-1)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={rtcOpacity}
+                  onChange={(e) => setRtcOpacity(e.target.value)}
+                  placeholder="0.72"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Grid width (cells)</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={rtcGridNx}
+                  onChange={(e) => setRtcGridNx(e.target.value)}
+                  placeholder="384"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Grid height (cells)</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={rtcGridNy}
+                  onChange={(e) => setRtcGridNy(e.target.value)}
+                  placeholder="384"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Clamp low (%)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={rtcClampLowPct}
+                  onChange={(e) => setRtcClampLowPct(e.target.value)}
+                  placeholder="2"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Clamp high (%)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={rtcClampHighPct}
+                  onChange={(e) => setRtcClampHighPct(e.target.value)}
+                  placeholder="98"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>IDW power</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={rtcIdwPower}
+                  onChange={(e) => setRtcIdwPower(e.target.value)}
+                  placeholder="2"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Max neighbors</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={rtcMaxPoints}
+                  onChange={(e) => setRtcMaxPoints(e.target.value)}
+                  placeholder="32"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Tile size</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={rtcTileSize}
+                  onChange={(e) => setRtcTileSize(e.target.value)}
+                  placeholder="256"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Min zoom</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={rtcMinZoom}
+                  onChange={(e) => setRtcMinZoom(e.target.value)}
+                  placeholder="0"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
+              </label>
+              <label style={lab}>
+                <span style={labSpan}>Max zoom</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={rtcMaxZoom}
+                  onChange={(e) => setRtcMaxZoom(e.target.value)}
+                  placeholder="4"
+                  style={{ ...sel, fontFamily: "inherit" }}
+                />
               </label>
             </div>
           </div>

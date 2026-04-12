@@ -12,6 +12,11 @@ import {
   type ViewerManifestLayer,
 } from "./graphApi";
 import { isSceneViewInputSemantic } from "./portTaxonomy";
+import {
+  imageryUrlCandidates,
+  parseRasterOverlayContract,
+  type RasterOverlayContract,
+} from "./rasterOverlay";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 
 type Props = {
@@ -132,20 +137,6 @@ type SourceLayer = {
   nodeKind: string;
   label: string;      // human-readable
   dotColor: string;
-};
-
-type ImageryDrapeContract = {
-  schema_id: "scene3d.imagery_drape.v1" | "scene3d.tilebroker_response.v1";
-  provider_id?: string;
-  provider_label?: string;
-  attribution?: string;
-  image_url?: string;
-  image_url_candidates?: string[];
-  tile_url_template?: string;
-  bounds?: { xmin: number; xmax: number; ymin: number; ymax: number };
-  z_mode?: "drape_on_surface" | "flat";
-  quality_flags?: string[];
-  fingerprint?: string;
 };
 
 type LayerStackLayer = {
@@ -1375,13 +1366,6 @@ function resolvePointZ(point: Point3D, grid: TerrainGrid | null): number | null 
   return null;
 }
 
-function parseImageryContract(v: unknown): ImageryDrapeContract | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const obj = v as Record<string, unknown>;
-  if (obj.schema_id !== "scene3d.imagery_drape.v1" && obj.schema_id !== "scene3d.tilebroker_response.v1") return null;
-  return obj as unknown as ImageryDrapeContract;
-}
-
 function parseLayerStackContract(v: unknown): LayerStackContract | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const obj = v as Record<string, unknown>;
@@ -1404,18 +1388,6 @@ function isLikelyPaidProvider(providerId: string): boolean {
   if (!k) return false;
   if (k.startsWith("esri_") || k.startsWith("usgs_")) return false;
   return true;
-}
-
-function imageryUrlCandidates(url: string): string[] {
-  const out: string[] = [url];
-  if (url.includes("/World_Imagery/MapServer/export")) {
-    if (url.includes("services.arcgisonline.com")) {
-      out.push(url.replace("services.arcgisonline.com", "server.arcgisonline.com"));
-    } else if (url.includes("server.arcgisonline.com")) {
-      out.push(url.replace("server.arcgisonline.com", "services.arcgisonline.com"));
-    }
-  }
-  return [...new Set(out)];
 }
 
 function lonLatToWebMercator(lonDeg: number, latDeg: number): [number, number] {
@@ -2586,7 +2558,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const [drapeUrls, setDrapeUrls] = useState<string[]>([]);
   const [drapeStatus, setDrapeStatus] = useState<string>("Drape off.");
   const [drapeLoadError, setDrapeLoadError] = useState<string | null>(null);
-  const [contractImagery, setContractImagery] = useState<ImageryDrapeContract | null>(null);
+  const [contractImagery, setContractImagery] = useState<RasterOverlayContract | null>(null);
   const [contractLayerStack, setContractLayerStack] = useState<LayerStackContract | null>(null);
   const [draggingLayer, setDraggingLayer] = useState<string | null>(null);
   const [expandedLayers, setExpandedLayers] = useState<Record<string, boolean>>({
@@ -2892,7 +2864,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       let bestTerrainGrid: TerrainGrid | null = null;
       let bestTerrainPick: TerrainGridPick | null = null;
       let mergedAoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null = null;
-      let imageryContract: ImageryDrapeContract | null = null;
+      let imageryContract: RasterOverlayContract | null = null;
       let layerStackContract: LayerStackContract | null = null;
       const allMeasures = new Set<string>();
       let loaded = 0;
@@ -2902,7 +2874,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           const txt = await fetchArtifactTextCached(art.url);
           try {
             const raw = JSON.parse(txt) as unknown;
-            const maybeImagery = parseImageryContract(raw);
+            const maybeImagery = parseRasterOverlayContract(raw);
             if (!imageryContract && maybeImagery) imageryContract = maybeImagery;
             const maybeLayerStack = parseLayerStackContract(raw);
             if (!layerStackContract && maybeLayerStack) layerStackContract = maybeLayerStack;

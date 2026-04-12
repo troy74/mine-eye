@@ -14,12 +14,15 @@ import {
   diffGraphRevisions,
   executeGraphPromotion,
   fetchGraph,
+  getWorkspaceCacheSettings,
   listGraphBranches,
   listGraphPromotions,
   listGraphRevisions,
   patchNodeParams,
   runGraph,
   updateWorkspaceProjectCrs,
+  updateWorkspaceCacheSettings,
+  type WorkspaceCacheSettings,
   type ApiBranch,
   type ApiEdge,
   type ApiNode,
@@ -108,6 +111,16 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [revisionDiff, setRevisionDiff] = useState<ApiRevisionDiff | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [cacheSettingsBusy, setCacheSettingsBusy] = useState(false);
+  const [cacheSettings, setCacheSettings] = useState<WorkspaceCacheSettings>({
+    max_bytes: 2_147_483_648,
+    max_tiles: 200_000,
+    default_min_zoom: 0,
+    default_max_zoom: 4,
+    retention_days: 14,
+    auto_prune: true,
+  });
   const lastCheckoutRef = useRef<string | null>(null);
   const workspaceUsedEpsgs = useMemo(
     () => collectWorkspaceUsedEpsg(graphNodes),
@@ -682,6 +695,31 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
     };
   }, [applyProjectCrs, pendingProjectEpsg, workspaceId]);
 
+  useEffect(() => {
+    if (!settingsOpen || !workspaceId) return;
+    let cancelled = false;
+    setCacheSettingsBusy(true);
+    void (async () => {
+      try {
+        const got = await getWorkspaceCacheSettings(workspaceId);
+        if (!cancelled) {
+          setCacheSettings((prev) => ({ ...prev, ...got }));
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setStatus(
+            `Load cache settings failed: ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
+      } finally {
+        if (!cancelled) setCacheSettingsBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsOpen, workspaceId]);
+
   return (
     <div className="mineeye-app-shell" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header
@@ -737,6 +775,7 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
             title="Settings"
             aria-label="Settings"
             className="mineeye-topbar-icon-btn"
+            onClick={() => setSettingsOpen(true)}
             style={{
               width: 34,
               height: 34,
@@ -746,7 +785,7 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
               color: "#c9d1d9",
               display: "grid",
               placeItems: "center",
-              cursor: "default",
+              cursor: "pointer",
               padding: 0,
             }}
           >
@@ -1270,6 +1309,145 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
             })}
           </div>
         </div>
+        {settingsOpen && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 1200,
+              background: "rgba(1,4,9,0.55)",
+              display: "grid",
+              placeItems: "center",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                width: "min(560px, calc(100vw - 32px))",
+                borderRadius: 14,
+                border: "1px solid #30363d",
+                background: "#0d1117",
+                boxShadow: "0 24px 48px rgba(0,0,0,0.4)",
+                padding: 16,
+                display: "grid",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <strong style={{ fontSize: 16 }}>Workspace Cache Settings</strong>
+                <button className="me-btn" onClick={() => setSettingsOpen(false)}>Close</button>
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.78 }}>
+                Controls default cache policy for generated raster/tile artifacts in this workspace.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12 }}>Max cache bytes</span>
+                  <input
+                    className="me-input"
+                    type="number"
+                    value={Math.trunc(cacheSettings.max_bytes ?? 0)}
+                    onChange={(e) =>
+                      setCacheSettings((p) => ({
+                        ...p,
+                        max_bytes: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                      }))
+                    }
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12 }}>Max cached tiles</span>
+                  <input
+                    className="me-input"
+                    type="number"
+                    value={Math.trunc(cacheSettings.max_tiles ?? 0)}
+                    onChange={(e) =>
+                      setCacheSettings((p) => ({
+                        ...p,
+                        max_tiles: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                      }))
+                    }
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12 }}>Default min zoom</span>
+                  <input
+                    className="me-input"
+                    type="number"
+                    value={Math.trunc(cacheSettings.default_min_zoom ?? 0)}
+                    onChange={(e) =>
+                      setCacheSettings((p) => ({
+                        ...p,
+                        default_min_zoom: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                      }))
+                    }
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12 }}>Default max zoom</span>
+                  <input
+                    className="me-input"
+                    type="number"
+                    value={Math.trunc(cacheSettings.default_max_zoom ?? 0)}
+                    onChange={(e) =>
+                      setCacheSettings((p) => ({
+                        ...p,
+                        default_max_zoom: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                      }))
+                    }
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 4 }}>
+                  <span style={{ fontSize: 12 }}>Retention days</span>
+                  <input
+                    className="me-input"
+                    type="number"
+                    value={Math.trunc(cacheSettings.retention_days ?? 0)}
+                    onChange={(e) =>
+                      setCacheSettings((p) => ({
+                        ...p,
+                        retention_days: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                      }))
+                    }
+                  />
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(cacheSettings.auto_prune)}
+                    onChange={(e) =>
+                      setCacheSettings((p) => ({ ...p, auto_prune: e.target.checked }))
+                    }
+                  />
+                  <span style={{ fontSize: 12 }}>Auto prune enabled</span>
+                </label>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <button className="me-btn" onClick={() => setSettingsOpen(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="me-btn me-btn-primary"
+                  disabled={!workspaceId || cacheSettingsBusy}
+                  onClick={() => {
+                    if (!workspaceId) return;
+                    setCacheSettingsBusy(true);
+                    void updateWorkspaceCacheSettings(workspaceId, cacheSettings)
+                      .then(() => setStatus("Workspace cache settings saved."))
+                      .catch((e) =>
+                        setStatus(
+                          `Save cache settings failed: ${e instanceof Error ? e.message : String(e)}`
+                        )
+                      )
+                      .finally(() => setCacheSettingsBusy(false));
+                  }}
+                >
+                  {cacheSettingsBusy ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

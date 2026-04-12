@@ -22,6 +22,49 @@ type ChartViewDoc = {
   html?: string;
 };
 
+const MAX_FETCH_BYTES = 1_500_000;
+const MAX_PARSE_CHARS = 900_000;
+const MAX_RAW_PREVIEW_CHARS = 120_000;
+
+async function readTextCapped(
+  resp: Response,
+  maxBytes: number
+): Promise<{ text: string; truncated: boolean; totalHint?: number }> {
+  const contentLen = Number(resp.headers.get("content-length") ?? "");
+  const totalHint = Number.isFinite(contentLen) && contentLen > 0 ? contentLen : undefined;
+  if (!resp.body) {
+    const text = await resp.text();
+    if (text.length > maxBytes) return { text: text.slice(0, maxBytes), truncated: true, totalHint };
+    return { text, truncated: false, totalHint };
+  }
+  const reader = resp.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let read = 0;
+  let truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    if (read + value.byteLength > maxBytes) {
+      const remain = Math.max(0, maxBytes - read);
+      if (remain > 0) chunks.push(value.slice(0, remain));
+      read += remain;
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    read += value.byteLength;
+  }
+  const merged = new Uint8Array(read);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.byteLength;
+  }
+  return { text: new TextDecoder().decode(merged), truncated, totalHint };
+}
+
 function findNodeArtifacts(artifacts: ArtifactEntry[], nodeId: string): ArtifactEntry[] {
   return artifacts
     .filter((a) => a.node_id === nodeId)
@@ -58,6 +101,7 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
   const [mdDoc, setMdDoc] = useState<MdViewDoc | null>(null);
   const [chartDoc, setChartDoc] = useState<ChartViewDoc | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
+  const [previewNote, setPreviewNote] = useState<string | null>(null);
 
   const isMdViewer = nodeKind === "md_viewer";
   const isChartViewer = nodeKind === "plot_chart";
@@ -73,6 +117,7 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
       setRows([]);
       setMdDoc(null);
       setChartDoc(null);
+      setPreviewNote(null);
       return;
     }
     const entry = nodeArtifacts.find((a) => a.key === selectedKey);
@@ -80,16 +125,32 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
     let cancelled = false;
     setBusy(true);
     setErr(null);
+    setPreviewNote(null);
     void (async () => {
       try {
         const r = await fetch(api(entry.url));
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const text = await r.text();
+        const { text, truncated, totalHint } = await readTextCapped(r, MAX_FETCH_BYTES);
         if (cancelled) return;
-        setRawText(text);
+        if (truncated) {
+          setPreviewNote(
+            `Large artifact preview capped at ${MAX_FETCH_BYTES.toLocaleString()} bytes${totalHint ? ` (source ~${totalHint.toLocaleString()} bytes)` : ""}. Use Save/Share for full content.`
+          );
+        }
+        setRawText(
+          truncated || text.length > MAX_RAW_PREVIEW_CHARS
+            ? `${text.slice(0, MAX_RAW_PREVIEW_CHARS)}\n\n… preview truncated`
+            : text
+        );
         try {
+          if (truncated || text.length > MAX_PARSE_CHARS) {
+            setRows([]);
+            setMdDoc(null);
+            setChartDoc(null);
+            return;
+          }
           const root = JSON.parse(text) as unknown;
-          setRows(extractRows(root));
+          setRows(extractRows(root).slice(0, 2_000));
           if (
             root &&
             typeof root === "object" &&
@@ -148,7 +209,8 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
     if (!entry) return null;
     const r = await fetch(api(entry.url));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return await r.text();
+    const { text } = await readTextCapped(r, 12_000_000);
+    return text;
   }, []);
 
   const saveMd = useCallback(async () => {
@@ -247,6 +309,11 @@ export function NodePreviewPanel({ graphId, nodeId, nodeKind, artifacts }: Props
       {shareMsg ? (
         <div style={{ padding: "6px 10px", fontSize: 11, color: "#3fb950", borderBottom: "1px solid #30363d" }}>
           {shareMsg}
+        </div>
+      ) : null}
+      {previewNote ? (
+        <div style={{ padding: "6px 10px", fontSize: 11, color: "#9fb3c8", borderBottom: "1px solid #30363d" }}>
+          {previewNote}
         </div>
       ) : null}
       {busy && <div style={{ padding: 10, fontSize: 12 }}>Loading preview…</div>}

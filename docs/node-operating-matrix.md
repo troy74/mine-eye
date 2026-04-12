@@ -15,6 +15,8 @@ This matrix is the practical operating guide for what we currently do with node 
 | Terrain + imagery context in 3D | `aoi` -> `dem_fetch` -> `tilebroker` -> `threejs_display_node` | Primary | Use with drillhole outputs for draped exploration context. |
 | Block resource estimation (voxel) | `drillhole_model`/grade points -> `block_grade_model` -> `threejs_display_node` | Primary | Emits block voxels + center points + resource summary report; clips to topography when terrain is wired. |
 | Surface geochem heatmap | `surface_sample_ingest` -> (`data_model_transform`) -> `assay_heatmap` -> `plan_view_2d`/`threejs_display_node` | Primary | Keep measure-column config explicit and validated from source schema. |
+| Airborne magnetic map workflow | `observation_ingest` -> `magnetic_model` -> `plan_view_2d` (or `threejs_display_node`) | Primary | `magnetic_model` emits full + `.preview` artifacts; magnetic heatmap measure options are constrained to `M`, `TMF`, `fvd`, `grad_mag`, `tilt`. |
+| Generic cached heatmap drape | `point_set` -> `heatmap_raster_tile_cache` -> `plan_view_2d` and/or `threejs_display_node` | Primary | Produces first-class tile cache artifacts + `scene3d.tilebroker_response.v1` drape contract for fast 2D/3D loading. |
 | Contour export / topography QA | `dem_fetch`/`terrain_adjust` -> `surface_iso_extract` or `dem_contour_xyz` | Secondary | Use when iso/contour artifacts are required downstream. |
 | Scene contract composition | `scene3d_layer_stack` -> `threejs_display_node` | Secondary | Useful for explicit multi-layer 3D composition and UI capabilities. |
 
@@ -26,8 +28,11 @@ This matrix is the practical operating guide for what we currently do with node 
 | `survey_ingest` | input | Import survey stations | file/config mapping | `surveys` (`trajectory_set`) | Primary |
 | `assay_ingest` | input | Import assays/geochem intervals | file/config mapping | `assays` (`interval_set`) | Primary |
 | `surface_sample_ingest` | input | Import surface point samples | file/config mapping | `surface_samples` (`point_set`) | Primary |
+| `observation_ingest` | input | Import large generic observation tables as pointer-first artifacts | file/config mapping | observation points + table pointer + ingest report | Primary |
 | `desurvey_trajectory` | transform | Build downhole trajectories | collars + surveys | `trajectory` | Primary |
 | `drillhole_model` | model | Build drill traces/meshes and assay points | trajectory + assays | meshes + points | Primary |
+| `magnetic_model` | model | Magnetic cleanup, interpolation and derivative generation | observation rows / mapped payload | magnetic points + magnetic grid + audit report | Primary |
+| `heatmap_raster_tile_cache` | transform | Build cached raster + tiles from generic XY point measures | point set with numeric attributes | tile manifest + imagery drape contract + cache report | Primary |
 | `block_grade_model` | model | Build voxel block grades + resource summary | grade points (+ optional terrain) | block voxels + centers + report | Primary |
 | `aoi` | transform | Stable AOI definition | seed geometry | AOI contract (`table`) | Primary |
 | `dem_fetch` | transform | DEM fetch/fit from AOI | AOI geometry | terrain surface | Primary |

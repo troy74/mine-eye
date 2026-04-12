@@ -444,6 +444,10 @@ async fn main() -> anyhow::Result<()> {
             "/workspaces/{ws_id}/project-crs",
             patch(update_workspace_project_crs),
         )
+        .route(
+            "/workspaces/{ws_id}/cache-settings",
+            get(get_workspace_cache_settings).patch(update_workspace_cache_settings),
+        )
         .route("/workspaces/{ws_id}/graphs", post(create_graph))
         .route("/graphs/{graph_id}", get(get_graph))
         .route("/graphs/{graph_id}/events", get(graph_events))
@@ -539,18 +543,19 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "survey_ingest"
                     | "surface_sample_ingest"
                     | "assay_ingest"
-                    | "artifact_ingest"
-                    | "magnetic_mapper"
+                    | "observation_ingest"
+                    | "magnetic_model"
                     | "data_model_transform"
                     | "assay_heatmap"
+                    | "heatmap_raster_tile_cache"
                     | "terrain_adjust"
                     | "surface_iso_extract"
                     | "aoi"
                     | "tilebroker"
             );
             let edit_tab = match kind {
-                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" | "artifact_ingest" | "magnetic_mapper" => "mapping",
-                "data_model_transform" | "assay_heatmap" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
+                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" | "observation_ingest" | "magnetic_model" => "mapping",
+                "data_model_transform" | "assay_heatmap" | "heatmap_raster_tile_cache" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
                 _ => "summary",
             };
             obj.insert(
@@ -764,6 +769,16 @@ struct UpdateWorkspaceCrsReq {
     project_crs: CrsRecord,
 }
 
+#[derive(Serialize)]
+struct WorkspaceCacheSettingsResp {
+    cache_settings: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct UpdateWorkspaceCacheSettingsReq {
+    cache_settings: serde_json::Value,
+}
+
 async fn create_workspace(
     State(s): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -797,6 +812,35 @@ async fn update_workspace_project_crs(
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     s.store
         .update_workspace_project_crs(ws_id, crs)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_workspace_cache_settings(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(ws_id): Path<Uuid>,
+) -> Result<Json<WorkspaceCacheSettingsResp>, (StatusCode, String)> {
+    require_workspace_access(&s, &auth, ws_id).await?;
+    let v = s
+        .store
+        .workspace_cache_settings(ws_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .unwrap_or_else(|| serde_json::json!({}));
+    Ok(Json(WorkspaceCacheSettingsResp { cache_settings: v }))
+}
+
+async fn update_workspace_cache_settings(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(ws_id): Path<Uuid>,
+    Json(body): Json<UpdateWorkspaceCacheSettingsReq>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    require_workspace_access(&s, &auth, ws_id).await?;
+    s.store
+        .update_workspace_cache_settings(ws_id, body.cache_settings)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(StatusCode::NO_CONTENT)
@@ -1874,12 +1918,23 @@ async fn run_graph(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let project_crs: Option<CrsRecord> = s
+    let workspace_meta = s
         .store
         .graph_workspace_meta(graph_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .and_then(|(_, _, crs)| crs);
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project_crs: Option<CrsRecord> = workspace_meta
+        .as_ref()
+        .and_then(|(_, _, crs)| crs.clone());
+    let workspace_cache_settings = if let Some((workspace_id, _, _)) = workspace_meta.as_ref() {
+        s.store
+            .workspace_cache_settings(*workspace_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
 
     let plan = s
         .scheduler
@@ -1895,6 +1950,12 @@ async fn run_graph(
 
     let mut queued = Vec::new();
     for mut job in plan.jobs {
+        if let Some(obj) = job.output_spec.as_object_mut() {
+            obj.insert(
+                "workspace_cache_settings".into(),
+                workspace_cache_settings.clone(),
+            );
+        }
         if let Some(ref payloads) = body.input_payloads {
             if let Some(p) = payloads.get(&job.node_id) {
                 job.input_payload = Some(p.clone());

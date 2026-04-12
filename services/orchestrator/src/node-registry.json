@@ -94,10 +94,10 @@
       "plugin_source": "core"
     },
     {
-      "kind": "artifact_ingest",
+      "kind": "observation_ingest",
       "category": "input",
-      "label": "Artifact ingest",
-      "role": "Acquisition · ingest large tabular/JSON file to workspace artifact pointer",
+      "label": "Observation ingest",
+      "role": "Acquisition · generic XYZ/T observation ingest + artifact pointer + audit",
       "menu": {
         "enabled": true,
         "order": 31
@@ -105,6 +105,11 @@
       "ports": {
         "inputs": [],
         "outputs": [
+          {
+            "id": "observation_points",
+            "label": "Observation points",
+            "semantic": "point_set"
+          },
           {
             "id": "table",
             "label": "Table pointer",
@@ -122,10 +127,10 @@
       "plugin_source": "core"
     },
     {
-      "kind": "magnetic_mapper",
-      "category": "input",
-      "label": "Magnetic mapper",
-      "role": "Acquisition · airborne magnetics ingest + cleanup + grid + derivatives",
+      "kind": "magnetic_model",
+      "category": "model",
+      "label": "Magnetic model",
+      "role": "Model · airborne magnetics cleanup + gridding + derivatives",
       "menu": {
         "enabled": true,
         "order": 32
@@ -135,7 +140,13 @@
           {
             "id": "in",
             "label": "Input",
-            "semantic": "table"
+            "semantic": "point_set"
+          },
+          {
+            "id": "table_in",
+            "label": "Raw table (optional)",
+            "semantic": "table",
+            "optional": true
           }
         ],
         "outputs": [
@@ -335,6 +346,45 @@
             "id": "heatmap",
             "label": "Heatmap",
             "semantic": "surface"
+          }
+        ]
+      },
+      "framework_group": "analytics",
+      "submenu": "surface_interpolation",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "heatmap_raster_tile_cache",
+      "category": "transform",
+      "label": "Heatmap raster tile cache",
+      "role": "Transform · generic XY+measure points → cached heatmap raster + tile pyramid + drape contract",
+      "menu": {
+        "enabled": true,
+        "order": 81
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "in",
+            "label": "Input points",
+            "semantic": "point_set"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "tile_manifest",
+            "label": "Tile manifest",
+            "semantic": "raster"
+          },
+          {
+            "id": "imagery_drape",
+            "label": "Imagery drape",
+            "semantic": "raster"
+          },
+          {
+            "id": "report",
+            "label": "Cache report",
+            "semantic": "semantic_json"
           }
         ]
       },

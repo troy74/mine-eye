@@ -356,6 +356,38 @@ export async function updateWorkspaceProjectCrs(
   if (!r.ok) throw new Error((await r.text()) || `Update workspace CRS ${r.status}`);
 }
 
+export type WorkspaceCacheSettings = {
+  max_bytes?: number;
+  max_tiles?: number;
+  default_min_zoom?: number;
+  default_max_zoom?: number;
+  retention_days?: number;
+  auto_prune?: boolean;
+};
+
+export async function getWorkspaceCacheSettings(
+  workspaceId: string
+): Promise<WorkspaceCacheSettings> {
+  const r = await fetch(api(`/workspaces/${workspaceId}/cache-settings`), {
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error((await r.text()) || `Workspace cache settings ${r.status}`);
+  const raw = (await r.json()) as { cache_settings?: WorkspaceCacheSettings };
+  return (raw.cache_settings ?? {}) as WorkspaceCacheSettings;
+}
+
+export async function updateWorkspaceCacheSettings(
+  workspaceId: string,
+  settings: WorkspaceCacheSettings
+): Promise<void> {
+  const r = await fetch(api(`/workspaces/${workspaceId}/cache-settings`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cache_settings: settings }),
+  });
+  if (!r.ok) throw new Error((await r.text()) || `Update workspace cache settings ${r.status}`);
+}
+
 export async function createGraph(
   workspaceId: string,
   body: { name: string; workspace_id: string; owner_user_id: string }

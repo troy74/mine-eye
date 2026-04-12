@@ -4,13 +4,14 @@
 //! preserving the existing public `run_*` API for compatibility.
 
 pub mod acquisition;
-pub mod artifact_ingest;
+pub mod observation_ingest;
 pub mod chart_plot;
 pub mod tile_cache;
 pub mod data_model;
 pub mod drillhole;
 pub mod imagery_raster;
-pub mod magnetic_mapper;
+pub mod heatmap_raster_tile_cache;
+pub mod magnetic_model;
 pub mod markdown_viewer;
 pub mod resource_model;
 pub mod runtime;
@@ -25,12 +26,13 @@ pub use acquisition::{
     run_assay_ingest, run_collar_ingest, run_drillhole_ingest, run_surface_sample_ingest,
     run_survey_ingest,
 };
-pub use artifact_ingest::run_artifact_ingest;
+pub use observation_ingest::run_observation_ingest;
 pub use chart_plot::run_plot_chart;
 pub use data_model::run_data_model_transform;
 pub use drillhole::{run_drillhole_merge, run_drillhole_model};
 pub use imagery_raster::{run_imagery_provider, run_tilebroker};
-pub use magnetic_mapper::run_magnetic_mapper;
+pub use heatmap_raster_tile_cache::run_heatmap_raster_tile_cache;
+pub use magnetic_model::run_magnetic_model;
 pub use markdown_viewer::run_md_viewer;
 pub use resource_model::run_block_grade_model;
 pub use scene_contract::run_scene3d_layer_stack;

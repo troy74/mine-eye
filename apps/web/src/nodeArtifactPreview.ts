@@ -1,36 +1,40 @@
 import type { ArtifactEntry } from "./graphApi";
 
-/** Filename suffix (last path segment) we expect per node kind for V1 workers. */
-export function preferredArtifactSuffix(kind: string): string | null {
+/** Preferred filename suffixes (in order) per node kind for V1 workers. */
+export function preferredArtifactSuffixes(kind: string): string[] {
   switch (kind) {
     case "collar_ingest":
-      return "collars.json";
+      return ["collars.json"];
     case "survey_ingest":
-      return "surveys.json";
+      return ["surveys.json"];
     case "surface_sample_ingest":
-      return "surface_samples.json";
+      return ["surface_samples.json"];
     case "assay_ingest":
-      return "assays.json";
-    case "artifact_ingest":
-      return "artifact_ingest_table_pointer.json";
+      return ["assays.json"];
+    case "observation_ingest":
+      return ["observation_table_pointer.json"];
+    case "magnetic_model":
+      return ["magnetic_points.preview.json", "magnetic_grid.preview.json", "magnetic_points.json"];
     case "desurvey_trajectory":
-      return "trajectory.json";
+      return ["trajectory.json"];
     case "drillhole_model":
-      return "drillhole_meshes.json";
+      return ["drillhole_meshes.json"];
     case "assay_heatmap":
-      return "heatmap.json";
+      return ["heatmap.json"];
+    case "heatmap_raster_tile_cache":
+      return ["raster_tile_manifest.json", "heatmap_imagery_drape.json"];
     case "plan_view_2d":
-      return "plan_view.json";
+      return ["plan_view.json"];
     case "dem_integrate":
-      return "dem_stub.json";
+      return ["dem_stub.json"];
     case "block_model_basic":
-      return "block_model_meta.json";
+      return ["block_model_meta.json"];
     case "md_viewer":
-      return "md_view_doc.json";
+      return ["md_view_doc.json"];
     case "plot_chart":
-      return "plot_chart_view.json";
+      return ["plot_chart_view.json"];
     default:
-      return null;
+      return [];
   }
 }
 
@@ -44,8 +48,7 @@ export function defaultArtifactForKind(
   kind: string
 ): ArtifactEntry | null {
   if (artifacts.length === 0) return null;
-  const suffix = preferredArtifactSuffix(kind);
-  if (suffix) {
+  for (const suffix of preferredArtifactSuffixes(kind)) {
     const hit = artifacts.find((a) => artifactEndsWithSuffix(a.key, suffix));
     if (hit) return hit;
   }

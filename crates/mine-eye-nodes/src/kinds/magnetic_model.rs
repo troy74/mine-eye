@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::env;
 
 use mine_eye_types::{CrsRecord, JobEnvelope, JobResult, JobStatus};
+use rayon::prelude::*;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::{json, Map, Value};
 
@@ -56,6 +57,47 @@ async fn rows_from_upstream(ctx: &ExecutionContext<'_>, job: &JobEnvelope) -> Op
             let Ok(v) = serde_json::from_slice::<Value>(&raw) else {
                 continue;
             };
+            if let Some(points) = v.pointer("/points").and_then(|x| x.as_array()) {
+                let mut rows = Vec::<Value>::new();
+                for p in points {
+                    let Some(obj) = p.as_object() else {
+                        continue;
+                    };
+                    let mut out = Map::new();
+                    if let Some(x) = obj.get("x") {
+                        out.insert("x".into(), x.clone());
+                    }
+                    if let Some(y) = obj.get("y") {
+                        out.insert("y".into(), y.clone());
+                    }
+                    if let Some(z) = obj.get("z") {
+                        out.insert("z".into(), z.clone());
+                    }
+                    if let Some(line_id) = obj.get("line_id").or_else(|| obj.get("segment_id")) {
+                        out.insert("line_id".into(), line_id.clone());
+                    }
+                    if let Some(ts) = obj.get("timestamp") {
+                        out.insert("timestamp".into(), ts.clone());
+                    }
+                    if let Some(fid) = obj.get("fid") {
+                        out.insert("fid".into(), fid.clone());
+                    }
+                    if let Some(attrs) = obj.get("attributes").and_then(|a| a.as_object()) {
+                        for (k, v) in attrs {
+                            out.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
+                    if !out.is_empty() {
+                        rows.push(Value::Object(out));
+                    }
+                }
+                if !rows.is_empty() {
+                    return Some(json!({
+                        "rows": rows,
+                        "source_crs": v.get("crs").cloned().unwrap_or_else(|| v.get("source_crs").cloned().unwrap_or(Value::Null))
+                    }));
+                }
+            }
             if let Some(rows) = v.pointer("/rows").and_then(|x| x.as_array()) {
                 return Some(json!({
                     "rows": rows,
@@ -104,6 +146,7 @@ struct Params {
     mapping: Map<String, Value>,
     grid_method: String,
     grid_resolution_m: f64,
+    max_grid_cells: usize,
     idw_power: f64,
     search_radius_m: f64,
     max_points: usize,
@@ -162,6 +205,7 @@ fn parse_params(job: &JobEnvelope) -> Params {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "idw".to_string()),
         grid_resolution_m: parse_f64("/node_ui/grid_resolution_m", 25.0).max(1.0),
+        max_grid_cells: parse_usize("/node_ui/max_grid_cells", 250_000).clamp(10_000, 2_000_000),
         idw_power: parse_f64("/node_ui/idw_power", 2.0).clamp(1.0, 6.0),
         search_radius_m: parse_f64("/node_ui/search_radius_m", 0.0).max(0.0),
         max_points: parse_usize("/node_ui/max_points", 32).clamp(4, 256),
@@ -240,6 +284,17 @@ fn infer_utm_epsg(lon: f64, lat: f64) -> i32 {
     }
 }
 
+fn is_utm_epsg(epsg: i32) -> bool {
+    (32601..=32660).contains(&epsg) || (32701..=32760).contains(&epsg)
+}
+
+fn projected_xy_plausible_for_epsg(epsg: i32, x: f64, y: f64) -> bool {
+    if !is_utm_epsg(epsg) {
+        return true;
+    }
+    (100_000.0..=900_000.0).contains(&x) && (0.0..=10_000_000.0).contains(&y)
+}
+
 fn interp_idw(x: f64, y: f64, pts: &[Pt], pwr: f64, radius: f64, max_points: usize) -> Option<f64> {
     let mut near = Vec::<(f64, f64)>::new();
     for pt in pts {
@@ -257,8 +312,11 @@ fn interp_idw(x: f64, y: f64, pts: &[Pt], pwr: f64, radius: f64, max_points: usi
     if near.is_empty() {
         return None;
     }
-    near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if near.len() > max_points {
+        let k = max_points.min(near.len().saturating_sub(1));
+        near.select_nth_unstable_by(k, |a, b| {
+            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
         near.truncate(max_points);
     }
     let mut num = 0.0;
@@ -269,6 +327,22 @@ fn interp_idw(x: f64, y: f64, pts: &[Pt], pwr: f64, radius: f64, max_points: usi
         den += w;
     }
     (den > 0.0).then_some(num / den)
+}
+
+fn preview_point_rows(rows: &[Value], max_rows: usize) -> Vec<Value> {
+    if rows.len() <= max_rows {
+        return rows.to_vec();
+    }
+    let stride = (rows.len() as f64 / max_rows as f64).ceil().max(1.0) as usize;
+    rows.iter().step_by(stride).take(max_rows).cloned().collect()
+}
+
+fn preview_grid_rows(rows: &[Value], max_rows: usize) -> Vec<Value> {
+    if rows.len() <= max_rows {
+        return rows.to_vec();
+    }
+    let stride = (rows.len() as f64 / max_rows as f64).ceil().max(1.0) as usize;
+    rows.iter().step_by(stride).take(max_rows).cloned().collect()
 }
 
 fn bilinear(
@@ -344,7 +418,7 @@ async fn llm_commentary(context: &Value) -> Option<Value> {
     })
 }
 
-pub async fn run_magnetic_mapper(
+pub async fn run_magnetic_model(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
@@ -363,13 +437,13 @@ pub async fn run_magnetic_mapper(
         &payload_derived
     } else {
         return Err(NodeError::InvalidConfig(
-            "missing input_payload for magnetic_mapper".into(),
+            "missing input_payload for magnetic_model".into(),
         ));
     };
     let rows = payload
         .pointer("/rows")
         .and_then(|v| v.as_array())
-        .ok_or_else(|| NodeError::InvalidConfig("magnetic_mapper requires payload.rows[]".into()))?;
+        .ok_or_else(|| NodeError::InvalidConfig("magnetic_model requires payload.rows[]".into()))?;
 
     let mut raw = Vec::<Map<String, Value>>::new();
     for r in rows {
@@ -378,7 +452,7 @@ pub async fn run_magnetic_mapper(
         }
     }
     if raw.is_empty() {
-        return Err(NodeError::InvalidConfig("magnetic_mapper received no tabular rows".into()));
+        return Err(NodeError::InvalidConfig("magnetic_model received no tabular rows".into()));
     }
 
     let headers_lc = raw[0]
@@ -434,13 +508,20 @@ pub async fn run_magnetic_mapper(
     }
     if parsed.is_empty() {
         return Err(NodeError::InvalidConfig(
-            "magnetic_mapper found no valid rows (coords + magnetic signal)".into(),
+            "magnetic_model found no valid rows (coords + magnetic signal)".into(),
         ));
     }
 
     let mut use_projected = false;
     let mut projected_valid = 0usize;
     let mut projected_total = 0usize;
+    let mut projected_plausible = 0usize;
+    let source_epsg_hint = payload
+        .pointer("/source_crs/epsg")
+        .and_then(parse_num)
+        .map(|v| v as i32)
+        .or(job.project_crs.as_ref().and_then(|c| c.epsg))
+        .unwrap_or(4326);
     if let (Some(xk), Some(yk)) = (x_key.as_ref(), y_key.as_ref()) {
         for r in &parsed {
             if let (Some(x), Some(y)) = (
@@ -451,6 +532,9 @@ pub async fn run_magnetic_mapper(
                 let looks_geo = x.abs() <= 180.0 && y.abs() <= 90.0;
                 if !looks_geo && x.abs() > 500.0 && y.abs() > 500.0 {
                     projected_valid += 1;
+                }
+                if projected_xy_plausible_for_epsg(source_epsg_hint, x, y) {
+                    projected_plausible += 1;
                 }
             }
         }
@@ -472,6 +556,14 @@ pub async fn run_magnetic_mapper(
             }
         }
     }
+    let forced_fallback_lonlat = use_projected
+        && !lon_lat.is_empty()
+        && projected_total > 0
+        && is_utm_epsg(source_epsg_hint)
+        && projected_plausible * 2 < projected_total;
+    if forced_fallback_lonlat {
+        use_projected = false;
+    }
 
     let mut target_crs = payload
         .pointer("/source_crs/epsg")
@@ -482,7 +574,7 @@ pub async fn run_magnetic_mapper(
     if !use_projected {
         if lon_lat.is_empty() {
             return Err(NodeError::InvalidConfig(
-                "magnetic_mapper could not resolve usable projected XY or lat/lon".into(),
+                "magnetic_model could not resolve usable projected XY or lat/lon".into(),
             ));
         }
         let mean_lon = lon_lat.iter().map(|x| x.0).sum::<f64>() / lon_lat.len() as f64;
@@ -607,7 +699,7 @@ pub async fn run_magnetic_mapper(
     }
     if pts.is_empty() {
         return Err(NodeError::InvalidConfig(
-            "magnetic_mapper retained no parseable points after coordinate normalization".into(),
+            "magnetic_model retained no parseable points after coordinate normalization".into(),
         ));
     }
     ctx.report_progress(
@@ -757,7 +849,7 @@ pub async fn run_magnetic_mapper(
     }
     if cleaned.len() < 4 {
         return Err(NodeError::InvalidConfig(
-            "magnetic_mapper produced too few points after QA/despike".into(),
+            "magnetic_model produced too few points after QA/despike".into(),
         ));
     }
     ctx.report_progress(
@@ -810,39 +902,58 @@ pub async fn run_magnetic_mapper(
     xmax += pad;
     ymin -= pad;
     ymax += pad;
-    let nx = (((xmax - xmin) / params.grid_resolution_m).ceil() as usize).max(4);
-    let ny = (((ymax - ymin) / params.grid_resolution_m).ceil() as usize).max(4);
+    let mut effective_res_m = params.grid_resolution_m;
+    let mut nx = (((xmax - xmin) / effective_res_m).ceil() as usize).max(4);
+    let mut ny = (((ymax - ymin) / effective_res_m).ceil() as usize).max(4);
+    let mut cells = nx.saturating_mul(ny);
+    if cells > params.max_grid_cells {
+        let scale = (cells as f64 / params.max_grid_cells as f64).sqrt().max(1.0);
+        effective_res_m = (effective_res_m * scale).max(params.grid_resolution_m);
+        nx = (((xmax - xmin) / effective_res_m).ceil() as usize).max(4);
+        ny = (((ymax - ymin) / effective_res_m).ceil() as usize).max(4);
+        cells = nx.saturating_mul(ny);
+    }
     let mut grid_m = vec![None; nx * ny];
     ctx.report_progress(
         "grid_interpolation",
         Some(0.38),
         Some("Interpolating grid".to_string()),
-        Some(json!({ "nx": nx, "ny": ny, "cells": nx * ny })),
+        Some(json!({ "nx": nx, "ny": ny, "cells": cells, "resolution_m": effective_res_m })),
     );
-    let progress_stride = (ny / 24).max(1);
-    for iy in 0..ny {
-        let y = ymin + iy as f64 * params.grid_resolution_m;
-        for ix in 0..nx {
-            let x = xmin + ix as f64 * params.grid_resolution_m;
-            let idx = iy * nx + ix;
-            grid_m[idx] = interp_idw(
-                x,
-                y,
-                &cleaned,
-                params.idw_power,
-                params.search_radius_m,
-                params.max_points,
-            );
+    let row_block = (ny / 24).max(8);
+    for y0 in (0..ny).step_by(row_block) {
+        let y1 = (y0 + row_block).min(ny);
+        let block: Vec<(usize, Vec<Option<f64>>)> = (y0..y1)
+            .into_par_iter()
+            .map(|iy| {
+                let y = ymin + iy as f64 * effective_res_m;
+                let mut row = vec![None; nx];
+                for (ix, cell) in row.iter_mut().enumerate() {
+                    let x = xmin + ix as f64 * effective_res_m;
+                    *cell = interp_idw(
+                        x,
+                        y,
+                        &cleaned,
+                        params.idw_power,
+                        params.search_radius_m,
+                        params.max_points,
+                    );
+                }
+                (iy, row)
+            })
+            .collect();
+        for (iy, row) in block {
+            let start = iy * nx;
+            let end = start + nx;
+            grid_m[start..end].copy_from_slice(&row);
         }
-        if iy % progress_stride == 0 {
-            let frac = iy as f64 / ny as f64;
-            ctx.report_progress(
-                "grid_interpolation",
-                Some(0.38 + 0.40 * frac),
-                Some("Interpolating grid".to_string()),
-                Some(json!({ "row": iy, "rows": ny })),
-            );
-        }
+        let frac = y1 as f64 / ny as f64;
+        ctx.report_progress(
+            "grid_interpolation",
+            Some(0.38 + 0.40 * frac),
+            Some("Interpolating grid".to_string()),
+            Some(json!({ "row": y1, "rows": ny })),
+        );
     }
     if params.grid_method.eq_ignore_ascii_case("minimum_curvature") {
         for _ in 0..8 {
@@ -865,7 +976,7 @@ pub async fn run_magnetic_mapper(
     let mut grid_fvd = vec![None; nx * ny];
     let mut grid_grad = vec![None; nx * ny];
     let mut grid_tilt = vec![None; nx * ny];
-    let h = params.grid_resolution_m.max(1e-6);
+    let h = effective_res_m.max(1e-6);
     for iy in 1..(ny - 1) {
         for ix in 1..(nx - 1) {
             let idx = iy * nx + ix;
@@ -936,9 +1047,9 @@ pub async fn run_magnetic_mapper(
 
     let mut grid_rows = Vec::<Value>::new();
     for iy in 0..ny {
-        let y = ymin + iy as f64 * params.grid_resolution_m;
+        let y = ymin + iy as f64 * effective_res_m;
         for ix in 0..nx {
-            let x = xmin + ix as f64 * params.grid_resolution_m;
+            let x = xmin + ix as f64 * effective_res_m;
             let i = iy * nx + ix;
             if let Some(mv) = grid_m[i] {
                 grid_rows.push(json!({
@@ -961,6 +1072,9 @@ pub async fn run_magnetic_mapper(
         "decimated_dropped": before_decimate.saturating_sub(cleaned.len()),
         "line_count": total_lines,
         "coord_mode": if use_projected { "projected_xy" } else { "latlon_to_utm" },
+        "projected_rows_seen": projected_total,
+        "projected_rows_plausible": projected_plausible,
+        "projected_fallback_to_lonlat": forced_fallback_lonlat,
         "target_epsg": target_crs,
         "signal_selected": if tmf_key.is_some() { "tmf_preferred" } else { "mag_lev" },
         "igrf_subtracted": require_igrf_sub,
@@ -985,6 +1099,20 @@ pub async fn run_magnetic_mapper(
         },
         "points": points_rows
     });
+    let points_preview_rows = preview_point_rows(&points_rows, 12_000);
+    let points_preview_payload = json!({
+        "type": "magnetic_points",
+        "quality": "preview",
+        "preview_capped": points_preview_rows.len() < points_rows.len(),
+        "crs": { "epsg": target_crs, "wkt": Value::Null },
+        "measure_candidates": ["M", "fvd", "grad_mag", "tilt", "z"],
+        "display_contract": {
+            "renderer": "sample_points",
+            "display_pointer": "scene3d.sample_points",
+            "editable": ["visible","opacity","size","measure","palette"]
+        },
+        "points": points_preview_rows
+    });
     let grid_payload = json!({
         "schema_id": "grid.magnetic.v1",
         "type": "magnetic_grid_rows",
@@ -993,17 +1121,34 @@ pub async fn run_magnetic_mapper(
             "nx": nx, "ny": ny,
             "xmin": xmin, "xmax": xmax,
             "ymin": ymin, "ymax": ymax,
-            "resolution_m": params.grid_resolution_m,
+            "resolution_m": effective_res_m,
         },
         "rows": grid_rows
     });
+    let grid_preview_rows = preview_grid_rows(&grid_rows, 40_000);
+    let grid_preview_payload = json!({
+        "schema_id": "grid.magnetic.v1",
+        "type": "magnetic_grid_rows",
+        "quality": "preview",
+        "preview_capped": grid_preview_rows.len() < grid_rows.len(),
+        "crs": { "epsg": target_crs, "wkt": Value::Null },
+        "grid": {
+            "nx": nx, "ny": ny,
+            "xmin": xmin, "xmax": xmax,
+            "ymin": ymin, "ymax": ymax,
+            "resolution_m": effective_res_m,
+        },
+        "rows": grid_preview_rows
+    });
     let report_payload = json!({
-        "schema_id": "report.magnetic_mapper.v1",
-        "type": "magnetic_mapper_report",
+        "schema_id": "report.magnetic_model.v1",
+        "type": "magnetic_model_report",
         "summary": {
             "input_rows": rows.len(),
             "output_points": cleaned.len(),
             "grid_cells_with_values": grid_rows.len(),
+            "grid_cells_total": cells,
+            "effective_grid_resolution_m": effective_res_m,
             "malformed_dropped": malformed,
             "non_monotonic_dropped": non_monotonic_drop,
             "despike_dropped": despike_drop,
@@ -1021,6 +1166,8 @@ pub async fn run_magnetic_mapper(
         "key_parameters": {
             "grid_method": params.grid_method,
             "grid_resolution_m": params.grid_resolution_m,
+            "effective_grid_resolution_m": effective_res_m,
+            "max_grid_cells": params.max_grid_cells,
             "idw_power": params.idw_power,
             "search_radius_m": params.search_radius_m,
             "max_points": params.max_points,
@@ -1045,12 +1192,32 @@ pub async fn run_magnetic_mapper(
     });
 
     let points_bytes = serde_json::to_vec(&points_payload)?;
+    let points_preview_bytes = serde_json::to_vec(&points_preview_payload)?;
     let grid_bytes = serde_json::to_vec(&grid_payload)?;
+    let grid_preview_bytes = serde_json::to_vec(&grid_preview_payload)?;
     let report_bytes = serde_json::to_vec(&report_payload)?;
+    let points_preview_key =
+        format!("graphs/{}/nodes/{}/magnetic_points.preview.json", job.graph_id, job.node_id);
     let points_key = format!("graphs/{}/nodes/{}/magnetic_points.json", job.graph_id, job.node_id);
+    let grid_preview_key =
+        format!("graphs/{}/nodes/{}/magnetic_grid.preview.json", job.graph_id, job.node_id);
     let grid_key = format!("graphs/{}/nodes/{}/magnetic_grid.json", job.graph_id, job.node_id);
     let report_key = format!("graphs/{}/nodes/{}/magnetic_report.json", job.graph_id, job.node_id);
+    let points_preview_ref = super::runtime::write_artifact(
+        ctx,
+        &points_preview_key,
+        &points_preview_bytes,
+        Some("application/json"),
+    )
+    .await?;
     let points_ref = super::runtime::write_artifact(ctx, &points_key, &points_bytes, Some("application/json")).await?;
+    let grid_preview_ref = super::runtime::write_artifact(
+        ctx,
+        &grid_preview_key,
+        &grid_preview_bytes,
+        Some("application/json"),
+    )
+    .await?;
     let grid_ref = super::runtime::write_artifact(ctx, &grid_key, &grid_bytes, Some("application/json")).await?;
     let report_ref = super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json")).await?;
     ctx.report_progress(
@@ -1063,8 +1230,20 @@ pub async fn run_magnetic_mapper(
     Ok(JobResult {
         job_id: job.job_id,
         status: JobStatus::Succeeded,
-        output_artifact_refs: vec![points_ref.clone(), grid_ref.clone(), report_ref.clone()],
-        content_hashes: vec![points_ref.content_hash, grid_ref.content_hash, report_ref.content_hash],
+        output_artifact_refs: vec![
+            points_preview_ref.clone(),
+            points_ref.clone(),
+            grid_preview_ref.clone(),
+            grid_ref.clone(),
+            report_ref.clone(),
+        ],
+        content_hashes: vec![
+            points_preview_ref.content_hash,
+            points_ref.content_hash,
+            grid_preview_ref.content_hash,
+            grid_ref.content_hash,
+            report_ref.content_hash,
+        ],
         error_message: None,
     })
 }

@@ -19,3 +19,5 @@ proj = { version = "0.31.0", default-features = false, features = ["bundled_proj
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 pulldown-cmark = "0.11"
 csv = "1.3"
+rayon = "1.10"
+image = { version = "0.25", default-features = false, features = ["png"] }

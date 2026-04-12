@@ -101,9 +101,11 @@ export function isPlanViewInputSemantic(semantic: string): boolean {
   return (
     k === "point_set" ||
     k === "table" ||
+    k === "semantic_json" ||
     k === "interval_set" ||
     k === "trajectory_set" ||
-    k === "surface"
+    k === "surface" ||
+    k === "raster"
   );
 }
 

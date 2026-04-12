@@ -14,8 +14,21 @@ import { isPlanViewInputSemantic } from "./portTaxonomy";
 import { edgeColorForApiEdge } from "./portTypes";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
 import {
+  createBoundedImageLayer,
+  createGlobalTileLayer,
+  createLocalExtentTileLayer,
+  type LeafletRasterPane,
+} from "./leafletRasterLayers";
+import {
+  parseRasterOverlayContract,
+  rasterBoundsToLatLng,
+  rasterContractPriority,
+  resolveRasterOverlaySource,
+  type RasterOverlayContract,
+} from "./rasterOverlay";
+import {
   extractDisplayContractFromJson,
-  epsgFromCollarJson,
+  epsgFromAnyJson,
   extractHeatmapConfigFromJson,
   extractLineFeaturesFromGeoJson,
   extractHeatSurfaceGridFromJson,
@@ -49,24 +62,13 @@ type SourceData = {
   label: string;
   artifactKey?: string;
   contentHash?: string;
+  sourceType?: "magnetic" | "generic";
   points: RenderPoint[];
   lines: GeoLineString[];
   measureNames: string[];
   heatmapHint?: HeatmapConfigHint | null;
   displayContract?: DisplayContractHint | null;
   surfaceGrid?: HeatSurfaceGrid | null;
-};
-
-type ImageryDrapeContract = {
-  schema_id: "scene3d.imagery_drape.v1" | "scene3d.tilebroker_response.v1";
-  provider_id?: string;
-  provider_label?: string;
-  attribution?: string;
-  image_url?: string;
-  image_url_candidates?: string[];
-  bounds?: { xmin: number; xmax: number; ymin: number; ymax: number };
-  source_crs?: { epsg?: number };
-  fingerprint?: string;
 };
 
 type LayerStackLayer = {
@@ -155,6 +157,7 @@ function normalizeSourceData(raw: unknown): SourceData[] {
         label,
         artifactKey,
         contentHash,
+        sourceType: sourceTypeForArtifact(artifactKey ?? id, measureNames, heatmapHint),
         points,
         lines,
         measureNames,
@@ -166,22 +169,11 @@ function normalizeSourceData(raw: unknown): SourceData[] {
     .filter((s): s is SourceData => s !== null);
 }
 
-function parseImageryContract(v: unknown): ImageryDrapeContract | null {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
-  const obj = v as Record<string, unknown>;
-  if (obj.schema_id !== "scene3d.imagery_drape.v1" && obj.schema_id !== "scene3d.tilebroker_response.v1") return null;
-  return obj as unknown as ImageryDrapeContract;
-}
-
 function parseLayerStackContract(v: unknown): LayerStackContract | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const obj = v as Record<string, unknown>;
   if (obj.schema_id !== "scene3d.layer_stack.v1") return null;
   return obj as unknown as LayerStackContract;
-}
-
-function cacheKeyForView(graphId: string | null, viewerNodeId: string | null): string {
-  return `mineeye:map2d:source:${graphId ?? ""}:${viewerNodeId ?? ""}`;
 }
 
 type PointShape = "circle" | "square" | "diamond";
@@ -197,6 +189,7 @@ type SourceLayerConfig = {
   opacity: number;
   expanded: boolean;
   points: {
+    enabled: boolean;
     shape: PointShape;
     colorMode: ChannelMode;
     color: string;
@@ -222,6 +215,26 @@ type SourceLayerConfig = {
 };
 
 type LayerOrderMode = "contract" | "override";
+
+function sourceTypeForArtifact(
+  artifactKey: string,
+  measureNames: string[],
+  heatmapHint?: HeatmapConfigHint | null
+): "magnetic" | "generic" {
+  const key = artifactKey.toLowerCase();
+  if (key.includes("magnetic_")) return "magnetic";
+  if (measureNames.includes("M")) return "magnetic";
+  const hm = String(heatmapHint?.measure ?? "").toLowerCase();
+  if (hm === "m" || hm.includes("mag")) return "magnetic";
+  return "generic";
+}
+
+function allowedHeatmapMeasuresForSource(s: SourceData | undefined): string[] {
+  if (!s) return [];
+  if (s.sourceType !== "magnetic") return s.measureNames;
+  const allow = ["M", "TMF", "fvd", "grad_mag", "tilt"];
+  return allow.filter((m) => s.measureNames.includes(m));
+}
 
 function hintSig(hint: HeatmapConfigHint | null | undefined): string {
   if (!hint) return "";
@@ -264,6 +277,61 @@ function jsonArtifactsForNodes(
   );
 }
 
+function isJsonLikeArtifact(a: ArtifactEntry): boolean {
+  const k = a.key.toLowerCase();
+  return k.endsWith(".json") || k.endsWith(".geojson");
+}
+
+function baseArtifactKeyForPreview(key: string): string {
+  return key
+    .replace(/\.preview(?=\.[^./]+$)/i, "")
+    .replace(/\.sample(?=\.[^./]+$)/i, "");
+}
+
+function preferPreviewArtifacts(arts: ArtifactEntry[]): ArtifactEntry[] {
+  const byBase = new Map<string, ArtifactEntry>();
+  for (const art of arts) {
+    const base = baseArtifactKeyForPreview(art.key);
+    const prev = byBase.get(base);
+    if (!prev) {
+      byBase.set(base, art);
+      continue;
+    }
+    const aScore =
+      /\.preview\./i.test(art.key) ? 3 : art.key.toLowerCase().endsWith(".json") ? 2 : 1;
+    const pScore =
+      /\.preview\./i.test(prev.key) ? 3 : prev.key.toLowerCase().endsWith(".json") ? 2 : 1;
+    if (aScore > pScore) byBase.set(base, art);
+  }
+  return [...byBase.values()];
+}
+
+function filterArtifactsForPlanView(arts: ArtifactEntry[]): ArtifactEntry[] {
+  const contractNodeIds = new Set(
+    arts
+      .filter((a) => {
+        const k = a.key.toLowerCase();
+        return (
+          k.endsWith("heatmap_imagery_drape.json") ||
+          k.endsWith("imagery_drape.json") ||
+          k.endsWith("raster_tile_manifest.json")
+        );
+      })
+      .map((a) => a.node_id)
+  );
+  if (contractNodeIds.size === 0) return arts;
+  return arts.filter((a) => {
+    if (!contractNodeIds.has(a.node_id)) return true;
+    const k = a.key.toLowerCase();
+    return (
+      k.endsWith("heatmap_imagery_drape.json") ||
+      k.endsWith("imagery_drape.json") ||
+      k.endsWith("raster_tile_manifest.json") ||
+      k.endsWith("layer_stack.json")
+    );
+  });
+}
+
 function defaultLayerForSource(s: SourceData): SourceLayerConfig {
   const hint = s.heatmapHint ?? {};
   const dc = s.displayContract ?? {};
@@ -274,6 +342,7 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
       ? preferredMeasure
       : s.measureNames[0] ?? "";
   const hintMethod = String(hint.method ?? "idw").toLowerCase();
+  const allowedHeatMeasures = allowedHeatmapMeasuresForSource(s);
   const defaultSmoothness =
     typeof hint.smoothness === "number" && Number.isFinite(hint.smoothness)
       ? Math.max(128, Math.min(512, Math.trunc(hint.smoothness)))
@@ -299,6 +368,7 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
     opacity: 1,
     expanded: false,
     points: {
+      enabled: s.sourceType === "magnetic" ? false : true,
       shape: "circle",
       colorMode: "fixed",
       color: "#38bdf8",
@@ -313,8 +383,11 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
       sizeMaxPx: 12,
     },
     heatmap: {
-      enabled: lockedRenderer ? true : hintMeasure.length > 0,
-      measure: hintMeasure,
+      enabled: lockedRenderer ? true : (s.sourceType === "magnetic" ? true : hintMeasure.length > 0),
+      measure:
+        hintMeasure && allowedHeatMeasures.includes(hintMeasure)
+          ? hintMeasure
+          : allowedHeatMeasures[0] ?? "",
       transform: "linear",
       palette: hint.palette ?? "rainbow",
       opacity: defaultOpacity,
@@ -417,6 +490,31 @@ function paletteRgb(palette: string, tRaw: number): { r: number; g: number; b: n
   return hexToRgb(stops[stops.length - 1].c);
 }
 
+function fitMapToBounds(
+  map: L.Map,
+  bounds: L.LatLngBounds,
+  options?: { padRatio?: number; maxZoom?: number }
+) {
+  const padRatio = options?.padRatio ?? 0;
+  const padded = bounds.pad(padRatio);
+  let zoom = map.getBoundsZoom(padded, false);
+  if (typeof options?.maxZoom === "number" && Number.isFinite(options.maxZoom)) {
+    zoom = Math.min(zoom, options.maxZoom);
+  }
+  map.setView(padded.getCenter(), zoom, { animate: false });
+}
+
+function ensurePane(map: L.Map, paneName: LeafletRasterPane, zIndex: number) {
+  if (!map.getPane(paneName)) {
+    map.createPane(paneName);
+  }
+  const pane = map.getPane(paneName);
+  if (pane) {
+    pane.style.zIndex = String(zIndex);
+    pane.style.pointerEvents = "none";
+  }
+}
+
 export function Map2DPanel({
   graphId,
   activeBranchId,
@@ -429,9 +527,11 @@ export function Map2DPanel({
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const baseTileLayerRef = useRef<L.TileLayer | null>(null);
-  const baseImageLayerRef = useRef<L.ImageOverlay | null>(null);
+  const rasterBaseLayerRef = useRef<L.Layer | null>(null);
+  const rasterAnalyticLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const dynamicLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const [status, setStatus] = useState("");
-  const [imageryContract, setImageryContract] = useState<ImageryDrapeContract | null>(null);
+  const [imageryContract, setImageryContract] = useState<RasterOverlayContract | null>(null);
   const [layerStackContract, setLayerStackContract] = useState<LayerStackContract | null>(null);
   const [sourceData, setSourceData] = useState<SourceData[]>([]);
   const [manifestArtifacts, setManifestArtifacts] = useState<ArtifactEntry[]>([]);
@@ -439,6 +539,8 @@ export function Map2DPanel({
   const [layers, setLayers] = useState<SourceLayerConfig[]>([]);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [layerOrderMode, setLayerOrderMode] = useState<LayerOrderMode>("contract");
+  const [baseVisible, setBaseVisible] = useState(true);
+  const [baseOpacity, setBaseOpacity] = useState(1);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const lastViewContextRef = useRef<string>("");
   const userMovedMapRef = useRef(false);
@@ -549,6 +651,9 @@ export function Map2DPanel({
     const map = L.map(containerRef.current, {
       zoomControl: true,
       attributionControl: true,
+      zoomAnimation: false,
+      fadeAnimation: false,
+      markerZoomAnimation: false,
     }).setView([20, 0], 2);
     const base = L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -559,6 +664,12 @@ export function Map2DPanel({
       }
     ).addTo(map);
     baseTileLayerRef.current = base;
+    ensurePane(map, "mineeye-raster-base", 250);
+    ensurePane(map, "mineeye-raster-analytic", 430);
+    const dynamicGroup = L.layerGroup().addTo(map);
+    dynamicLayerGroupRef.current = dynamicGroup;
+    const analyticGroup = L.layerGroup().addTo(map);
+    rasterAnalyticLayerGroupRef.current = analyticGroup;
     const onMoveStart = () => {
       userMovedMapRef.current = true;
     };
@@ -568,6 +679,15 @@ export function Map2DPanel({
     return () => {
       map.off("movestart", onMoveStart);
       map.off("zoomstart", onMoveStart);
+      if (rasterBaseLayerRef.current && map.hasLayer(rasterBaseLayerRef.current)) {
+        map.removeLayer(rasterBaseLayerRef.current);
+      }
+      rasterBaseLayerRef.current = null;
+      if (rasterAnalyticLayerGroupRef.current && map.hasLayer(rasterAnalyticLayerGroupRef.current)) {
+        map.removeLayer(rasterAnalyticLayerGroupRef.current);
+      }
+      rasterAnalyticLayerGroupRef.current = null;
+      dynamicLayerGroupRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -578,71 +698,59 @@ export function Map2DPanel({
     if (!map) return;
     let cancelled = false;
     void (async () => {
-      const clearContractBase = () => {
-        if (baseImageLayerRef.current) {
-          map.removeLayer(baseImageLayerRef.current);
-          baseImageLayerRef.current = null;
-        }
-      };
+      if (rasterBaseLayerRef.current && map.hasLayer(rasterBaseLayerRef.current)) {
+        map.removeLayer(rasterBaseLayerRef.current);
+      }
+      rasterBaseLayerRef.current = null;
       const baseTile = baseTileLayerRef.current;
-      const contractImageUrl = typeof imageryContract?.image_url === "string" && imageryContract.image_url.trim().length
-        ? imageryContract.image_url
-        : Array.isArray(imageryContract?.image_url_candidates)
-          ? imageryContract.image_url_candidates.find((u) => typeof u === "string" && u.trim().length > 0)
-          : undefined;
-      if (!contractImageUrl || !imageryContract.bounds) {
-        clearContractBase();
-        if (baseTile && !map.hasLayer(baseTile)) baseTile.addTo(map);
+      if (baseTile && !map.hasLayer(baseTile)) {
+        baseTile.addTo(map);
+      }
+      const source = await resolveRasterOverlaySource(imageryContract);
+      if (!baseVisible || !source || !source.bounds) {
         return;
       }
-      const epsg =
-        typeof imageryContract.source_crs?.epsg === "number"
-          ? imageryContract.source_crs.epsg
-          : 4326;
-      let sw: [number, number] | null = null;
-      let ne: [number, number] | null = null;
-      if (epsg === 4326) {
-        sw = [imageryContract.bounds.ymin, imageryContract.bounds.xmin];
-        ne = [imageryContract.bounds.ymax, imageryContract.bounds.xmax];
-      } else {
-        const swLl = await lonLatFromProjectedAsync(
-          epsg,
-          imageryContract.bounds.xmin,
-          imageryContract.bounds.ymin
-        );
-        const neLl = await lonLatFromProjectedAsync(
-          epsg,
-          imageryContract.bounds.xmax,
-          imageryContract.bounds.ymax
-        );
-        if (swLl && neLl) {
-          sw = [swLl[1], swLl[0]];
-          ne = [neLl[1], neLl[0]];
-        }
-      }
-      if (cancelled || !sw || !ne) {
-        clearContractBase();
-        if (baseTile && !map.hasLayer(baseTile)) baseTile.addTo(map);
+      if (cancelled) {
         return;
       }
-      clearContractBase();
-      const paneId = "contract-base";
-      if (!map.getPane(paneId)) map.createPane(paneId);
-      const p = map.getPane(paneId);
-      if (p) p.style.zIndex = "250";
-      if (baseTile && map.hasLayer(baseTile)) map.removeLayer(baseTile);
-      const overlay = L.imageOverlay(contractImageUrl, [sw, ne], {
-        pane: paneId,
-        opacity: 1,
-        interactive: false,
-      });
-      overlay.addTo(map);
-      baseImageLayerRef.current = overlay;
+      let layer: L.Layer | null = null;
+      if (source.mode === "single_image" && source.imageUrl) {
+        layer = createBoundedImageLayer(api(source.imageUrl), source.bounds, {
+          opacity: baseOpacity,
+          pane: "mineeye-raster-base",
+        });
+      } else if (source.mode === "global_xyz_tiles" && source.tileUrlTemplate) {
+        layer = createGlobalTileLayer(api(source.tileUrlTemplate), {
+          minZoom: source.tileMinZoom,
+          maxZoom: source.tileMaxZoom,
+          opacity: baseOpacity,
+          attribution: source.attribution,
+          pane: "mineeye-raster-base",
+        });
+      } else if (source.tileUrlTemplate) {
+        layer = createLocalExtentTileLayer({
+          bounds: source.bounds,
+          tileUrlTemplate: api(source.tileUrlTemplate),
+          tileMinZoom: source.tileMinZoom,
+          tileMaxZoom: source.tileMaxZoom,
+          opacity: baseOpacity,
+          pane: "mineeye-raster-base",
+        });
+      } else if (source.imageUrl) {
+        layer = createBoundedImageLayer(api(source.imageUrl), source.bounds, {
+          opacity: baseOpacity,
+          pane: "mineeye-raster-base",
+        });
+      }
+      if (layer) {
+        layer.addTo(map);
+        rasterBaseLayerRef.current = layer;
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [imageryContract]);
+  }, [imageryContract, baseVisible, baseOpacity, graphId, viewerNodeId]);
 
   useEffect(() => {
     const ctx = `${graphId ?? ""}:${viewerNodeId ?? ""}`;
@@ -651,17 +759,7 @@ export function Map2DPanel({
       userMovedMapRef.current = false;
       lastArtifactSigRef.current = "";
       autoFitContextRef.current = "";
-      try {
-        const raw = localStorage.getItem(cacheKeyForView(graphId, viewerNodeId));
-        if (raw) {
-          const parsed = normalizeSourceData(JSON.parse(raw) as unknown);
-          if (parsed.length > 0) {
-            setSourceData(parsed);
-          }
-        }
-      } catch {
-        // ignore cache parse issues
-      }
+      setSourceData([]);
     }
   }, [graphId, viewerNodeId]);
 
@@ -685,6 +783,12 @@ export function Map2DPanel({
         if (mv && typeof mv === "object" && !Array.isArray(mv)) {
           const m = mv as Record<string, unknown>;
           const collapsed = Boolean(m.panel_collapsed);
+          const savedBaseVisible =
+            typeof m.base_visible === "boolean" ? m.base_visible : true;
+          const savedBaseOpacity =
+            typeof m.base_opacity === "number" && Number.isFinite(m.base_opacity)
+              ? Math.max(0, Math.min(1, m.base_opacity))
+              : 1;
           const orderMode =
             m.layer_order_mode === "override" || m.layer_order_mode === "contract"
               ? (m.layer_order_mode as LayerOrderMode)
@@ -694,6 +798,8 @@ export function Map2DPanel({
             setLayers(lay as SourceLayerConfig[]);
           }
           setPanelCollapsed(collapsed);
+          setBaseVisible(savedBaseVisible);
+          setBaseOpacity(savedBaseOpacity);
           setLayerOrderMode(orderMode);
         }
       } catch (e) {
@@ -718,6 +824,8 @@ export function Map2DPanel({
         map2d_view: {
           version: 1,
           panel_collapsed: panelCollapsed,
+          base_visible: baseVisible,
+          base_opacity: baseOpacity,
           layer_order_mode: layerOrderMode,
           layers,
         },
@@ -737,7 +845,7 @@ export function Map2DPanel({
         saveTimerRef.current = null;
       }
     };
-  }, [graphId, viewerNodeId, activeBranchId, panelCollapsed, layerOrderMode, layers, configHydrated]);
+  }, [graphId, viewerNodeId, activeBranchId, panelCollapsed, baseVisible, baseOpacity, layerOrderMode, layers, configHydrated]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -785,7 +893,7 @@ export function Map2DPanel({
     );
     if (fit.length === 0) return;
 
-    map.fitBounds(L.latLngBounds(fit).pad(0.25));
+    fitMapToBounds(map, L.latLngBounds(fit), { padRatio: 0.25 });
     autoFitContextRef.current = viewCtx;
   }, [active, graphId, viewerNodeId, sourceData]);
 
@@ -817,7 +925,9 @@ export function Map2DPanel({
 
     const upstreamIds = new Set(inputLinks.map((x) => x.fromNode));
     const fallbackArts = jsonArtifactsForNodes(graphId, artifacts, upstreamIds);
-    const arts = manifestArtifacts.length > 0 ? manifestArtifacts : fallbackArts;
+    const manifestJsonArts = manifestArtifacts.filter(isJsonLikeArtifact);
+    const artsRaw = manifestJsonArts.length > 0 ? manifestJsonArts : fallbackArts;
+    const arts = filterArtifactsForPlanView(preferPreviewArtifacts(artsRaw));
     const artSig = arts
       .map((a) => `${a.key}:${a.content_hash}`)
       .sort((a, b) => a.localeCompare(b))
@@ -845,7 +955,7 @@ export function Map2DPanel({
 
     void (async () => {
       const all: SourceData[] = [];
-      let foundImageryContract: ImageryDrapeContract | null = null;
+      let foundImageryContract: RasterOverlayContract | null = null;
       let foundLayerStackContract: LayerStackContract | null = null;
       const manifestByArtifact = new Map<string, ViewerManifestLayer>();
       for (const ml of manifestLayers) {
@@ -863,10 +973,18 @@ export function Map2DPanel({
           continue;
         }
         const text = await r.text();
+        let parsedRoot: Record<string, unknown> | null = null;
         try {
           const raw = JSON.parse(text) as unknown;
-          const maybeImagery = parseImageryContract(raw);
-          if (!foundImageryContract && maybeImagery) {
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            parsedRoot = raw as Record<string, unknown>;
+          }
+          const maybeImagery = parseRasterOverlayContract(raw);
+          if (
+            maybeImagery &&
+            rasterContractPriority(maybeImagery) >
+              rasterContractPriority(foundImageryContract)
+          ) {
             foundImageryContract = maybeImagery;
           }
           const maybeLayerStack = parseLayerStackContract(raw);
@@ -948,9 +1066,11 @@ export function Map2DPanel({
 
         const mByXY = new Map<string, Record<string, number>>();
         measured.forEach((m) => mByXY.set(`${m.x}|${m.y}`, m.measures));
-        const epsg = epsgFromCollarJson(text);
+        const mByIndex = measured.map((m) => m.measures);
+        const epsg = epsgFromAnyJson(text);
         const points: RenderPoint[] = [];
-        for (const p of basic) {
+        for (let i = 0; i < basic.length; i++) {
+          const p = basic[i];
           let lon = p.x;
           let lat = p.y;
           if (epsg && epsg !== 4326) {
@@ -964,11 +1084,18 @@ export function Map2DPanel({
             lat,
             lon,
             label: p.label,
-            measures: mByXY.get(`${p.x}|${p.y}`) ?? {},
+            measures: mByXY.get(`${p.x}|${p.y}`) ?? mByIndex[i] ?? {},
           });
           fit.push([lat, lon]);
         }
-        const measureNames = [...new Set(points.flatMap((p) => Object.keys(p.measures)))].sort(
+        const candidateMeasures = Array.isArray(parsedRoot?.measure_candidates)
+          ? (parsedRoot?.measure_candidates as unknown[])
+              .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+              .map((v) => v.trim())
+          : [];
+        const measureNames = [
+          ...new Set([...points.flatMap((p) => Object.keys(p.measures)), ...candidateMeasures]),
+        ].sort(
           (a, b) => a.localeCompare(b)
         );
         all.push({
@@ -976,6 +1103,7 @@ export function Map2DPanel({
           label: art.key.split("/").pop() ?? art.key,
           artifactKey: art.key,
           contentHash: art.content_hash,
+          sourceType: sourceTypeForArtifact(art.key, measureNames, heatmapHint),
           points,
           lines,
           measureNames,
@@ -990,21 +1118,29 @@ export function Map2DPanel({
       setImageryContract(foundImageryContract);
       setLayerStackContract(foundLayerStackContract);
       setSourceData(all);
-      if (all.length > 0) {
-        try {
-          localStorage.setItem(cacheKeyForView(graphId, viewerNodeId), JSON.stringify(all));
-        } catch {
-          // ignore localStorage quota failures
-        }
-      }
       if (all.length === 0) {
-        const imgNote = foundImageryContract?.fingerprint
-          ? ` Imagery fingerprint: ${foundImageryContract.fingerprint.slice(0, 10)}…`
-          : foundImageryContract?.provider_label
-            ? ` ${foundImageryContract.provider_label} contract loaded.`
-            : "";
+        const imageryBounds = await rasterBoundsToLatLng(foundImageryContract);
+        if (imageryBounds && (!userMovedMapRef.current || ctxChanged)) {
+          fitMapToBounds(
+            map,
+            L.latLngBounds([
+              [imageryBounds.south, imageryBounds.west],
+              [imageryBounds.north, imageryBounds.east],
+            ]),
+            {
+              padRatio: 0.12,
+              maxZoom:
+                typeof foundImageryContract?.tile_max_zoom === "number"
+                  ? foundImageryContract.tile_max_zoom
+                  : undefined,
+            }
+          );
+        }
+        const imgNote = foundImageryContract?.provider_label
+          ? `${foundImageryContract.provider_label} contract loaded.`
+          : "Raster contract loaded.";
         const lsNote = foundLayerStackContract ? " Layer stack contract loaded." : "";
-        setStatus(`No drawable points parsed.${imgNote}${lsNote}`);
+        setStatus(`${imgNote}${lsNote}`);
         return;
       }
       const imgNote = foundImageryContract?.fingerprint
@@ -1015,7 +1151,7 @@ export function Map2DPanel({
       const lsNote = foundLayerStackContract ? " · layer-stack contract" : "";
       setStatus(`${total} point(s) from ${all.length} input artifact(s).${imgNote}${lsNote}${notes.length ? ` ${notes.join(" · ")}` : ""}`);
       if (fit.length && (!userMovedMapRef.current || ctxChanged)) {
-        map.fitBounds(L.latLngBounds(fit).pad(0.25));
+        fitMapToBounds(map, L.latLngBounds(fit), { padRatio: 0.25 });
       }
     })().catch((e) => {
       if (token === loadTokenRef.current && mountedRef.current) {
@@ -1029,7 +1165,10 @@ export function Map2DPanel({
   }, [graphId, viewerNodeId, artifacts, manifestArtifacts, manifestLayers, inputLinks, sourceData.length]);
 
   useEffect(() => {
-    if (sourceData.length === 0) return;
+    if (sourceData.length === 0) {
+      setLayers([]);
+      return;
+    }
     setLayers((prev) => {
       const contractBySource = new Map<
         string,
@@ -1058,7 +1197,7 @@ export function Map2DPanel({
       }
       const sourceIds = new Set(sourceData.map((s) => s.id));
       const prevById = new Map(prev.map((l) => [l.id, l]));
-      const desired = sourceData.map((s) => {
+        const desired = sourceData.map((s) => {
         const id = `src:${s.id}`;
         const defaultFromSource = defaultLayerForSource(s);
         const c = contractBySource.get(s.id);
@@ -1067,18 +1206,23 @@ export function Map2DPanel({
         }
         const nextHintSig = hintSig(s.heatmapHint);
         const lockedRenderer = s.displayContract?.renderer === "heat_surface";
+        const allowedHeatMeasures = allowedHeatmapMeasuresForSource(s);
         const ex = prevById.get(id);
         if (!ex) return defaultFromSource;
         const hintChanged =
           s.heatmapHint &&
           (ex.sourceHintSig ?? "") !== nextHintSig;
         if (hintChanged) {
+          const prevPoints =
+            lockedRenderer || typeof ex.points.enabled !== "boolean"
+              ? defaultFromSource.points
+              : ex.points;
           return {
             ...ex,
             sourceId: s.id,
             sourceHintSig: nextHintSig,
             heatmap: defaultFromSource.heatmap,
-            points: lockedRenderer ? defaultFromSource.points : ex.points,
+            points: prevPoints,
           };
         }
         return {
@@ -1087,6 +1231,10 @@ export function Map2DPanel({
           sourceHintSig: nextHintSig,
           points: {
             ...(lockedRenderer ? defaultFromSource.points : ex.points),
+            enabled:
+              lockedRenderer || typeof ex.points.enabled !== "boolean"
+                ? defaultFromSource.points.enabled
+                : ex.points.enabled,
             colorTransform:
               (lockedRenderer
                 ? defaultFromSource.points.colorTransform
@@ -1137,14 +1285,15 @@ export function Map2DPanel({
             ...(lockedRenderer ? defaultFromSource.heatmap : ex.heatmap),
             measure:
               (lockedRenderer ? defaultFromSource.heatmap.measure : ex.heatmap.measure) &&
-              s.measureNames.includes(
+              allowedHeatMeasures.includes(
                 lockedRenderer ? defaultFromSource.heatmap.measure : ex.heatmap.measure
               )
                 ? (lockedRenderer
                     ? defaultFromSource.heatmap.measure
                     : ex.heatmap.measure)
-                : s.measureNames[0] ?? "",
-            enabled: s.measureNames.length > 0 ? (lockedRenderer ? true : ex.heatmap.enabled) : false,
+                : allowedHeatMeasures[0] ?? "",
+            enabled:
+              allowedHeatMeasures.length > 0 ? (lockedRenderer ? true : ex.heatmap.enabled) : false,
             transform:
               (lockedRenderer
                 ? defaultFromSource.heatmap.transform
@@ -1187,12 +1336,11 @@ export function Map2DPanel({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
-    map.eachLayer((layer) => {
-      if (layer instanceof L.TileLayer) return;
-      if (baseImageLayerRef.current && layer === baseImageLayerRef.current) return;
-      map.removeLayer(layer);
-    });
+    const dynamicGroup = dynamicLayerGroupRef.current;
+    const analyticGroup = rasterAnalyticLayerGroupRef.current;
+    if (!map || !dynamicGroup || !analyticGroup) return;
+    dynamicGroup.clearLayers();
+    analyticGroup.clearLayers();
 
     layers.forEach((layer, z) => {
       if (!layer.visible) return;
@@ -1257,18 +1405,14 @@ export function Map2DPanel({
                 }
               }
               ctx.putImageData(img, 0, 0);
-              L.imageOverlay(
+              createBoundedImageLayer(
                 canvas.toDataURL("image/png"),
-                [
-                  [g.ymin, g.xmin],
-                  [g.ymax, g.xmax],
-                ],
+                { south: g.ymin, west: g.xmin, north: g.ymax, east: g.xmax },
                 {
-                  pane: heatPane,
                   opacity: layer.heatmap.opacity * layer.opacity,
-                  interactive: false,
+                  pane: "mineeye-raster-analytic",
                 }
-              ).addTo(map);
+              ).addTo(analyticGroup);
             }
           }
         } else {
@@ -1334,18 +1478,14 @@ export function Map2DPanel({
                     }
                   }
                   ctx.putImageData(img, 0, 0);
-                  L.imageOverlay(
+                  createBoundedImageLayer(
                     canvas.toDataURL("image/png"),
-                    [
-                      [latMin, lonMin],
-                      [latMax, lonMax],
-                    ],
+                    { south: latMin, west: lonMin, north: latMax, east: lonMax },
                     {
-                      pane: heatPane,
                       opacity: layer.heatmap.opacity * layer.opacity,
-                      interactive: false,
+                      pane: "mineeye-raster-analytic",
                     }
-                  ).addTo(map);
+                  ).addTo(analyticGroup);
                 }
               }
             }
@@ -1368,7 +1508,7 @@ export function Map2DPanel({
               ln.level != null ? `Contour ${ln.level.toFixed(3)}` : "Contour",
               { sticky: true }
             )
-            .addTo(map);
+            .addTo(dynamicGroup);
         });
       }
 
@@ -1389,6 +1529,9 @@ export function Map2DPanel({
       const cmm = valueMinMax(colorVals);
       const smm = valueMinMax(sizeVals);
 
+      if (!layer.points.enabled) {
+        return;
+      }
       src.points.forEach((pt) => {
         const rawColorValue = pt.measures[layer.points.colorMeasure];
         const colorValue =
@@ -1438,7 +1581,7 @@ export function Map2DPanel({
             weight: 1.3,
           })
             .bindTooltip(pt.label)
-            .addTo(map);
+            .addTo(dynamicGroup);
           return;
         }
 
@@ -1456,7 +1599,7 @@ export function Map2DPanel({
           }),
         })
           .bindTooltip(pt.label)
-          .addTo(map);
+          .addTo(dynamicGroup);
       });
     });
   }, [layers, sourceById]);
@@ -1558,9 +1701,57 @@ export function Map2DPanel({
               </div>
               <div className="me-panel-body me-panel">
                 <div className="me-section-note">
-                  Base: {imageryContract?.provider_label ?? "Esri satellite"}
-                  {imageryContract?.attribution ? ` · ${imageryContract.attribution}` : ""}
+                  Base map: Esri satellite
                 </div>
+                {imageryContract ? (
+                  <div className="me-layer-card">
+                    <div className="me-layer-card-header">
+                      <span className="me-layer-dot" style={{ background: "#facc15", opacity: baseVisible ? 1 : 0.25 }} />
+                      <button
+                        type="button"
+                        className="me-layer-vis-btn"
+                        title={baseVisible ? "Hide raster layer" : "Show raster layer"}
+                        style={{ color: baseVisible ? "#e6edf3" : "#484f58" }}
+                        onClick={() => setBaseVisible((v) => !v)}
+                      >
+                        {baseVisible ? "●" : "○"}
+                      </button>
+                      <div
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: baseVisible ? "#e6edf3" : "#6e7681",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {imageryContract.provider_label ?? "Raster drape"}
+                      </div>
+                    </div>
+                    <div className="me-layer-card-body">
+                      <div className="me-section-note">
+                        {imageryContract.attribution ?? "Cached raster tile layer"}
+                      </div>
+                      <label>
+                        <span>Raster opacity ({Math.round(baseOpacity * 100)}%)</span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={Math.round(baseOpacity * 100)}
+                          onChange={(e) =>
+                            setBaseOpacity(
+                              Math.max(0, Math.min(1, Number(e.target.value) / 100))
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
                 {hasLayerStackContract ? (
                   <label>
                     Order
@@ -1580,6 +1771,7 @@ export function Map2DPanel({
               {layers.map((layer) => {
                 const src = sourceById.get(layer.sourceId);
                 const measures = src?.measureNames ?? [];
+                const heatmapMeasures = allowedHeatmapMeasuresForSource(src);
                 const lockedRenderer = src?.displayContract?.renderer === "heat_surface";
                 // Derive dot colour: semantic type from edge takes priority, then content heuristic
                 const srcNodeId = layer.sourceId.split(":")[0] ?? "";
@@ -1693,6 +1885,22 @@ export function Map2DPanel({
                         </label>
 
                         <div className="me-style-subheader">Points</div>
+                        <label>
+                          <span>Enable points</span>
+                          <input
+                            type="checkbox"
+                            checked={layer.points.enabled}
+                            onChange={(e) =>
+                              setLayers((prev) =>
+                                prev.map((l) =>
+                                  l.id === layer.id
+                                    ? { ...l, points: { ...l.points, enabled: e.target.checked } }
+                                    : l
+                                )
+                              )
+                            }
+                          />
+                        </label>
                         <label>
                           <span>Shape</span>
                           <select
@@ -1990,7 +2198,7 @@ export function Map2DPanel({
                           <input
                             type="checkbox"
                             checked={layer.heatmap.enabled}
-                            disabled={measures.length === 0 || lockedRenderer}
+                            disabled={heatmapMeasures.length === 0 || lockedRenderer}
                             onChange={(e) =>
                               setLayers((prev) =>
                                 prev.map((l) =>
@@ -2020,7 +2228,7 @@ export function Map2DPanel({
                                   )
                                 }
                                   >
-                                {measures.map((m) => (
+                                {heatmapMeasures.map((m) => (
                                   <option key={m} value={m}>
                                     {m}
                                   </option>
@@ -2181,4 +2389,3 @@ export function Map2DPanel({
     </div>
   );
 }
-

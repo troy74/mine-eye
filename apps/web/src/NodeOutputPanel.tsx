@@ -7,6 +7,46 @@ import {
 } from "./nodeArtifactPreview";
 
 const MAX_TEXT_PREVIEW = 96_000;
+const MAX_FETCH_BYTES = 1_500_000;
+const MAX_JSON_PARSE_CHARS = 800_000;
+
+async function readTextCapped(resp: Response, maxBytes: number): Promise<{ text: string; truncated: boolean; totalHint?: number }> {
+  const contentLen = Number(resp.headers.get("content-length") ?? "");
+  const totalHint = Number.isFinite(contentLen) && contentLen > 0 ? contentLen : undefined;
+  if (!resp.body) {
+    const text = await resp.text();
+    if (text.length > maxBytes) {
+      return { text: text.slice(0, maxBytes), truncated: true, totalHint };
+    }
+    return { text, truncated: false, totalHint };
+  }
+  const reader = resp.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let read = 0;
+  let truncated = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    if (read + value.byteLength > maxBytes) {
+      const remain = Math.max(0, maxBytes - read);
+      if (remain > 0) chunks.push(value.slice(0, remain));
+      read += remain;
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    read += value.byteLength;
+  }
+  const merged = new Uint8Array(read);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.byteLength;
+  }
+  return { text: new TextDecoder().decode(merged), truncated, totalHint };
+}
 
 type Props = {
   graphId: string;
@@ -130,16 +170,17 @@ export function NodeOutputPanel({
       try {
         const r = await fetch(api(selected.url), { cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const raw = await r.text();
+        const { text: raw, truncated, totalHint } = await readTextCapped(r, MAX_FETCH_BYTES);
         if (cancelled) return;
         let display = raw;
-        if (raw.length > MAX_TEXT_PREVIEW) {
+        if (truncated || raw.length > MAX_TEXT_PREVIEW) {
           display =
             raw.slice(0, MAX_TEXT_PREVIEW) +
-            `\n\n… truncated (${raw.length.toLocaleString()} chars total)`;
+            `\n\n… preview truncated (loaded ${raw.length.toLocaleString()} chars${totalHint ? ` of ~${totalHint.toLocaleString()} bytes` : ""}). Download artifact for full content.`;
         }
         try {
-          const parsed = JSON.parse(raw) as unknown;
+          if (!truncated && raw.length <= MAX_JSON_PARSE_CHARS) {
+            const parsed = JSON.parse(raw) as unknown;
           if (
             parsed &&
             typeof parsed === "object" &&
@@ -152,11 +193,16 @@ export function NodeOutputPanel({
           ) {
             setPreviewHtml(String((parsed as Record<string, unknown>).html));
           }
-          display = JSON.stringify(parsed, null, 2);
-          if (display.length > MAX_TEXT_PREVIEW) {
-            display =
-              display.slice(0, MAX_TEXT_PREVIEW) +
-              `\n\n… truncated (${display.length.toLocaleString()} chars when formatted)`;
+            display = JSON.stringify(parsed, null, 2);
+            if (display.length > MAX_TEXT_PREVIEW) {
+              display =
+                display.slice(0, MAX_TEXT_PREVIEW) +
+                `\n\n… truncated (${display.length.toLocaleString()} chars when formatted)`;
+            }
+          } else if (truncated || raw.length > MAX_JSON_PARSE_CHARS) {
+            setPreviewNote(
+              `Large JSON artifact previewed as raw text only. Size is above safe parse limit (${MAX_JSON_PARSE_CHARS.toLocaleString()} chars).`
+            );
           }
         } catch {
           /* keep raw */
