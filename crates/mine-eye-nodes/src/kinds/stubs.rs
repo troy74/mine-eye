@@ -9,7 +9,10 @@ pub async fn run_dem_integrate_stub(
 ) -> Result<JobResult, NodeError> {
     let stub = serde_json::json!({ "dem": "stub", "graph": job.graph_id });
     let bytes = serde_json::to_vec(&stub)?;
-    let key = format!("graphs/{}/nodes/{}/dem_stub.json", job.graph_id, job.node_id);
+    let key = format!(
+        "graphs/{}/nodes/{}/dem_stub.json",
+        job.graph_id, job.node_id
+    );
     let artifact =
         super::runtime::write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
     Ok(JobResult {
@@ -39,13 +42,19 @@ pub async fn run_block_model_stub(
         "cell_x": 10.0, "cell_y": 10.0, "cell_z": 5.0,
     });
     let meta_bytes = serde_json::to_vec(&meta)?;
-    let meta_key = format!("graphs/{}/nodes/{}/block_model_meta.json", job.graph_id, job.node_id);
+    let meta_key = format!(
+        "graphs/{}/nodes/{}/block_model_meta.json",
+        job.graph_id, job.node_id
+    );
     let meta_ref =
         super::runtime::write_artifact(ctx, &meta_key, &meta_bytes, Some("application/json"))
             .await?;
 
     let bin: Vec<u8> = grid.iter().flat_map(|f| f.to_le_bytes()).collect();
-    let bin_key = format!("graphs/{}/nodes/{}/block_model_f32.bin", job.graph_id, job.node_id);
+    let bin_key = format!(
+        "graphs/{}/nodes/{}/block_model_f32.bin",
+        job.graph_id, job.node_id
+    );
     let bin_ref =
         super::runtime::write_artifact(ctx, &bin_key, &bin, Some("application/octet-stream"))
             .await?;

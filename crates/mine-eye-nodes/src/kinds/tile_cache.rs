@@ -124,7 +124,10 @@ impl TileCache {
         if fs::create_dir_all(&dir).await.is_err() {
             return;
         }
-        if fs::write(self.data_path(category, &hk), data).await.is_err() {
+        if fs::write(self.data_path(category, &hk), data)
+            .await
+            .is_err()
+        {
             return;
         }
         let meta = CacheMeta {
@@ -153,7 +156,11 @@ impl TileCache {
             let now_s = unix_now_s();
             while let Ok(Some(e)) = rd.next_entry().await {
                 let p = e.path();
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !name.ends_with(".meta.json") {
                     continue;
                 }
@@ -185,7 +192,11 @@ impl TileCache {
 
         while let Ok(Some(e)) = rd.next_entry().await {
             let p = e.path();
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
             if !name.ends_with(".meta.json") {
                 continue;
             }
@@ -193,7 +204,12 @@ impl TileCache {
             if let Ok(mb) = fs::read(&p).await {
                 if let Ok(m) = serde_json::from_slice::<CacheMeta>(&mb) {
                     total += m.size_bytes;
-                    entries.push((m.created_at_s, m.size_bytes, self.data_path(category, &hk), p));
+                    entries.push((
+                        m.created_at_s,
+                        m.size_bytes,
+                        self.data_path(category, &hk),
+                        p,
+                    ));
                 }
             }
         }

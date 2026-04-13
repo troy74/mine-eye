@@ -23,6 +23,7 @@ export const ACQUISITION_CSV_KINDS = [
   "survey_ingest",
   "surface_sample_ingest",
   "assay_ingest",
+  "ip_survey_ingest",
   "magnetic_model",
 ] as const;
 

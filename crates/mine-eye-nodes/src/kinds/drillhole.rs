@@ -78,10 +78,7 @@ pub async fn run_drillhole_model(
     let mut hole_segments: std::collections::HashMap<String, Vec<TrajectorySegment>> =
         std::collections::HashMap::new();
     for s in trajectory {
-        hole_segments
-            .entry(s.hole_id.clone())
-            .or_default()
-            .push(s);
+        hole_segments.entry(s.hole_id.clone()).or_default().push(s);
     }
     for segs in hole_segments.values_mut() {
         segs.sort_by(|a, b| a.depth_from_m.partial_cmp(&b.depth_from_m).unwrap());
@@ -165,13 +162,9 @@ pub async fn run_drillhole_model(
         "graphs/{}/nodes/{}/drillhole_meshes.json",
         job.graph_id, job.node_id
     );
-    let mesh_ref = super::runtime::write_artifact(
-        ctx,
-        &mesh_key,
-        &mesh_bytes,
-        Some("application/json"),
-    )
-    .await?;
+    let mesh_ref =
+        super::runtime::write_artifact(ctx, &mesh_key, &mesh_bytes, Some("application/json"))
+            .await?;
 
     let points_payload = serde_json::json!({ "assay_points": assay_points });
     let points_bytes = serde_json::to_vec(&points_payload)?;
@@ -179,13 +172,9 @@ pub async fn run_drillhole_model(
         "graphs/{}/nodes/{}/assay_points.json",
         job.graph_id, job.node_id
     );
-    let points_ref = super::runtime::write_artifact(
-        ctx,
-        &points_key,
-        &points_bytes,
-        Some("application/json"),
-    )
-    .await?;
+    let points_ref =
+        super::runtime::write_artifact(ctx, &points_key, &points_bytes, Some("application/json"))
+            .await?;
 
     Ok(JobResult {
         job_id: job.job_id,

@@ -95,7 +95,13 @@ fn compact_summary_payload(source: &Value) -> Value {
         .map(|arr| arr.iter().take(12).cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     let variogram = source.pointer("/variogram").cloned().or_else(|| {
-        let bins = source.pointer("/bins")?.as_array()?.iter().take(12).cloned().collect::<Vec<_>>();
+        let bins = source
+            .pointer("/bins")?
+            .as_array()?
+            .iter()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>();
         Some(json!({
             "bins": bins,
             "lags": source.pointer("/lags").and_then(|v| n(v)),
@@ -127,7 +133,10 @@ fn compact_summary_payload(source: &Value) -> Value {
 
 fn score_semantic_report(v: &Value) -> i32 {
     let mut s = 0i32;
-    let schema = v.pointer("/schema_id").and_then(|x| x.as_str()).unwrap_or("");
+    let schema = v
+        .pointer("/schema_id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
     let typ = v.pointer("/type").and_then(|x| x.as_str()).unwrap_or("");
     if schema == "report.block_resource.v2" {
         s += 1000;
@@ -141,7 +150,10 @@ fn score_semantic_report(v: &Value) -> i32 {
     if v.pointer("/summary/total_tonnage_t").and_then(n).is_some() {
         s += 250;
     }
-    if v.pointer("/summary/above_cutoff_tonnage_t").and_then(n).is_some() {
+    if v.pointer("/summary/above_cutoff_tonnage_t")
+        .and_then(n)
+        .is_some()
+    {
         s += 250;
     }
     if v.pointer("/schema_id").and_then(|x| x.as_str()) == Some("report.variogram.v1") {
@@ -157,8 +169,14 @@ fn score_semantic_report(v: &Value) -> i32 {
 }
 
 fn infer_title(source: &Value) -> String {
-    let typ = source.pointer("/type").and_then(|v| v.as_str()).unwrap_or("");
-    let schema = source.pointer("/schema_id").and_then(|v| v.as_str()).unwrap_or("");
+    let typ = source
+        .pointer("/type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let schema = source
+        .pointer("/schema_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let element = source
         .pointer("/semantic_summary/element_field")
         .or_else(|| source.pointer("/summary/element_field"))
@@ -184,12 +202,17 @@ fn infer_title(source: &Value) -> String {
 }
 
 fn merge_companion_reports(primary: &mut Value, all_sources: &[(String, Value)]) {
-    let is_resource = primary.pointer("/schema_id").and_then(|v| v.as_str()) == Some("report.block_resource.v2")
+    let is_resource = primary.pointer("/schema_id").and_then(|v| v.as_str())
+        == Some("report.block_resource.v2")
         || primary.pointer("/type").and_then(|v| v.as_str()) == Some("block_resource_report");
     if !is_resource {
         return;
     }
-    let has_variogram = primary.pointer("/variogram/bins").and_then(|v| v.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+    let has_variogram = primary
+        .pointer("/variogram/bins")
+        .and_then(|v| v.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
     if has_variogram {
         return;
     }
@@ -229,12 +252,8 @@ fn fallback_markdown(title: &str, src_key: &str, compact: &Value) -> String {
     let cutoff = sem
         .get("cutoff_grade")
         .or_else(|| summary.get("cutoff_grade"));
-    let mean_grade = sem
-        .get("mean_grade")
-        .or_else(|| summary.get("mean_grade"));
-    let max_grade = sem
-        .get("max_grade")
-        .or_else(|| summary.get("max_grade"));
+    let mean_grade = sem.get("mean_grade").or_else(|| summary.get("mean_grade"));
+    let max_grade = sem.get("max_grade").or_else(|| summary.get("max_grade"));
     let tonnage = sem
         .get("above_cutoff_tonnage_t")
         .or_else(|| summary.get("above_cutoff_tonnage_t"));
@@ -260,11 +279,28 @@ fn fallback_markdown(title: &str, src_key: &str, compact: &Value) -> String {
 
     md.push_str("## Key Metrics\n\n");
     md.push_str("| Metric | Value |\n|---|---:|\n");
-    md.push_str(&format!("| Mean grade ({}) | {} |\n", grade_unit, fmt_num(n(mean_grade.unwrap_or(&Value::Null)), 3)));
-    md.push_str(&format!("| Max grade ({}) | {} |\n", grade_unit, fmt_num(n(max_grade.unwrap_or(&Value::Null)), 3)));
-    md.push_str(&format!("| Above-cutoff share (%) | {} |\n", fmt_num(n(share.unwrap_or(&Value::Null)), 1)));
-    md.push_str(&format!("| Above-cutoff tonnage (t) | {} |\n", fmt_num(n(tonnage.unwrap_or(&Value::Null)), 0)));
-    md.push_str(&format!("| Above-cutoff contained metal (oz) | {} |\n\n", fmt_num(n(ounces.unwrap_or(&Value::Null)), 0)));
+    md.push_str(&format!(
+        "| Mean grade ({}) | {} |\n",
+        grade_unit,
+        fmt_num(n(mean_grade.unwrap_or(&Value::Null)), 3)
+    ));
+    md.push_str(&format!(
+        "| Max grade ({}) | {} |\n",
+        grade_unit,
+        fmt_num(n(max_grade.unwrap_or(&Value::Null)), 3)
+    ));
+    md.push_str(&format!(
+        "| Above-cutoff share (%) | {} |\n",
+        fmt_num(n(share.unwrap_or(&Value::Null)), 1)
+    ));
+    md.push_str(&format!(
+        "| Above-cutoff tonnage (t) | {} |\n",
+        fmt_num(n(tonnage.unwrap_or(&Value::Null)), 0)
+    ));
+    md.push_str(&format!(
+        "| Above-cutoff contained metal (oz) | {} |\n\n",
+        fmt_num(n(ounces.unwrap_or(&Value::Null)), 0)
+    ));
 
     md.push_str("## Geological Commentary (Preliminary)\n\n");
     md.push_str("- Elevated grades relative to cutoff suggest a potentially coherent high-grade core where drill support density is strongest.\n");
@@ -274,13 +310,18 @@ fn fallback_markdown(title: &str, src_key: &str, compact: &Value) -> String {
     md
 }
 
-async fn summarize_with_openrouter(title: &str, src_key: &str, compact: &Value) -> Result<String, String> {
+async fn summarize_with_openrouter(
+    title: &str,
+    src_key: &str,
+    compact: &Value,
+) -> Result<String, String> {
     let api_key = env::var("OPENROUTER_API_KEY")
         .or_else(|_| env::var("OPENROUTER_KEY"))
         .map_err(|_| "OPENROUTER_API_KEY is not set".to_string())?;
 
     let system_prompt = "You are a senior resource geologist writing an internal technical memo. Produce crisp, practical markdown in plain English with concrete numbers and caveats. No fluff.";
-    let is_variogram = compact.pointer("/schema_id").and_then(|v| v.as_str()) == Some("report.variogram.v1")
+    let is_variogram = compact.pointer("/schema_id").and_then(|v| v.as_str())
+        == Some("report.variogram.v1")
         || compact.pointer("/type").and_then(|v| v.as_str()) == Some("variogram_report");
     let structure = if is_variogram {
         "Required structure:\n1) Executive summary (2-4 bullets)\n2) Variogram diagnostics table (lag range, pairs, gamma)\n3) Interpretation (nugget/sill/range behavior and continuity implications)\n4) Risks and caveats\n5) Recommended next actions (3 bullets)"
@@ -323,7 +364,10 @@ async fn summarize_with_openrouter(title: &str, src_key: &str, compact: &Value) 
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let txt = resp.text().await.unwrap_or_else(|_| "<no body>".to_string());
+        let txt = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "<no body>".to_string());
         return Err(format!("openrouter http {}: {}", status, txt));
     }
 
@@ -467,7 +511,8 @@ pub async fn run_md_viewer(
         .to_vec();
 
     let doc_ref =
-        super::runtime::write_artifact(ctx, &json_key, &doc_bytes, Some("application/json")).await?;
+        super::runtime::write_artifact(ctx, &json_key, &doc_bytes, Some("application/json"))
+            .await?;
     let md_ref =
         super::runtime::write_artifact(ctx, &md_key, &md_bytes, Some("text/markdown")).await?;
     let html_ref =
@@ -477,7 +522,11 @@ pub async fn run_md_viewer(
         job_id: job.job_id,
         status: JobStatus::Succeeded,
         output_artifact_refs: vec![doc_ref.clone(), md_ref.clone(), html_ref.clone()],
-        content_hashes: vec![doc_ref.content_hash, md_ref.content_hash, html_ref.content_hash],
+        content_hashes: vec![
+            doc_ref.content_hash,
+            md_ref.content_hash,
+            html_ref.content_hash,
+        ],
         error_message: None,
     })
 }

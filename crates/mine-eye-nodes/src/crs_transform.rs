@@ -20,15 +20,19 @@ fn crs_to_proj_id(c: &CrsRecord) -> Result<String, NodeError> {
 }
 
 /// Transform (x, y) from `from` to `to`. Creates one PROJ pipeline per call — reuse at call site for batches.
-pub fn transform_xy(from: &CrsRecord, to: &CrsRecord, x: f64, y: f64) -> Result<(f64, f64), NodeError> {
+pub fn transform_xy(
+    from: &CrsRecord,
+    to: &CrsRecord,
+    x: f64,
+    y: f64,
+) -> Result<(f64, f64), NodeError> {
     let from_id = crs_to_proj_id(from)?;
     let to_id = crs_to_proj_id(to)?;
     if from_id == to_id {
         return Ok((x, y));
     }
-    let proj = Proj::new_known_crs(&from_id, &to_id, None)
-        .map_err(|e| NodeError::Proj(e.to_string()))?;
-    proj
-        .convert((x, y))
+    let proj =
+        Proj::new_known_crs(&from_id, &to_id, None).map_err(|e| NodeError::Proj(e.to_string()))?;
+    proj.convert((x, y))
         .map_err(|e| NodeError::Proj(e.to_string()))
 }

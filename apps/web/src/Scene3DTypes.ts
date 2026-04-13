@@ -33,7 +33,7 @@ export type SemanticType =
   | "raster"
   | "mesh"
   | "block_model"
-  | "table"
+  | "data_table"
   | "semantic_json"
   | "any";
 
@@ -160,7 +160,7 @@ export function deriveDisplayKind(opts: {
   if (sem === "block_model") return "block_model_voxels";
 
   // ── Table ────────────────────────────────────────────────────────────────
-  if (sem === "table") return "generic_table";
+  if (sem === "data_table") return "generic_table";
 
   // ── Trajectory set ───────────────────────────────────────────────────────
   if (sem === "trajectory_set") return "drillhole_traces";

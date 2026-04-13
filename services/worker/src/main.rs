@@ -123,11 +123,7 @@ async fn main() -> anyhow::Result<()> {
                                 .output_artifact_refs
                                 .iter()
                                 .map(|a| {
-                                    (
-                                        a.key.clone(),
-                                        a.content_hash.clone(),
-                                        a.media_type.clone(),
-                                    )
+                                    (a.key.clone(), a.content_hash.clone(), a.media_type.clone())
                                 })
                                 .collect();
                             if let Err(e) = store

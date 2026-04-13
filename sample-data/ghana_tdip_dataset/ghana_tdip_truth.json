@@ -1,0 +1,34 @@
+{
+  "schema_id": "synthetic.ip_truth.v1",
+  "dataset_name": "ghana_tdip_synthetic_v1",
+  "crs": {
+    "epsg": 32630,
+    "wkt": null
+  },
+  "footprint": {
+    "xmin": 657162.5,
+    "xmax": 657837.5,
+    "ymin": 676615.0,
+    "ymax": 676665.0
+  },
+  "anomaly_model": {
+    "type": "buried_chargeability_resistivity_body",
+    "center_x": 657535.0,
+    "center_y": 676648.0,
+    "center_depth_m": 70.0,
+    "sigma_x_m": 130.0,
+    "sigma_y_m": 55.0,
+    "sigma_z_m": 40.0,
+    "background_resistivity_ohm_m": 620.0,
+    "resistivity_drop_ohm_m": 210.0,
+    "background_chargeability_mv_v": 4.5,
+    "chargeability_peak_mv_v": 22.5
+  },
+  "generation": {
+    "seed": 20260413,
+    "electrode_spacing_m": 25.0,
+    "line_count": 3,
+    "electrodes_per_line": 28,
+    "measurement_count": 405
+  }
+}

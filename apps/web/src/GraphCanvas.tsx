@@ -1134,7 +1134,7 @@ function FlowWorkspace({
         while (used.has(freeIdx)) freeIdx += 1;
         to_port = activeGroup.slotId(freeIdx);
       }
-      const semantic_type = portSemantic(sourceKind, "out", from_port) ?? "table";
+      const semantic_type = portSemantic(sourceKind, "out", from_port) ?? "data_table";
       try {
         await createGraphEdge(graphId, {
           from_node: c.source,

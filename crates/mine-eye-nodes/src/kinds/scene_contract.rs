@@ -39,25 +39,31 @@ pub async fn run_scene3d_layer_stack(
         // generic "mesh" renderer.  This surfaces wiring mistakes early
         // (e.g. a block-model artifact wired without the correct schema_id)
         // rather than silently rendering as an untextured mesh.
-        let kind_warning: Option<String> = if kind == "mesh"
-            && !display_pointer.contains("mesh")
-            && !schema_id.is_empty()
-        {
-            Some(format!(
-                "Layer {} defaulted to kind=mesh: schema_id={:?}, display_pointer={:?}. \
+        let kind_warning: Option<String> =
+            if kind == "mesh" && !display_pointer.contains("mesh") && !schema_id.is_empty() {
+                Some(format!(
+                    "Layer {} defaulted to kind=mesh: schema_id={:?}, display_pointer={:?}. \
                  Check that the upstream node emits a recognised schema_id.",
-                ar.key, schema_id, display_pointer
-            ))
-        } else {
-            None
-        };
+                    ar.key, schema_id, display_pointer
+                ))
+            } else {
+                None
+            };
         let ui_caps = match kind {
             "imagery_drape" => serde_json::json!(["visible", "opacity", "provider"]),
             "terrain" => serde_json::json!(["visible", "opacity"]),
-            "contours" => serde_json::json!(["visible", "opacity", "color", "width", "interval_step"]),
-            "drill_segments" => serde_json::json!(["visible", "opacity", "palette", "radius_scale", "measure"]),
-            "block_voxels" => serde_json::json!(["visible", "opacity", "palette", "measure", "cutoff"]),
-            "assay_points" => serde_json::json!(["visible", "opacity", "palette", "size_scale", "measure"]),
+            "contours" => {
+                serde_json::json!(["visible", "opacity", "color", "width", "interval_step"])
+            }
+            "drill_segments" => {
+                serde_json::json!(["visible", "opacity", "palette", "radius_scale", "measure"])
+            }
+            "block_voxels" => {
+                serde_json::json!(["visible", "opacity", "palette", "measure", "cutoff"])
+            }
+            "assay_points" => {
+                serde_json::json!(["visible", "opacity", "palette", "size_scale", "measure"])
+            }
             _ => serde_json::json!(["visible", "opacity"]),
         };
         let mut layer = serde_json::json!({
@@ -91,7 +97,10 @@ pub async fn run_scene3d_layer_stack(
         }
     });
     let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/scene3d_layer_stack.json", job.graph_id, job.node_id);
+    let key = format!(
+        "graphs/{}/nodes/{}/scene3d_layer_stack.json",
+        job.graph_id, job.node_id
+    );
     let artifact =
         super::runtime::write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
     Ok(JobResult {

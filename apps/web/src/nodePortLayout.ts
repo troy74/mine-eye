@@ -75,13 +75,13 @@ function rangeNGroup(
 
 export const DYNAMIC_PORT_GROUPS: Record<string, DynGroup[]> = {
   threejs_display_node:  [rangeNGroup("in", 1, "Input",    "any",       2)],
-  plan_view_2d:          [baseNGroup("in", "in", "Layer",  "table",     2)],
-  plan_view_3d:          [rangeNGroup("in", 5, "Layer",    "table",     1)],
-  cesium_display_node:   [rangeNGroup("in", 5, "Layer",    "table",     1)],
+  plan_view_2d:          [baseNGroup("in", "in", "Layer",  "any",            2)],
+  plan_view_3d:          [rangeNGroup("in", 5, "Layer",    "data_table",     1)],
+  cesium_display_node:   [rangeNGroup("in", 5, "Layer",    "data_table",     1)],
   dem_fetch:             [baseNGroup("aoi_in", "in", "Geometry", "point_set", 2)],
   aoi:                   [baseNGroup("seed_in", "in", "Geometry", "point_set", 2)],
   xyz_to_surface:        [baseNGroup("xyz_in", "in", "Geometry", "point_set", 2)],
-  data_model_transform:  [baseNGroup("in", "in", "Input",  "table",     2)],
+  data_model_transform:  [baseNGroup("in", "in", "Input",  "data_table",     2)],
 };
 
 /** Label/semantic for a port that belongs to a dynamic group (for card display). */

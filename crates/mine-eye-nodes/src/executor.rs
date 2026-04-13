@@ -2,26 +2,21 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::kinds::{
+    run_aoi, run_assay_heatmap, run_assay_ingest, run_block_grade_model, run_block_model_stub,
+    run_collar_ingest, run_data_model_transform, run_dem_fetch, run_dem_integrate_stub,
+    run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
+    run_heatmap_raster_tile_cache, run_imagery_provider, run_ip_corridor_model,
+    run_ip_inversion_mesh, run_ip_inversion_preview, run_ip_pseudosection, run_ip_qc_normalize,
+    run_ip_survey_ingest, run_magnetic_depth_model, run_magnetic_model, run_md_viewer,
+    run_observation_ingest, run_plan_view_2d, run_plan_view_3d, run_plot_chart,
+    run_scene3d_layer_stack, run_surface_iso_extract, run_surface_sample_ingest, run_survey_ingest,
+    run_terrain_adjust, run_tilebroker, run_xyz_to_surface,
+};
+use crate::NodeError;
 use async_trait::async_trait;
 use mine_eye_types::{JobEnvelope, JobResult};
 use serde_json::Value;
-use crate::kinds::{
-    run_observation_ingest,
-    run_assay_heatmap, run_assay_ingest, run_block_model_stub, run_collar_ingest, run_dem_integrate_stub,
-    run_dem_fetch, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
-    run_data_model_transform,
-    run_heatmap_raster_tile_cache,
-    run_magnetic_depth_model,
-    run_magnetic_model,
-    run_block_grade_model,
-    run_plot_chart,
-    run_md_viewer,
-    run_aoi, run_imagery_provider, run_scene3d_layer_stack, run_tilebroker,
-    run_plan_view_2d, run_plan_view_3d,
-    run_surface_iso_extract, run_terrain_adjust,
-    run_surface_sample_ingest, run_survey_ingest, run_xyz_to_surface,
-};
-use crate::NodeError;
 
 pub struct ExecutionContext<'a> {
     pub artifact_root: &'a Path,
@@ -71,10 +66,7 @@ pub struct RegistryExecutor {
 impl RegistryExecutor {
     pub fn new() -> Self {
         let mut inner: HashMap<String, Arc<dyn NodeExecutor>> = HashMap::new();
-        inner.insert(
-            "drillhole_ingest".into(),
-            Arc::new(DrillholeIngestExecutor),
-        );
+        inner.insert("drillhole_ingest".into(), Arc::new(DrillholeIngestExecutor));
         inner.insert("collar_ingest".into(), Arc::new(CollarIngestExecutor));
         inner.insert("survey_ingest".into(), Arc::new(SurveyIngestExecutor));
         inner.insert(
@@ -83,28 +75,61 @@ impl RegistryExecutor {
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
         inner.insert("magnetic_model".into(), Arc::new(MagneticModelExecutor));
-        inner.insert("magnetic_depth_model".into(), Arc::new(MagneticDepthModelExecutor));
-        inner.insert("observation_ingest".into(), Arc::new(ObservationIngestExecutor));
-        inner.insert("data_model_transform".into(), Arc::new(DataModelTransformExecutor));
+        inner.insert(
+            "magnetic_depth_model".into(),
+            Arc::new(MagneticDepthModelExecutor),
+        );
+        inner.insert(
+            "observation_ingest".into(),
+            Arc::new(ObservationIngestExecutor),
+        );
+        inner.insert("ip_survey_ingest".into(), Arc::new(IpSurveyIngestExecutor));
+        inner.insert("ip_qc_normalize".into(), Arc::new(IpQcNormalizeExecutor));
+        inner.insert("ip_pseudosection".into(), Arc::new(IpPseudosectionExecutor));
+        inner.insert(
+            "ip_corridor_model".into(),
+            Arc::new(IpCorridorModelExecutor),
+        );
+        inner.insert(
+            "ip_inversion_mesh".into(),
+            Arc::new(IpInversionMeshExecutor),
+        );
+        inner.insert(
+            "ip_inversion_preview".into(),
+            Arc::new(IpInversionPreviewExecutor),
+        );
+        inner.insert(
+            "data_model_transform".into(),
+            Arc::new(DataModelTransformExecutor),
+        );
         inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
-        inner.insert("heatmap_raster_tile_cache".into(), Arc::new(HeatmapRasterTileCacheExecutor));
-        inner.insert("surface_iso_extract".into(), Arc::new(SurfaceIsoExtractExecutor));
+        inner.insert(
+            "heatmap_raster_tile_cache".into(),
+            Arc::new(HeatmapRasterTileCacheExecutor),
+        );
+        inner.insert(
+            "surface_iso_extract".into(),
+            Arc::new(SurfaceIsoExtractExecutor),
+        );
         inner.insert("terrain_adjust".into(), Arc::new(TerrainAdjustExecutor));
         inner.insert("xyz_to_surface".into(), Arc::new(XyzToSurfaceExecutor));
         inner.insert("drillhole_merge".into(), Arc::new(DrillholeMergeExecutor));
         inner.insert("drillhole_model".into(), Arc::new(DrillholeModelExecutor));
-        inner.insert(
-            "desurvey_trajectory".into(),
-            Arc::new(DesurveyExecutor),
-        );
+        inner.insert("desurvey_trajectory".into(), Arc::new(DesurveyExecutor));
         inner.insert("dem_integrate".into(), Arc::new(DemExecutor));
         inner.insert("dem_fetch".into(), Arc::new(DemFetchExecutor));
         inner.insert("aoi".into(), Arc::new(AoiExecutor));
         inner.insert("imagery_provider".into(), Arc::new(ImageryProviderExecutor));
         inner.insert("tilebroker".into(), Arc::new(TilebrokerExecutor));
-        inner.insert("scene3d_layer_stack".into(), Arc::new(Scene3DLayerStackExecutor));
+        inner.insert(
+            "scene3d_layer_stack".into(),
+            Arc::new(Scene3DLayerStackExecutor),
+        );
         inner.insert("block_model_basic".into(), Arc::new(BlockModelExecutor));
-        inner.insert("block_grade_model".into(), Arc::new(BlockGradeModelExecutor));
+        inner.insert(
+            "block_grade_model".into(),
+            Arc::new(BlockGradeModelExecutor),
+        );
         inner.insert("plot_chart".into(), Arc::new(PlotChartExecutor));
         inner.insert("md_viewer".into(), Arc::new(MdViewerExecutor));
         inner.insert("plan_view_2d".into(), Arc::new(PlanView2DExecutor));
@@ -204,6 +229,84 @@ impl NodeExecutor for ObservationIngestExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_observation_ingest(ctx, job).await
+    }
+}
+
+struct IpSurveyIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpSurveyIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_survey_ingest(ctx, job).await
+    }
+}
+
+struct IpQcNormalizeExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpQcNormalizeExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_qc_normalize(ctx, job).await
+    }
+}
+
+struct IpInversionMeshExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpInversionMeshExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_inversion_mesh(ctx, job).await
+    }
+}
+
+struct IpInversionPreviewExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpInversionPreviewExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_inversion_preview(ctx, job).await
+    }
+}
+
+struct IpPseudosectionExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpPseudosectionExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_pseudosection(ctx, job).await
+    }
+}
+
+struct IpCorridorModelExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpCorridorModelExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_corridor_model(ctx, job).await
     }
 }
 

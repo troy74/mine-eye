@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use mine_eye_graph::{hash_node_config, propagate_stale, GraphSnapshot};
-use mine_eye_types::{
-    ArtifactRef, JobEnvelope, PropagationPolicy, RecomputePolicy,
-};
+use mine_eye_types::{ArtifactRef, JobEnvelope, PropagationPolicy, RecomputePolicy};
 use sha2::{Digest, Sha256};
 
 use uuid::Uuid;
@@ -139,9 +137,6 @@ pub fn mark_dirty_from_hash_change(
     snapshot.downstream(node_id)
 }
 
-pub fn collect_dirty_nodes(
-    snapshot: &GraphSnapshot,
-    roots: &[Uuid],
-) -> HashSet<Uuid> {
+pub fn collect_dirty_nodes(snapshot: &GraphSnapshot, roots: &[Uuid]) -> HashSet<Uuid> {
     expand_dirty(snapshot, roots)
 }

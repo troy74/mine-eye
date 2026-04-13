@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geophysics.ip_inversion_preview.v1",
+  "title": "Induced Polarization Inversion Preview Table",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "type", "crs", "rows"],
+  "properties": {
+    "schema_id": { "const": "geophysics.ip_inversion_preview.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "type": { "const": "ip_inversion_preview" },
+    "crs": { "type": "object" },
+    "rows": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

@@ -113,7 +113,7 @@
           {
             "id": "table",
             "label": "Table pointer",
-            "semantic": "table"
+            "semantic": "data_table"
           },
           {
             "id": "report",
@@ -124,6 +124,249 @@
       },
       "framework_group": "acquisition",
       "submenu": "ingest",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_survey_ingest",
+      "category": "input",
+      "label": "IP survey ingest",
+      "role": "Acquisition · TDIP/DCIP quadrupoles → canonical IP survey + electrode points",
+      "menu": {
+        "enabled": true,
+        "order": 31
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "survey",
+            "label": "IP survey",
+            "semantic": "data_table"
+          },
+          {
+            "id": "electrodes",
+            "label": "Electrodes",
+            "semantic": "point_set"
+          },
+          {
+            "id": "report",
+            "label": "Ingest report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_qc_normalize",
+      "category": "transform",
+      "label": "IP QC normalize",
+      "role": "Transform · IP survey QC, reciprocity filtering, and cleaned contract emit",
+      "menu": {
+        "enabled": true,
+        "order": 32
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "survey_in",
+            "label": "IP survey",
+            "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "survey_clean",
+            "label": "Clean survey",
+            "semantic": "data_table"
+          },
+          {
+            "id": "electrodes",
+            "label": "Electrodes",
+            "semantic": "point_set"
+          },
+          {
+            "id": "rejected_rows",
+            "label": "Rejected rows",
+            "semantic": "data_table"
+          },
+          {
+            "id": "qc_report",
+            "label": "QC report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_pseudosection",
+      "category": "transform",
+      "label": "IP pseudosection",
+      "role": "Transform · cleaned IP survey → pseudo-depth points + rows for rapid section review",
+      "menu": {
+        "enabled": true,
+        "order": 33
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "survey_in",
+            "label": "Clean survey",
+            "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "pseudo_points",
+            "label": "Pseudo points",
+            "semantic": "point_set"
+          },
+          {
+            "id": "pseudo_rows",
+            "label": "Pseudo rows",
+            "semantic": "data_table"
+          },
+          {
+            "id": "report",
+            "label": "Pseudosection report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_corridor_model",
+      "category": "model",
+      "label": "IP corridor model",
+      "role": "Model · pseudosection rows → stitched pseudo-volume for rapid 3D corridor review",
+      "menu": {
+        "enabled": true,
+        "order": 34
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "pseudo_in",
+            "label": "Pseudosection",
+            "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "corridor_voxels",
+            "label": "Corridor voxels",
+            "semantic": "mesh"
+          },
+          {
+            "id": "corridor_centers",
+            "label": "Corridor centers",
+            "semantic": "point_set"
+          },
+          {
+            "id": "report",
+            "label": "Corridor report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_inversion_mesh",
+      "category": "model",
+      "label": "IP inversion mesh",
+      "role": "Model · pseudosection rows → regular preview mesh/domain for TDIP display and solver handoff",
+      "menu": {
+        "enabled": true,
+        "order": 35
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "pseudo_in",
+            "label": "Pseudosection",
+            "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "mesh_rows",
+            "label": "Mesh rows",
+            "semantic": "data_table"
+          },
+          {
+            "id": "mesh_centers",
+            "label": "Mesh centers",
+            "semantic": "point_set"
+          },
+          {
+            "id": "report",
+            "label": "Mesh report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_inversion_preview",
+      "category": "model",
+      "label": "IP inversion preview",
+      "role": "Model · pseudosection + preview mesh → interpolated voxel display for TDIP testing",
+      "menu": {
+        "enabled": true,
+        "order": 36
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "pseudo_in",
+            "label": "Pseudosection",
+            "semantic": "data_table"
+          },
+          {
+            "id": "mesh_in",
+            "label": "Preview mesh",
+            "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "preview_voxels",
+            "label": "Preview voxels",
+            "semantic": "mesh"
+          },
+          {
+            "id": "preview_centers",
+            "label": "Preview centers",
+            "semantic": "point_set"
+          },
+          {
+            "id": "preview_rows",
+            "label": "Preview rows",
+            "semantic": "data_table"
+          },
+          {
+            "id": "report",
+            "label": "Preview report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
       "plugin_source": "core"
     },
     {
@@ -145,7 +388,7 @@
           {
             "id": "table_in",
             "label": "Raw table (optional)",
-            "semantic": "table",
+            "semantic": "data_table",
             "optional": true
           }
         ],
@@ -158,7 +401,7 @@
           {
             "id": "mag_grid",
             "label": "Mag grid",
-            "semantic": "table"
+            "semantic": "data_table"
           },
           {
             "id": "mag_report",
@@ -185,7 +428,7 @@
           {
             "id": "mag_grid",
             "label": "Magnetic grid",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ],
         "outputs": [
@@ -217,14 +460,14 @@
           {
             "id": "in",
             "label": "Input",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ],
         "outputs": [
           {
             "id": "out",
             "label": "Output",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ]
       }
@@ -294,7 +537,7 @@
           {
             "id": "assay_points",
             "label": "Assay points",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ]
       },
@@ -316,7 +559,7 @@
           {
             "id": "grade_points_in",
             "label": "Grade points",
-            "semantic": "table"
+            "semantic": "data_table"
           },
           {
             "id": "terrain_in",
@@ -367,7 +610,7 @@
           {
             "id": "in",
             "label": "Input points",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ],
         "outputs": [
@@ -448,7 +691,7 @@
           {
             "id": "meta",
             "label": "Meta",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ]
       },
@@ -609,7 +852,7 @@
           {
             "id": "aoi_out",
             "label": "AOI",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ]
       },
@@ -631,7 +874,7 @@
           {
             "id": "aoi_in",
             "label": "AOI",
-            "semantic": "table"
+            "semantic": "data_table"
           },
           {
             "id": "terrain_in",
@@ -665,7 +908,7 @@
           {
             "id": "aoi_in",
             "label": "AOI",
-            "semantic": "table"
+            "semantic": "data_table"
           },
           {
             "id": "terrain_in",
@@ -719,19 +962,19 @@
           {
             "id": "samples_in",
             "label": "Samples",
-            "semantic": "table"
+            "semantic": "data_table"
           },
           {
             "id": "contours_in",
             "label": "Contours",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ],
         "outputs": [
           {
             "id": "layer_stack_out",
             "label": "Layer stack",
-            "semantic": "table"
+            "semantic": "data_table"
           }
         ]
       },
@@ -832,7 +1075,14 @@
         "quality": "preview"
       },
       "ports": {
-        "inputs": [],
+        "inputs": [
+          {
+            "id": "in",
+            "label": "Layer",
+            "semantic": "any",
+            "optional": true
+          }
+        ],
         "outputs": []
       },
       "framework_group": "visualization",

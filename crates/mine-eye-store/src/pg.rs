@@ -88,32 +88,11 @@ fn cache_str(c: CacheState) -> &'static str {
 }
 
 fn sem(s: &str) -> SemanticPortType {
-    match s {
-        "point_set" | "PointSet" => SemanticPortType::PointSet,
-        "interval_set" | "IntervalSet" => SemanticPortType::IntervalSet,
-        "trajectory_set" | "TrajectorySet" => SemanticPortType::TrajectorySet,
-        "surface" | "Surface" => SemanticPortType::Surface,
-        "raster" | "Raster" => SemanticPortType::Raster,
-        "mesh" | "Mesh" => SemanticPortType::Mesh,
-        "block_model" | "BlockModel" => SemanticPortType::BlockModel,
-        "table" | "Table" => SemanticPortType::Table,
-        "semantic_json" | "SemanticJson" => SemanticPortType::SemanticJson,
-        _ => SemanticPortType::Table,
-    }
+    s.parse().unwrap_or(SemanticPortType::DataTable)
 }
 
 fn sem_str(t: SemanticPortType) -> &'static str {
-    match t {
-        SemanticPortType::PointSet => "point_set",
-        SemanticPortType::IntervalSet => "interval_set",
-        SemanticPortType::TrajectorySet => "trajectory_set",
-        SemanticPortType::Surface => "surface",
-        SemanticPortType::Raster => "raster",
-        SemanticPortType::Mesh => "mesh",
-        SemanticPortType::BlockModel => "block_model",
-        SemanticPortType::Table => "table",
-        SemanticPortType::SemanticJson => "semantic_json",
-    }
+    t.as_str()
 }
 
 fn branch_status(s: &str) -> BranchStatus {
@@ -211,7 +190,10 @@ impl PgStore {
         Ok(())
     }
 
-    pub async fn ensure_default_chart_templates(&self, organization_id: &str) -> Result<(), StoreError> {
+    pub async fn ensure_default_chart_templates(
+        &self,
+        organization_id: &str,
+    ) -> Result<(), StoreError> {
         let defaults = vec![
             (
                 "variogram",
@@ -294,8 +276,17 @@ impl PgStore {
     pub async fn list_chart_templates(
         &self,
         organization_id: &str,
-    ) -> Result<Vec<(Uuid, String, String, Option<String>, serde_json::Value, chrono::DateTime<chrono::Utc>)>, StoreError>
-    {
+    ) -> Result<
+        Vec<(
+            Uuid,
+            String,
+            String,
+            Option<String>,
+            serde_json::Value,
+            chrono::DateTime<chrono::Utc>,
+        )>,
+        StoreError,
+    > {
         let rows = sqlx::query_as(
             r#"
             SELECT id, key, name, description, template_schema, updated_at

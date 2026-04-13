@@ -10,10 +10,10 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::fs;
 
-use crate::executor::ExecutionContext;
-use crate::NodeError;
 use super::colour::interpolate_palette;
 use super::parse_util::parse_numeric_value;
+use crate::executor::ExecutionContext;
+use crate::NodeError;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ fn pick_color(palette: &str, t: f64) -> [u8; 3] {
 
 struct IdwIndex {
     tree: KdTree<f64, 2>,
-    values: Vec<f64>,       // parallel to tree leaf order (insertion order)
+    values: Vec<f64>, // parallel to tree leaf order (insertion order)
 }
 
 impl IdwIndex {
@@ -121,7 +121,15 @@ impl IdwIndex {
 
 // ── Raster rendering ──────────────────────────────────────────────────────────
 
-fn render_png(grid: &[Option<f64>], nx: usize, ny: usize, palette: &str, lo: f64, hi: f64, opacity: f64) -> RgbaImage {
+fn render_png(
+    grid: &[Option<f64>],
+    nx: usize,
+    ny: usize,
+    palette: &str,
+    lo: f64,
+    hi: f64,
+    opacity: f64,
+) -> RgbaImage {
     let mut img: RgbaImage = ImageBuffer::new(nx as u32, ny as u32);
     let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
     for iy in 0..ny {
@@ -174,12 +182,16 @@ fn tile_from_base(base: &RgbaImage, z: u32, x: u32, y: u32, tile_size: u32) -> R
                 let bot = c01 as f32 * (1.0 - fx) + c11 as f32 * fx;
                 (top * (1.0 - fy) + bot * fy + 0.5) as u8
             };
-            out.put_pixel(tx, ty, image::Rgba([
-                blend(p00[0], p10[0], p01[0], p11[0]),
-                blend(p00[1], p10[1], p01[1], p11[1]),
-                blend(p00[2], p10[2], p01[2], p11[2]),
-                blend(p00[3], p10[3], p01[3], p11[3]),
-            ]));
+            out.put_pixel(
+                tx,
+                ty,
+                image::Rgba([
+                    blend(p00[0], p10[0], p01[0], p11[0]),
+                    blend(p00[1], p10[1], p01[1], p11[1]),
+                    blend(p00[2], p10[2], p01[2], p11[2]),
+                    blend(p00[3], p10[3], p01[3], p11[3]),
+                ]),
+            );
         }
     }
     out
@@ -252,21 +264,27 @@ pub async fn run_heatmap_raster_tile_cache(
         .unwrap_or("rainbow")
         .trim()
         .to_string();
-    let opacity      = parse_f64("/node_ui/opacity",         0.72).clamp(0.05, 1.0);
-    let idw_power    = parse_f64("/node_ui/idw_power",       2.0).clamp(1.0, 6.0);
-    let max_points   = parse_u64("/node_ui/max_points",      32).clamp(4, 256) as usize;
-    let clamp_low_pct  = parse_f64("/node_ui/clamp_low_pct",  2.0).clamp(0.0, 100.0);
+    let opacity = parse_f64("/node_ui/opacity", 0.72).clamp(0.05, 1.0);
+    let idw_power = parse_f64("/node_ui/idw_power", 2.0).clamp(1.0, 6.0);
+    let max_points = parse_u64("/node_ui/max_points", 32).clamp(4, 256) as usize;
+    let clamp_low_pct = parse_f64("/node_ui/clamp_low_pct", 2.0).clamp(0.0, 100.0);
     let clamp_high_pct = parse_f64("/node_ui/clamp_high_pct", 98.0).clamp(0.0, 100.0);
-    let tile_size    = parse_u64("/node_ui/tile_size",       256).clamp(128, 512) as u32;
+    let tile_size = parse_u64("/node_ui/tile_size", 256).clamp(128, 512) as u32;
 
-    let ws_default_min_zoom = parse_u64("/workspace_cache_settings/default_min_zoom", 0).clamp(0, 10) as u32;
-    let ws_default_max_zoom = parse_u64("/workspace_cache_settings/default_max_zoom", 6).clamp(ws_default_min_zoom as u64, 12) as u32;
+    let ws_default_min_zoom =
+        parse_u64("/workspace_cache_settings/default_min_zoom", 0).clamp(0, 10) as u32;
+    let ws_default_max_zoom = parse_u64("/workspace_cache_settings/default_max_zoom", 6)
+        .clamp(ws_default_min_zoom as u64, 12) as u32;
     let min_zoom = parse_u64("/node_ui/min_zoom", ws_default_min_zoom as u64).clamp(0, 10) as u32;
-    let mut max_zoom = parse_u64("/node_ui/max_zoom", ws_default_max_zoom as u64).clamp(min_zoom as u64, 12) as u32;
+    let mut max_zoom = parse_u64("/node_ui/max_zoom", ws_default_max_zoom as u64)
+        .clamp(min_zoom as u64, 12) as u32;
 
     let ws_max_tiles = parse_u64("/workspace_cache_settings/max_tiles", 200_000).max(1024);
-    let ws_max_bytes = parse_u64("/workspace_cache_settings/max_bytes", 2_147_483_648).max(4_194_304);
-    let estimated_bytes_per_tile = (tile_size as u64).saturating_mul(tile_size as u64).saturating_mul(4);
+    let ws_max_bytes =
+        parse_u64("/workspace_cache_settings/max_bytes", 2_147_483_648).max(4_194_304);
+    let estimated_bytes_per_tile = (tile_size as u64)
+        .saturating_mul(tile_size as u64)
+        .saturating_mul(4);
     while max_zoom > min_zoom {
         let tc = tile_count_for_zoom_range(min_zoom, max_zoom);
         if tc <= ws_max_tiles && tc.saturating_mul(estimated_bytes_per_tile) <= ws_max_bytes {
@@ -288,7 +306,10 @@ pub async fn run_heatmap_raster_tile_cache(
     // ── Load and validate points ───────────────────────────────────────────
 
     let mut points: Vec<Value> = Vec::new();
-    let mut source_crs = job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326));
+    let mut source_crs = job
+        .project_crs
+        .clone()
+        .unwrap_or_else(|| CrsRecord::epsg(4326));
     for ar in &job.input_artifact_refs {
         let v = super::runtime::read_json_artifact(ctx, &ar.key).await?;
         if let Some(crs_v) = v.get("crs") {
@@ -315,8 +336,12 @@ pub async fn run_heatmap_raster_tile_cache(
     let mut raw = Vec::<(f64, f64, Map<String, Value>)>::new();
     for p in points {
         let Some(obj) = p.as_object() else { continue };
-        let Some(x) = lookup_ci(obj, "x").and_then(parse_num) else { continue };
-        let Some(y) = lookup_ci(obj, "y").and_then(parse_num) else { continue };
+        let Some(x) = lookup_ci(obj, "x").and_then(parse_num) else {
+            continue;
+        };
+        let Some(y) = lookup_ci(obj, "y").and_then(parse_num) else {
+            continue;
+        };
         let attrs = obj
             .get("attributes")
             .and_then(|a| a.as_object())
@@ -335,25 +360,28 @@ pub async fn run_heatmap_raster_tile_cache(
         ));
     }
 
-    let selected_measure = if !measure.is_empty() {
-        measure
-    } else {
-        measure_candidates
-            .iter()
-            .next()
-            .cloned()
-            .ok_or_else(|| NodeError::InvalidConfig("no numeric measure candidates found".into()))?
-    };
+    let selected_measure =
+        if !measure.is_empty() {
+            measure
+        } else {
+            measure_candidates.iter().next().cloned().ok_or_else(|| {
+                NodeError::InvalidConfig("no numeric measure candidates found".into())
+            })?
+        };
 
     let mut samples = Vec::<Sample>::new();
-    let mut vals    = Vec::<f64>::new();
+    let mut vals = Vec::<f64>::new();
     let mut xmin = f64::INFINITY;
     let mut xmax = f64::NEG_INFINITY;
     let mut ymin = f64::INFINITY;
     let mut ymax = f64::NEG_INFINITY;
     for (x, y, attrs) in &raw {
-        let Some(v) = attrs.get(&selected_measure).and_then(parse_num) else { continue };
-        if !v.is_finite() { continue; }
+        let Some(v) = attrs.get(&selected_measure).and_then(parse_num) else {
+            continue;
+        };
+        if !v.is_finite() {
+            continue;
+        }
         samples.push(Sample { x: *x, y: *y, v });
         vals.push(v);
         xmin = xmin.min(*x);
@@ -428,7 +456,8 @@ pub async fn run_heatmap_raster_tile_cache(
     // the tile prefix changes whenever data changes.
 
     let input_hash_fragment: String = {
-        let mut sorted: Vec<&str> = job.input_artifact_refs
+        let mut sorted: Vec<&str> = job
+            .input_artifact_refs
             .iter()
             .map(|a| a.content_hash.as_str())
             .collect();
@@ -438,12 +467,21 @@ pub async fn run_heatmap_raster_tile_cache(
 
     let style_hash = hash_string(&format!(
         "{}:{}:{:.3}:{:.3}:{}:{}:{}:{}:{}",
-        selected_measure, palette, clamp_low_pct, clamp_high_pct,
-        nx, ny, min_zoom, max_zoom, input_hash_fragment
+        selected_measure,
+        palette,
+        clamp_low_pct,
+        clamp_high_pct,
+        nx,
+        ny,
+        min_zoom,
+        max_zoom,
+        input_hash_fragment
     ));
     let tile_base = format!(
         "graphs/{}/nodes/{}/tiles/{}",
-        job.graph_id, job.node_id, &style_hash[..12]
+        job.graph_id,
+        job.node_id,
+        &style_hash[..12]
     );
 
     // ── Fix #3: encode tiles in parallel (rayon), write concurrently ───────
@@ -489,7 +527,11 @@ pub async fn run_heatmap_raster_tile_cache(
 
     let mut tile_refs: Vec<ArtifactRef> = Vec::with_capacity(tile_count);
     for handle in write_tasks {
-        tile_refs.push(handle.await.map_err(|e| NodeError::InvalidConfig(e.to_string()))??);
+        tile_refs.push(
+            handle
+                .await
+                .map_err(|e| NodeError::InvalidConfig(e.to_string()))??,
+        );
     }
 
     // ── Manifest and ancillary artifacts ──────────────────────────────────
@@ -550,8 +592,12 @@ pub async fn run_heatmap_raster_tile_cache(
     );
     let manifest_bytes = serde_json::to_vec(&tile_manifest)?;
     let manifest_ref = super::runtime::write_artifact(
-        ctx, &manifest_key, &manifest_bytes, Some("application/json"),
-    ).await?;
+        ctx,
+        &manifest_key,
+        &manifest_bytes,
+        Some("application/json"),
+    )
+    .await?;
 
     let drape_contract = json!({
         "schema_id": "scene3d.tilebroker_response.v1",
@@ -591,9 +637,9 @@ pub async fn run_heatmap_raster_tile_cache(
         job.graph_id, job.node_id
     );
     let drape_bytes = serde_json::to_vec(&drape_contract)?;
-    let drape_ref = super::runtime::write_artifact(
-        ctx, &drape_key, &drape_bytes, Some("application/json"),
-    ).await?;
+    let drape_ref =
+        super::runtime::write_artifact(ctx, &drape_key, &drape_bytes, Some("application/json"))
+            .await?;
 
     let report = json!({
         "schema_id": "report.raster_tile_cache.v1",
@@ -626,9 +672,9 @@ pub async fn run_heatmap_raster_tile_cache(
         job.graph_id, job.node_id
     );
     let report_bytes = serde_json::to_vec(&report)?;
-    let report_ref = super::runtime::write_artifact(
-        ctx, &report_key, &report_bytes, Some("application/json"),
-    ).await?;
+    let report_ref =
+        super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json"))
+            .await?;
 
     let mut outputs = vec![
         manifest_ref.clone(),
@@ -637,7 +683,10 @@ pub async fn run_heatmap_raster_tile_cache(
         report_ref.clone(),
     ];
     outputs.extend(tile_refs.iter().cloned());
-    let hashes = outputs.iter().map(|a| a.content_hash.clone()).collect::<Vec<_>>();
+    let hashes = outputs
+        .iter()
+        .map(|a| a.content_hash.clone())
+        .collect::<Vec<_>>();
 
     Ok(JobResult {
         job_id: job.job_id,

@@ -42,24 +42,24 @@ use mine_eye_types::{JobEnvelope, JobResult, JobStatus};
 use rayon::prelude::*;
 use serde_json::{json, Value};
 
+use super::parse_util::parse_numeric_value;
 use crate::executor::ExecutionContext;
 use crate::NodeError;
-use super::parse_util::parse_numeric_value;
 
 // ── Parameter parsing ─────────────────────────────────────────────────────────
 
 struct DepthParams {
     /// Euler window size in grid cells (must be odd; auto-rounded up).
-    window_cells:   usize,
+    window_cells: usize,
     /// Step between window centres in cells.
-    step_cells:     usize,
+    step_cells: usize,
     /// Typical flight height above terrain (metres). Used to scale the
     /// ∂M/∂z approximation from FVD.
     flight_height_m: f64,
     /// Only accept solutions shallower than this.
-    max_depth_m:    f64,
+    max_depth_m: f64,
     /// Reject very shallow (noise) solutions.
-    min_depth_m:    f64,
+    min_depth_m: f64,
     /// Source x₀,y₀ must lie within this factor × window_width_m of the
     /// window centre; otherwise the solution is geometrically unconstrained.
     max_offset_factor: f64,
@@ -70,7 +70,7 @@ struct DepthParams {
     min_confidence: f64,
     /// Voxel half-size scale factor relative to depth.
     /// block_size = depth_m * voxel_scale_factor  (min: grid resolution).
-    voxel_scale:    f64,
+    voxel_scale: f64,
 }
 
 impl DepthParams {
@@ -90,7 +90,12 @@ impl DepthParams {
         };
 
         let raw_win = p("/window_size", 7.0) as usize;
-        let window_cells = if raw_win % 2 == 0 { raw_win + 1 } else { raw_win }.max(3);
+        let window_cells = if raw_win % 2 == 0 {
+            raw_win + 1
+        } else {
+            raw_win
+        }
+        .max(3);
 
         let si_mode = ps("/structural_index_mode", "multi");
         let structural_index = if si_mode == "multi" {
@@ -102,14 +107,14 @@ impl DepthParams {
 
         Self {
             window_cells,
-            step_cells:       (p("/step_cells", 2.0) as usize).max(1),
-            flight_height_m:  p("/flight_height_m", 60.0).max(5.0),
-            max_depth_m:      p("/max_depth_m", 1500.0).max(10.0),
-            min_depth_m:      p("/min_depth_m", 10.0).max(1.0),
+            step_cells: (p("/step_cells", 2.0) as usize).max(1),
+            flight_height_m: p("/flight_height_m", 60.0).max(5.0),
+            max_depth_m: p("/max_depth_m", 1500.0).max(10.0),
+            min_depth_m: p("/min_depth_m", 10.0).max(1.0),
             max_offset_factor: p("/max_offset_factor", 2.5).max(0.5),
             structural_index,
-            min_confidence:   p("/min_confidence", 0.05).clamp(0.0, 0.99),
-            voxel_scale:      p("/voxel_scale", 0.15).max(0.01),
+            min_confidence: p("/min_confidence", 0.05).clamp(0.0, 0.99),
+            voxel_scale: p("/voxel_scale", 0.15).max(0.01),
         }
     }
 }
@@ -118,23 +123,29 @@ impl DepthParams {
 
 #[allow(dead_code)]
 struct MagGrid {
-    nx:           usize,
-    ny:           usize,
-    xmin:         f64,
-    xmax:         f64,
-    ymin:         f64,
-    ymax:         f64,
+    nx: usize,
+    ny: usize,
+    xmin: f64,
+    xmax: f64,
+    ymin: f64,
+    ymax: f64,
     resolution_m: f64,
     /// Anomaly (nT).  Indexed [iy * nx + ix].
-    m:            Vec<Option<f64>>,
+    m: Vec<Option<f64>>,
     /// Second vertical derivative (= −∂²M/∂x² − ∂²M/∂y²), nT/m².
-    fvd:          Vec<Option<f64>>,
+    fvd: Vec<Option<f64>>,
 }
 
 impl MagGrid {
-    fn idx(&self, ix: usize, iy: usize) -> usize { iy * self.nx + ix }
-    fn x_of(&self, ix: usize) -> f64 { self.xmin + (ix as f64 + 0.5) * self.resolution_m }
-    fn y_of(&self, iy: usize) -> f64 { self.ymin + (iy as f64 + 0.5) * self.resolution_m }
+    fn idx(&self, ix: usize, iy: usize) -> usize {
+        iy * self.nx + ix
+    }
+    fn x_of(&self, ix: usize) -> f64 {
+        self.xmin + (ix as f64 + 0.5) * self.resolution_m
+    }
+    fn y_of(&self, iy: usize) -> f64 {
+        self.ymin + (iy as f64 + 0.5) * self.resolution_m
+    }
 }
 
 fn parse_mag_grid(root: &Value) -> Option<MagGrid> {
@@ -142,9 +153,17 @@ fn parse_mag_grid(root: &Value) -> Option<MagGrid> {
     // recognised grid structure.
     let g = root.get("grid").or_else(|| root.get("surface_grid"))?;
     let go = g.as_object()?;
-    let nx = go.get("nx").and_then(parse_numeric_value).map(|v| v as usize)?;
-    let ny = go.get("ny").and_then(parse_numeric_value).map(|v| v as usize)?;
-    if nx < 4 || ny < 4 { return None; }
+    let nx = go
+        .get("nx")
+        .and_then(parse_numeric_value)
+        .map(|v| v as usize)?;
+    let ny = go
+        .get("ny")
+        .and_then(parse_numeric_value)
+        .map(|v| v as usize)?;
+    if nx < 4 || ny < 4 {
+        return None;
+    }
 
     let xmin = go.get("xmin").and_then(parse_numeric_value)?;
     let xmax = go.get("xmax").and_then(parse_numeric_value)?;
@@ -155,7 +174,7 @@ fn parse_mag_grid(root: &Value) -> Option<MagGrid> {
         .and_then(parse_numeric_value)
         .unwrap_or(((xmax - xmin) / nx as f64).max((ymax - ymin) / ny as f64));
 
-    let mut m_grid   = vec![None::<f64>; nx * ny];
+    let mut m_grid = vec![None::<f64>; nx * ny];
     let mut fvd_grid = vec![None::<f64>; nx * ny];
 
     // Build a lookup from (ix, iy) via x/y coordinates.
@@ -173,7 +192,10 @@ fn parse_mag_grid(root: &Value) -> Option<MagGrid> {
 
     if let Some(rows) = root.get("rows").and_then(|v| v.as_array()) {
         for row in rows {
-            let ro = match row.as_object() { Some(o) => o, None => continue };
+            let ro = match row.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
             let x = ro.get("x").and_then(parse_numeric_value);
             let y = ro.get("y").and_then(parse_numeric_value);
             let mv = ro.get("M").and_then(parse_numeric_value);
@@ -181,15 +203,23 @@ fn parse_mag_grid(root: &Value) -> Option<MagGrid> {
             if let (Some(x), Some(y)) = (x, y) {
                 if let Some((ix, iy)) = coord_to_idx(x, y) {
                     let idx = iy * nx + ix;
-                    if let Some(v) = mv  { m_grid[idx]   = Some(v); }
-                    if let Some(v) = fv  { fvd_grid[idx] = Some(v); }
+                    if let Some(v) = mv {
+                        m_grid[idx] = Some(v);
+                    }
+                    if let Some(v) = fv {
+                        fvd_grid[idx] = Some(v);
+                    }
                 }
             }
         }
     }
 
     // Alternatively the artifact may embed flat value arrays (tile-cache style).
-    if let Some(vals) = g.as_object().and_then(|o| o.get("values")).and_then(|v| v.as_array()) {
+    if let Some(vals) = g
+        .as_object()
+        .and_then(|o| o.get("values"))
+        .and_then(|v| v.as_array())
+    {
         for (idx, v) in vals.iter().enumerate() {
             if idx < m_grid.len() {
                 m_grid[idx] = parse_numeric_value(v);
@@ -198,9 +228,21 @@ fn parse_mag_grid(root: &Value) -> Option<MagGrid> {
     }
 
     let filled = m_grid.iter().filter(|v| v.is_some()).count();
-    if filled < 16 { return None; }
+    if filled < 16 {
+        return None;
+    }
 
-    Some(MagGrid { nx, ny, xmin, xmax, ymin, ymax, resolution_m, m: m_grid, fvd: fvd_grid })
+    Some(MagGrid {
+        nx,
+        ny,
+        xmin,
+        xmax,
+        ymin,
+        ymax,
+        resolution_m,
+        m: m_grid,
+        fvd: fvd_grid,
+    })
 }
 
 // ── Derivative grids ──────────────────────────────────────────────────────────
@@ -227,10 +269,9 @@ fn compute_derivatives(grid: &MagGrid, flight_height_m: f64) -> Derivatives {
 
             // ∂M/∂x — central difference (fall back to forward/backward at edges)
             if ix > 0 && ix + 1 < grid.nx {
-                if let (Some(ml), Some(mr)) = (
-                    grid.m[grid.idx(ix - 1, iy)],
-                    grid.m[grid.idx(ix + 1, iy)],
-                ) {
+                if let (Some(ml), Some(mr)) =
+                    (grid.m[grid.idx(ix - 1, iy)], grid.m[grid.idx(ix + 1, iy)])
+                {
                     dmdx[idx] = Some((mr - ml) / (2.0 * dx));
                 }
             } else if ix == 0 {
@@ -245,10 +286,9 @@ fn compute_derivatives(grid: &MagGrid, flight_height_m: f64) -> Derivatives {
 
             // ∂M/∂y — central difference
             if iy > 0 && iy + 1 < grid.ny {
-                if let (Some(mb), Some(mt)) = (
-                    grid.m[grid.idx(ix, iy - 1)],
-                    grid.m[grid.idx(ix, iy + 1)],
-                ) {
+                if let (Some(mb), Some(mt)) =
+                    (grid.m[grid.idx(ix, iy - 1)], grid.m[grid.idx(ix, iy + 1)])
+                {
                     dmdy[idx] = Some((mt - mb) / (2.0 * dy));
                 }
             } else if iy == 0 {
@@ -280,8 +320,12 @@ fn compute_derivatives(grid: &MagGrid, flight_height_m: f64) -> Derivatives {
                         grid.m[grid.idx(ix + 1, iy)],
                     ) {
                         Some((mr - 2.0 * mc + ml) / (dx * dx))
-                    } else { None }
-                } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 let d2dy2 = if iy > 0 && iy + 1 < grid.ny {
                     if let (Some(mb), Some(mc), Some(mt)) = (
                         grid.m[grid.idx(ix, iy - 1)],
@@ -289,8 +333,12 @@ fn compute_derivatives(grid: &MagGrid, flight_height_m: f64) -> Derivatives {
                         grid.m[grid.idx(ix, iy + 1)],
                     ) {
                         Some((mt - 2.0 * mc + mb) / (dy * dy))
-                    } else { None }
-                } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 if let (Some(a), Some(b)) = (d2dx2, d2dy2) {
                     let fvd_est = -(a + b);
                     dmdz[idx] = Some(-fvd_est * flight_height_m * 0.5);
@@ -317,20 +365,26 @@ fn gauss4(mut m: [[f64; 5]; 4]) -> Option<[f64; 4]> {
                 best_row = row;
             }
         }
-        if best_val < 1e-14 { return None; }
+        if best_val < 1e-14 {
+            return None;
+        }
         m.swap(col, best_row);
 
         let pivot = m[col][col];
         for row in (col + 1)..4 {
             let f = m[row][col] / pivot;
-            for k in col..5 { m[row][k] -= f * m[col][k]; }
+            for k in col..5 {
+                m[row][k] -= f * m[col][k];
+            }
         }
     }
     // Back-substitution
     let mut x = [0.0_f64; 4];
     for i in (0..4).rev() {
         x[i] = m[i][4];
-        for j in (i + 1)..4 { x[i] -= m[i][j] * x[j]; }
+        for j in (i + 1)..4 {
+            x[i] -= m[i][j] * x[j];
+        }
         x[i] /= m[i][i];
     }
     Some(x)
@@ -343,13 +397,13 @@ fn gauss4(mut m: [[f64; 5]; 4]) -> Option<[f64; 4]> {
 #[allow(dead_code)]
 struct EulerSolution {
     /// Estimated source easting (projected CRS).
-    x:          f64,
+    x: f64,
     /// Estimated source northing.
-    y:          f64,
+    y: f64,
     /// Source depth below flight level (positive metres).
-    depth_m:    f64,
+    depth_m: f64,
     /// Structural index of best-fit N.
-    n_index:    f64,
+    n_index: f64,
     /// Background field estimate (nT).
     background: f64,
     /// Normalised RMS residual (lower is better; 0 = perfect).
@@ -357,9 +411,9 @@ struct EulerSolution {
     /// Mean |M| in window (nT) — proxy for anomaly amplitude.
     mean_anomaly_nt: f64,
     /// Window centre easting.
-    win_cx:     f64,
+    win_cx: f64,
     /// Window centre northing.
-    win_cy:     f64,
+    win_cy: f64,
 }
 
 /// Data passed for one grid cell inside a window.
@@ -376,7 +430,9 @@ type WinPoint = (f64, f64, f64, f64, f64, f64); // (x, y, M, dMdx, dMdy, dMdz)
 /// regularisation on the spatial unknowns.
 fn try_solve_n(pts: &[WinPoint], n: f64) -> Option<(f64, f64, f64, f64, f64)> {
     let k = pts.len();
-    if k < 5 { return None; }
+    if k < 5 {
+        return None;
+    }
 
     // Build A^T A (4×4) and A^T b (4×1).
     let mut ata = [[0.0_f64; 4]; 4];
@@ -387,7 +443,9 @@ fn try_solve_n(pts: &[WinPoint], n: f64) -> Option<(f64, f64, f64, f64, f64)> {
         let rhs = xi * dx + yi * dy + n * mi;
         for j in 0..4 {
             atb[j] += row[j] * rhs;
-            for l in 0..4 { ata[j][l] += row[j] * row[l]; }
+            for l in 0..4 {
+                ata[j][l] += row[j] * row[l];
+            }
         }
     }
 
@@ -396,12 +454,16 @@ fn try_solve_n(pts: &[WinPoint], n: f64) -> Option<(f64, f64, f64, f64, f64)> {
     // when the window has low horizontal gradient variation.
     let diag_max = (0..3).map(|i| ata[i][i]).fold(0.0_f64, f64::max);
     let lambda = diag_max * 1e-6;
-    for i in 0..3 { ata[i][i] += lambda; }
+    for i in 0..3 {
+        ata[i][i] += lambda;
+    }
 
     // Build augmented matrix [A^T A | A^T b].
     let mut aug = [[0.0_f64; 5]; 4];
     for i in 0..4 {
-        for j in 0..4 { aug[i][j] = ata[i][j]; }
+        for j in 0..4 {
+            aug[i][j] = ata[i][j];
+        }
         aug[i][4] = atb[i];
     }
 
@@ -417,7 +479,11 @@ fn try_solve_n(pts: &[WinPoint], n: f64) -> Option<(f64, f64, f64, f64, f64)> {
         mean_m += mi.abs();
     }
     mean_m /= k as f64;
-    let rms_norm = if mean_m > 1e-9 { (ss / k as f64).sqrt() / mean_m } else { f64::INFINITY };
+    let rms_norm = if mean_m > 1e-9 {
+        (ss / k as f64).sqrt() / mean_m
+    } else {
+        f64::INFINITY
+    };
 
     Some((x0, y0, h, b, rms_norm))
 }
@@ -425,11 +491,11 @@ fn try_solve_n(pts: &[WinPoint], n: f64) -> Option<(f64, f64, f64, f64, f64)> {
 /// Collect window points and attempt Euler solve for each requested N.
 /// Returns the best-fit solution (lowest normalised residual).
 fn solve_window(
-    grid:   &MagGrid,
-    deriv:  &Derivatives,
+    grid: &MagGrid,
+    deriv: &Derivatives,
     params: &DepthParams,
-    ic:     usize, // window centre column
-    ir:     usize, // window centre row
+    ic: usize, // window centre column
+    ir: usize, // window centre row
 ) -> Option<EulerSolution> {
     let half = params.window_cells / 2;
     let ix_lo = ic.saturating_sub(half);
@@ -449,14 +515,18 @@ fn solve_window(
                 deriv.dmdz[idx],
             ) {
                 // Skip cells where all derivatives vanish (uninformative).
-                if dx.abs() < 1e-9 && dy.abs() < 1e-9 && dz.abs() < 1e-9 { continue; }
+                if dx.abs() < 1e-9 && dy.abs() < 1e-9 && dz.abs() < 1e-9 {
+                    continue;
+                }
                 pts.push((grid.x_of(ix), grid.y_of(iy), m, dx, dy, dz));
             }
         }
     }
 
     // Require at least 8 valid points for a stable 4-unknown solve.
-    if pts.len() < 8 { return None; }
+    if pts.len() < 8 {
+        return None;
+    }
 
     let ns: &[f64] = match params.structural_index {
         Some(n) => match n as u8 {
@@ -472,33 +542,47 @@ fn solve_window(
     let win_cy = grid.y_of(ir);
     let win_half_m = half as f64 * grid.resolution_m;
 
-    let mean_anomaly_nt = pts.iter().map(|(_, _, m, _, _, _)| m.abs()).sum::<f64>() / pts.len() as f64;
+    let mean_anomaly_nt =
+        pts.iter().map(|(_, _, m, _, _, _)| m.abs()).sum::<f64>() / pts.len() as f64;
 
     let mut best: Option<EulerSolution> = None;
 
     for &n in ns {
-        let Some((x0, y0, h, bg, res)) = try_solve_n(&pts, n) else { continue };
+        let Some((x0, y0, h, bg, res)) = try_solve_n(&pts, n) else {
+            continue;
+        };
 
         // Depth must be positive and within bounds.
-        if h < params.min_depth_m || h > params.max_depth_m { continue; }
+        if h < params.min_depth_m || h > params.max_depth_m {
+            continue;
+        }
 
         // Source location must not be wildly offset from the window centre.
         let dx_off = (x0 - win_cx).abs();
         let dy_off = (y0 - win_cy).abs();
-        if dx_off > params.max_offset_factor * win_half_m * 2.0 { continue; }
-        if dy_off > params.max_offset_factor * win_half_m * 2.0 { continue; }
+        if dx_off > params.max_offset_factor * win_half_m * 2.0 {
+            continue;
+        }
+        if dy_off > params.max_offset_factor * win_half_m * 2.0 {
+            continue;
+        }
 
         let candidate = EulerSolution {
-            x: x0, y: y0,
+            x: x0,
+            y: y0,
             depth_m: h,
             n_index: n,
             background: bg,
             norm_residual: res,
             mean_anomaly_nt,
-            win_cx, win_cy,
+            win_cx,
+            win_cy,
         };
 
-        if best.as_ref().map_or(true, |b: &EulerSolution| res < b.norm_residual) {
+        if best
+            .as_ref()
+            .map_or(true, |b: &EulerSolution| res < b.norm_residual)
+        {
             best = Some(candidate);
         }
     }
@@ -553,7 +637,8 @@ pub async fn run_magnetic_depth_model(
     let grid = grid_opt.ok_or_else(|| {
         NodeError::InvalidConfig(
             "magnetic_depth_model: no valid magnetic grid artifact found upstream. \
-             Connect the 'mag_grid' output of a magnetic_model node.".into(),
+             Connect the 'mag_grid' output of a magnetic_model node."
+                .into(),
         )
     })?;
 
@@ -602,9 +687,15 @@ pub async fn run_magnetic_depth_model(
 
     // ── Compute normalisation ranges for susceptibility proxy ─────────────────
     let depth_max = solutions.iter().map(|s| s.depth_m).fold(0.0_f64, f64::max);
-    let depth_min = solutions.iter().map(|s| s.depth_m).fold(f64::INFINITY, f64::min);
-    let ampl_max  = solutions.iter().map(|s| s.mean_anomaly_nt).fold(0.0_f64, f64::max);
-    let n_sols    = solutions.len();
+    let depth_min = solutions
+        .iter()
+        .map(|s| s.depth_m)
+        .fold(f64::INFINITY, f64::min);
+    let ampl_max = solutions
+        .iter()
+        .map(|s| s.mean_anomaly_nt)
+        .fold(0.0_f64, f64::max);
+    let n_sols = solutions.len();
 
     // Susceptibility proxy = amplitude × depth^(N+1), normalised to [0, 1].
     // For N=1 (dyke): ∝ M·h²; for N=3 (sphere): ∝ M·h⁴.
@@ -622,7 +713,7 @@ pub async fn run_magnetic_depth_model(
         .iter()
         .zip(raw_proxy.iter())
         .map(|(s, &proxy_raw)| {
-            let conf  = confidence(s.norm_residual);
+            let conf = confidence(s.norm_residual);
             let z_src = -(s.depth_m); // negative = below surface (z = 0 = flight level)
 
             // Voxel edge length scales with depth so deep sources get larger
@@ -696,14 +787,15 @@ pub async fn run_magnetic_depth_model(
         "graphs/{}/nodes/{}/magnetic_depth_model.json",
         job.graph_id, job.node_id
     );
-    let bytes   = serde_json::to_vec(&out)?;
-    let artifact = super::runtime::write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+    let bytes = serde_json::to_vec(&out)?;
+    let artifact =
+        super::runtime::write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
 
     Ok(JobResult {
-        job_id:               job.job_id,
-        status:               JobStatus::Succeeded,
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
         output_artifact_refs: vec![artifact.clone()],
-        content_hashes:       vec![artifact.content_hash],
-        error_message:        None,
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
     })
 }

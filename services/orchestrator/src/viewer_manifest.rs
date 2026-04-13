@@ -53,7 +53,11 @@ pub async fn build_viewer_manifest(
     const TERRAIN_PASSTHROUGH_KINDS: &[&str] = &["dem_fetch", "terrain_adjust", "dem_integrate"];
 
     let mut layers: Vec<ViewerManifestLayer> = Vec::new();
-    for edge in snapshot.edges.iter().filter(|e| e.to_node == viewer_node_id) {
+    for edge in snapshot
+        .edges
+        .iter()
+        .filter(|e| e.to_node == viewer_node_id)
+    {
         let source_kind = snapshot
             .nodes
             .get(&edge.from_node)
@@ -71,7 +75,7 @@ pub async fn build_viewer_manifest(
                 source_node_id: edge.from_node,
                 source_node_kind: source_kind.clone(),
                 edge_id: edge.id,
-                semantic_type: format!("{:?}", edge.semantic_type).to_ascii_lowercase(),
+                semantic_type: edge.semantic_type.as_str().to_string(),
                 from_port: edge.from_port.clone(),
                 to_port: edge.to_port.clone(),
                 artifact_key: key.clone(),
@@ -107,8 +111,7 @@ pub async fn build_viewer_manifest(
                         source_node_id: upstream.from_node,
                         source_node_kind: upstream_kind.clone(),
                         edge_id: upstream.id,
-                        semantic_type: format!("{:?}", upstream.semantic_type)
-                            .to_ascii_lowercase(),
+                        semantic_type: upstream.semantic_type.as_str().to_string(),
                         from_port: upstream.from_port.clone(),
                         // prefix with "00_" so drape sorts before terrain in the layer stack
                         to_port: format!("00_{}", edge.to_port),
@@ -163,8 +166,7 @@ async fn layer_presentation_from_artifact(
     } else if sk == "block_grade_model" && lower.contains("voxels") {
         out["renderer"] = serde_json::json!("block_voxels");
         out["display_pointer"] = serde_json::json!("scene3d.block_voxels");
-        out["editable"] =
-            serde_json::json!(["visible", "opacity", "measure", "palette", "cutoff"]);
+        out["editable"] = serde_json::json!(["visible", "opacity", "measure", "palette", "cutoff"]);
     } else if sk == "block_grade_model" && lower.contains("centers") {
         out["renderer"] = serde_json::json!("sample_points");
         out["display_pointer"] = serde_json::json!("scene3d.sample_points");

@@ -334,7 +334,11 @@ fn preview_point_rows(rows: &[Value], max_rows: usize) -> Vec<Value> {
         return rows.to_vec();
     }
     let stride = (rows.len() as f64 / max_rows as f64).ceil().max(1.0) as usize;
-    rows.iter().step_by(stride).take(max_rows).cloned().collect()
+    rows.iter()
+        .step_by(stride)
+        .take(max_rows)
+        .cloned()
+        .collect()
 }
 
 fn preview_grid_rows(rows: &[Value], max_rows: usize) -> Vec<Value> {
@@ -342,7 +346,11 @@ fn preview_grid_rows(rows: &[Value], max_rows: usize) -> Vec<Value> {
         return rows.to_vec();
     }
     let stride = (rows.len() as f64 / max_rows as f64).ceil().max(1.0) as usize;
-    rows.iter().step_by(stride).take(max_rows).cloned().collect()
+    rows.iter()
+        .step_by(stride)
+        .take(max_rows)
+        .cloned()
+        .collect()
 }
 
 fn bilinear(
@@ -410,7 +418,9 @@ async fn llm_commentary(context: &Value) -> Option<Value> {
         return None;
     }
     let v: Value = resp.json().await.ok()?;
-    let content = v.pointer("/choices/0/message/content").and_then(|x| x.as_str())?;
+    let content = v
+        .pointer("/choices/0/message/content")
+        .and_then(|x| x.as_str())?;
     serde_json::from_str::<Value>(content).ok().or_else(|| {
         let s = content.find('{')?;
         let e = content.rfind('}')?;
@@ -452,7 +462,9 @@ pub async fn run_magnetic_model(
         }
     }
     if raw.is_empty() {
-        return Err(NodeError::InvalidConfig("magnetic_model received no tabular rows".into()));
+        return Err(NodeError::InvalidConfig(
+            "magnetic_model received no tabular rows".into(),
+        ));
     }
 
     let headers_lc = raw[0]
@@ -460,18 +472,42 @@ pub async fn run_magnetic_model(
         .map(|k| k.to_ascii_lowercase())
         .collect::<Vec<_>>();
 
-    let x_key = mapped_col(&params.mapping, "x").or_else(|| pick_col(&headers_lc, &["x", "easting", "east", "utm_e", "x_m"]));
-    let y_key = mapped_col(&params.mapping, "y").or_else(|| pick_col(&headers_lc, &["y", "northing", "north", "utm_n", "y_m"]));
-    let lat_key = mapped_col(&params.mapping, "lat").or_else(|| pick_col(&headers_lc, &["lat", "latitude"]));
-    let lon_key = mapped_col(&params.mapping, "lon").or_else(|| pick_col(&headers_lc, &["lon", "longitude", "long"]));
-    let line_key = mapped_col(&params.mapping, "line_id").or_else(|| pick_col(&headers_lc, &["line_id", "line", "flightline", "flight_line"]));
-    let time_key = mapped_col(&params.mapping, "utc").or_else(|| pick_col(&headers_lc, &["utc", "timestamp", "datetime", "time"]));
-    let fid_key = mapped_col(&params.mapping, "fid").or_else(|| pick_col(&headers_lc, &["fid", "seq", "sample_no", "point_id"]));
-    let tmf_key = mapped_col(&params.mapping, "tmf").or_else(|| pick_col(&headers_lc, &["tmf", "tmi", "total_magnetic_field", "mag_total"]));
-    let mag_lev_key = mapped_col(&params.mapping, "mag_lev").or_else(|| pick_col(&headers_lc, &["mag_lev", "mag", "magnetic", "mag_lvl"]));
-    let igrf_key = mapped_col(&params.mapping, "igrf").or_else(|| pick_col(&headers_lc, &["igrf", "regional_field"]));
-    let radar_key = mapped_col(&params.mapping, "radar").or_else(|| pick_col(&headers_lc, &["radar", "radar_alt", "clearance", "terrain_clearance"]));
-    let gps_alt_key = mapped_col(&params.mapping, "gps_alt").or_else(|| pick_col(&headers_lc, &["gps_alt", "altitude", "elevation", "z"]));
+    let x_key = mapped_col(&params.mapping, "x")
+        .or_else(|| pick_col(&headers_lc, &["x", "easting", "east", "utm_e", "x_m"]));
+    let y_key = mapped_col(&params.mapping, "y")
+        .or_else(|| pick_col(&headers_lc, &["y", "northing", "north", "utm_n", "y_m"]));
+    let lat_key =
+        mapped_col(&params.mapping, "lat").or_else(|| pick_col(&headers_lc, &["lat", "latitude"]));
+    let lon_key = mapped_col(&params.mapping, "lon")
+        .or_else(|| pick_col(&headers_lc, &["lon", "longitude", "long"]));
+    let line_key = mapped_col(&params.mapping, "line_id").or_else(|| {
+        pick_col(
+            &headers_lc,
+            &["line_id", "line", "flightline", "flight_line"],
+        )
+    });
+    let time_key = mapped_col(&params.mapping, "utc")
+        .or_else(|| pick_col(&headers_lc, &["utc", "timestamp", "datetime", "time"]));
+    let fid_key = mapped_col(&params.mapping, "fid")
+        .or_else(|| pick_col(&headers_lc, &["fid", "seq", "sample_no", "point_id"]));
+    let tmf_key = mapped_col(&params.mapping, "tmf").or_else(|| {
+        pick_col(
+            &headers_lc,
+            &["tmf", "tmi", "total_magnetic_field", "mag_total"],
+        )
+    });
+    let mag_lev_key = mapped_col(&params.mapping, "mag_lev")
+        .or_else(|| pick_col(&headers_lc, &["mag_lev", "mag", "magnetic", "mag_lvl"]));
+    let igrf_key = mapped_col(&params.mapping, "igrf")
+        .or_else(|| pick_col(&headers_lc, &["igrf", "regional_field"]));
+    let radar_key = mapped_col(&params.mapping, "radar").or_else(|| {
+        pick_col(
+            &headers_lc,
+            &["radar", "radar_alt", "clearance", "terrain_clearance"],
+        )
+    });
+    let gps_alt_key = mapped_col(&params.mapping, "gps_alt")
+        .or_else(|| pick_col(&headers_lc, &["gps_alt", "altitude", "elevation", "z"]));
 
     let mut parsed = Vec::<Map<String, Value>>::new();
     let mut malformed = 0usize;
@@ -481,13 +517,23 @@ pub async fn run_magnetic_model(
             .as_ref()
             .and_then(|k| lookup_ci(&r, k))
             .and_then(|v| parse_num(&v))
-            .zip(y_key.as_ref().and_then(|k| lookup_ci(&r, k)).and_then(|v| parse_num(&v)))
+            .zip(
+                y_key
+                    .as_ref()
+                    .and_then(|k| lookup_ci(&r, k))
+                    .and_then(|v| parse_num(&v)),
+            )
             .is_some();
         let has_ll = lon_key
             .as_ref()
             .and_then(|k| lookup_ci(&r, k))
             .and_then(|v| parse_num(&v))
-            .zip(lat_key.as_ref().and_then(|k| lookup_ci(&r, k)).and_then(|v| parse_num(&v)))
+            .zip(
+                lat_key
+                    .as_ref()
+                    .and_then(|k| lookup_ci(&r, k))
+                    .and_then(|v| parse_num(&v)),
+            )
             .is_some();
         let has_mag = tmf_key
             .as_ref()
@@ -602,7 +648,11 @@ pub async fn run_magnetic_model(
             .and_then(|v| match v {
                 Value::String(s) => {
                     let t = s.trim();
-                    if t.is_empty() { None } else { Some(t.to_string()) }
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t.to_string())
+                    }
                 }
                 Value::Number(n) => Some(n.to_string()),
                 _ => None,
@@ -711,7 +761,9 @@ pub async fn run_magnetic_model(
 
     let mut mvals = pts.iter().map(|p| p.m.abs()).collect::<Vec<_>>();
     let med_abs = median(&mut mvals).unwrap_or(0.0);
-    let has_igrf = pts.iter().any(|p| p.attrs.get("__igrf__").and_then(parse_num).is_some());
+    let has_igrf = pts
+        .iter()
+        .any(|p| p.attrs.get("__igrf__").and_then(parse_num).is_some());
     let require_igrf_sub = has_igrf && med_abs > 5000.0;
     if require_igrf_sub {
         for p in &mut pts {
@@ -732,14 +784,12 @@ pub async fn run_magnetic_model(
     for (_line, mut g) in groups {
         total_lines += 1;
         g.sort_by(|a, b| {
-            a.timestamp
-                .cmp(&b.timestamp)
-                .then_with(|| {
-                    a.fid
-                        .unwrap_or(f64::INFINITY)
-                        .partial_cmp(&b.fid.unwrap_or(f64::INFINITY))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+            a.timestamp.cmp(&b.timestamp).then_with(|| {
+                a.fid
+                    .unwrap_or(f64::INFINITY)
+                    .partial_cmp(&b.fid.unwrap_or(f64::INFINITY))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
         let mut mono = Vec::<Pt>::new();
         let mut prev_ts: Option<String> = None;
@@ -907,7 +957,9 @@ pub async fn run_magnetic_model(
     let mut ny = (((ymax - ymin) / effective_res_m).ceil() as usize).max(4);
     let mut cells = nx.saturating_mul(ny);
     if cells > params.max_grid_cells {
-        let scale = (cells as f64 / params.max_grid_cells as f64).sqrt().max(1.0);
+        let scale = (cells as f64 / params.max_grid_cells as f64)
+            .sqrt()
+            .max(1.0);
         effective_res_m = (effective_res_m * scale).max(params.grid_resolution_m);
         nx = (((xmax - xmin) / effective_res_m).ceil() as usize).max(4);
         ny = (((ymax - ymin) / effective_res_m).ceil() as usize).max(4);
@@ -1196,13 +1248,26 @@ pub async fn run_magnetic_model(
     let grid_bytes = serde_json::to_vec(&grid_payload)?;
     let grid_preview_bytes = serde_json::to_vec(&grid_preview_payload)?;
     let report_bytes = serde_json::to_vec(&report_payload)?;
-    let points_preview_key =
-        format!("graphs/{}/nodes/{}/magnetic_points.preview.json", job.graph_id, job.node_id);
-    let points_key = format!("graphs/{}/nodes/{}/magnetic_points.json", job.graph_id, job.node_id);
-    let grid_preview_key =
-        format!("graphs/{}/nodes/{}/magnetic_grid.preview.json", job.graph_id, job.node_id);
-    let grid_key = format!("graphs/{}/nodes/{}/magnetic_grid.json", job.graph_id, job.node_id);
-    let report_key = format!("graphs/{}/nodes/{}/magnetic_report.json", job.graph_id, job.node_id);
+    let points_preview_key = format!(
+        "graphs/{}/nodes/{}/magnetic_points.preview.json",
+        job.graph_id, job.node_id
+    );
+    let points_key = format!(
+        "graphs/{}/nodes/{}/magnetic_points.json",
+        job.graph_id, job.node_id
+    );
+    let grid_preview_key = format!(
+        "graphs/{}/nodes/{}/magnetic_grid.preview.json",
+        job.graph_id, job.node_id
+    );
+    let grid_key = format!(
+        "graphs/{}/nodes/{}/magnetic_grid.json",
+        job.graph_id, job.node_id
+    );
+    let report_key = format!(
+        "graphs/{}/nodes/{}/magnetic_report.json",
+        job.graph_id, job.node_id
+    );
     let points_preview_ref = super::runtime::write_artifact(
         ctx,
         &points_preview_key,
@@ -1210,7 +1275,9 @@ pub async fn run_magnetic_model(
         Some("application/json"),
     )
     .await?;
-    let points_ref = super::runtime::write_artifact(ctx, &points_key, &points_bytes, Some("application/json")).await?;
+    let points_ref =
+        super::runtime::write_artifact(ctx, &points_key, &points_bytes, Some("application/json"))
+            .await?;
     let grid_preview_ref = super::runtime::write_artifact(
         ctx,
         &grid_preview_key,
@@ -1218,8 +1285,12 @@ pub async fn run_magnetic_model(
         Some("application/json"),
     )
     .await?;
-    let grid_ref = super::runtime::write_artifact(ctx, &grid_key, &grid_bytes, Some("application/json")).await?;
-    let report_ref = super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json")).await?;
+    let grid_ref =
+        super::runtime::write_artifact(ctx, &grid_key, &grid_bytes, Some("application/json"))
+            .await?;
+    let report_ref =
+        super::runtime::write_artifact(ctx, &report_key, &report_bytes, Some("application/json"))
+            .await?;
     ctx.report_progress(
         "write_outputs",
         Some(0.97),

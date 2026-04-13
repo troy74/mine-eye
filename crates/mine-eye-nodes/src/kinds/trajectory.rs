@@ -84,7 +84,10 @@ pub async fn run_desurvey_trajectory(
     }
 
     let bytes = serde_json::to_vec(&segments)?;
-    let key = format!("graphs/{}/nodes/{}/trajectory.json", job.graph_id, job.node_id);
+    let key = format!(
+        "graphs/{}/nodes/{}/trajectory.json",
+        job.graph_id, job.node_id
+    );
     let artifact =
         super::runtime::write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
 

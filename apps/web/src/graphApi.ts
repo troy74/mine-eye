@@ -595,7 +595,7 @@ function normalizeEdge(raw: unknown): ApiEdge {
   const to = String(o.to_node ?? "");
   const fp = String(o.from_port ?? "");
   const tp = String(o.to_port ?? "");
-  const st = String(o.semantic_type ?? "table");
+  const st = String(o.semantic_type ?? "data_table");
   const rawId = o.id;
   const id =
     rawId != null && String(rawId).length > 0

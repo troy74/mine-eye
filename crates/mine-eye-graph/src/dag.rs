@@ -55,9 +55,9 @@ impl GraphSnapshot {
             idx.insert(*id, n);
         }
         for e in &self.edges {
-            let a = *idx.get(&e.from_node).ok_or(GraphError::InvalidEdge(
-                "missing from_node".into(),
-            ))?;
+            let a = *idx
+                .get(&e.from_node)
+                .ok_or(GraphError::InvalidEdge("missing from_node".into()))?;
             let b = *idx
                 .get(&e.to_node)
                 .ok_or(GraphError::InvalidEdge("missing to_node".into()))?;
@@ -69,10 +69,7 @@ impl GraphSnapshot {
 }
 
 /// Mark nodes stale downstream from `changed` using BFS.
-pub fn propagate_stale(
-    snapshot: &GraphSnapshot,
-    changed: &[Uuid],
-) -> HashSet<Uuid> {
+pub fn propagate_stale(snapshot: &GraphSnapshot, changed: &[Uuid]) -> HashSet<Uuid> {
     let mut seen = HashSet::new();
     let mut q: VecDeque<Uuid> = changed.iter().copied().collect();
     while let Some(n) = q.pop_front() {

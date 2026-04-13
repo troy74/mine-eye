@@ -62,10 +62,9 @@ pub async fn run_collar_ingest(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for collar_ingest".into()))?;
+    let payload = job.input_payload.as_ref().ok_or_else(|| {
+        NodeError::InvalidConfig("missing input_payload for collar_ingest".into())
+    })?;
     let mut collars: Vec<CollarRecord> = serde_json::from_value(
         payload
             .pointer("/collars")
@@ -112,10 +111,9 @@ pub async fn run_survey_ingest(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
-    let payload = job
-        .input_payload
-        .as_ref()
-        .ok_or_else(|| NodeError::InvalidConfig("missing input_payload for survey_ingest".into()))?;
+    let payload = job.input_payload.as_ref().ok_or_else(|| {
+        NodeError::InvalidConfig("missing input_payload for survey_ingest".into())
+    })?;
     let surveys: Vec<SurveyStationRecord> = serde_json::from_value(
         payload
             .pointer("/surveys")
@@ -179,15 +177,8 @@ pub async fn run_surface_sample_ingest(
         .pointer("/points")
         .cloned()
         .unwrap_or(serde_json::json!([]));
-    let mut terrain_grid_for_fill: Option<(
-        usize,
-        usize,
-        f64,
-        f64,
-        f64,
-        f64,
-        Vec<Option<f64>>,
-    )> = None;
+    let mut terrain_grid_for_fill: Option<(usize, usize, f64, f64, f64, f64, Vec<Option<f64>>)> =
+        None;
     for ar in &job.input_artifact_refs {
         let v = super::runtime::read_json_artifact(ctx, &ar.key).await?;
         let Some(g) = v.get("surface_grid").and_then(|x| x.as_object()) else {

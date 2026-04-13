@@ -2,8 +2,8 @@
  * Port / link typing for the graph UI (V1SPEC semantic ports + logical refinements).
  *
  * Rust `SemanticPortType` is the wire contract. In the product we also care about **logical**
- * refinements on a link — e.g. collars are a PointSet (or Table in legacy graphs) tagged by
- * `from_port` / `to_port` names like `collars`. Consumers that accept PointSet or Table can
+ * refinements on a link — e.g. collars are a PointSet (or DataTable in legacy graphs) tagged by
+ * `from_port` / `to_port` names like `collars`. Consumers that accept PointSet or DataTable can
  * still consume collar outputs; a dedicated collar-only consumer would check the port name.
  *
  * Future: add `CollarSet` etc. to the backend enum + migrations; until then refinements are
@@ -18,7 +18,7 @@ export type SemanticPortKey =
   | "raster"
   | "mesh"
   | "block_model"
-  | "table"
+  | "data_table"
   | "semantic_json"
   | string;
 
@@ -32,7 +32,7 @@ export const SEMANTIC_EDGE_COLORS: Record<string, string> = {
   raster: "#facc15",
   mesh: "#fb7185",
   block_model: "#c084fc",
-  table: "#94a3b8",
+  data_table: "#94a3b8",
   semantic_json: "#22d3ee",
 };
 

@@ -97,12 +97,16 @@ export function NodeInspector({
   const isAoiNode = kind === "aoi";
   const isBlockGradeModelNode = kind === "block_grade_model";
   const isMagneticMapperNode = kind === "magnetic_model";
+  const isIpSurveyIngestNode = kind === "ip_survey_ingest";
+  const isIpCorridorModelNode = kind === "ip_corridor_model";
+  const isIpInversionMeshNode = kind === "ip_inversion_mesh";
+  const isIpInversionPreviewNode = kind === "ip_inversion_preview";
   const isHeatmapRasterTileCacheNode = kind === "heatmap_raster_tile_cache";
   const isArtifactIngestNode = kind === "observation_ingest";
   const isMdViewerNode = kind === "md_viewer";
   const isPlotChartNode = kind === "plot_chart";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isHeatmapRasterTileCacheNode || isMdViewerNode || isPlotChartNode;
+    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isIpCorridorModelNode || isIpInversionMeshNode || isIpInversionPreviewNode || isHeatmapRasterTileCacheNode || isMdViewerNode || isPlotChartNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -622,6 +626,45 @@ export function NodeInspector({
   );
   const [mmLlmEnabled, setMmLlmEnabled] = useState<boolean>(
     () => (typeof initialUi.llm_enabled === "boolean" ? initialUi.llm_enabled : false)
+  );
+  const [ipCorridorHalfWidthM, setIpCorridorHalfWidthM] = useState<string>(
+    () => (typeof initialUi.corridor_half_width_m === "number" ? String(initialUi.corridor_half_width_m) : "12.5")
+  );
+  const [ipCorridorDepthCellScale, setIpCorridorDepthCellScale] = useState<string>(
+    () => (typeof initialUi.depth_cell_scale === "number" ? String(initialUi.depth_cell_scale) : "0.9")
+  );
+  const [ipCorridorMinCellThicknessM, setIpCorridorMinCellThicknessM] = useState<string>(
+    () => (typeof initialUi.min_cell_thickness_m === "number" ? String(initialUi.min_cell_thickness_m) : "10")
+  );
+  const [ipMeshCellXM, setIpMeshCellXM] = useState<string>(
+    () => (typeof initialUi.cell_x_m === "number" ? String(initialUi.cell_x_m) : "25")
+  );
+  const [ipMeshCellYM, setIpMeshCellYM] = useState<string>(
+    () => (typeof initialUi.cell_y_m === "number" ? String(initialUi.cell_y_m) : "20")
+  );
+  const [ipMeshCellZM, setIpMeshCellZM] = useState<string>(
+    () => (typeof initialUi.cell_z_m === "number" ? String(initialUi.cell_z_m) : "15")
+  );
+  const [ipMeshLateralPaddingM, setIpMeshLateralPaddingM] = useState<string>(
+    () => (typeof initialUi.lateral_padding_m === "number" ? String(initialUi.lateral_padding_m) : "40")
+  );
+  const [ipMeshDepthPaddingM, setIpMeshDepthPaddingM] = useState<string>(
+    () => (typeof initialUi.depth_padding_m === "number" ? String(initialUi.depth_padding_m) : "80")
+  );
+  const [ipMeshMaxCells, setIpMeshMaxCells] = useState<string>(
+    () => (typeof initialUi.max_cells === "number" ? String(initialUi.max_cells) : "18000")
+  );
+  const [ipPreviewInfluenceRadiusM, setIpPreviewInfluenceRadiusM] = useState<string>(
+    () => (typeof initialUi.influence_radius_m === "number" ? String(initialUi.influence_radius_m) : "90")
+  );
+  const [ipPreviewIdwPower, setIpPreviewIdwPower] = useState<string>(
+    () => (typeof initialUi.idw_power === "number" ? String(initialUi.idw_power) : "2")
+  );
+  const [ipPreviewMinSupport, setIpPreviewMinSupport] = useState<string>(
+    () => (typeof initialUi.min_support === "number" ? String(initialUi.min_support) : "2")
+  );
+  const [ipPreviewConductivityBias, setIpPreviewConductivityBias] = useState<string>(
+    () => (typeof initialUi.conductivity_bias === "number" ? String(initialUi.conductivity_bias) : "0.35")
   );
   const [rtcMeasure, setRtcMeasure] = useState<string>(
     () => (typeof initialUi.measure === "string" ? initialUi.measure : "")
@@ -1312,7 +1355,11 @@ export function NodeInspector({
       if (!file) return;
       setErr(null);
       setCsvName(file.name);
-      const shouldUpload = isMagneticMapperNode || isArtifactIngestNode || file.size > 8 * 1024 * 1024;
+      const shouldUpload =
+        isMagneticMapperNode ||
+        isArtifactIngestNode ||
+        isIpSurveyIngestNode ||
+        file.size > 8 * 1024 * 1024;
       if (shouldUpload) {
         try {
           const up = await uploadTabularArtifact(graphId, file);
@@ -1351,7 +1398,7 @@ export function NodeInspector({
       };
       reader.readAsText(file, "UTF-8");
     },
-    [graphId, isArtifactIngestNode, isMagneticMapperNode]
+    [graphId, isArtifactIngestNode, isIpSurveyIngestNode, isMagneticMapperNode]
   );
 
   const applySave = useCallback(async () => {
@@ -1566,6 +1613,22 @@ export function NodeInspector({
       ui.resample_spacing_m = Math.max(0, n(mmResampleSpacingM, 0));
       ui.decimate_pct = Math.max(1, Math.min(100, n(mmDecimatePct, 100)));
       ui.llm_enabled = mmLlmEnabled;
+    } else if (isIpCorridorModelNode) {
+      ui.corridor_half_width_m = Math.max(2, n(ipCorridorHalfWidthM, 12.5));
+      ui.depth_cell_scale = Math.max(0.2, Math.min(3, n(ipCorridorDepthCellScale, 0.9)));
+      ui.min_cell_thickness_m = Math.max(1, n(ipCorridorMinCellThicknessM, 10));
+    } else if (isIpInversionMeshNode) {
+      ui.cell_x_m = Math.max(5, n(ipMeshCellXM, 25));
+      ui.cell_y_m = Math.max(5, n(ipMeshCellYM, 20));
+      ui.cell_z_m = Math.max(5, n(ipMeshCellZM, 15));
+      ui.lateral_padding_m = Math.max(0, n(ipMeshLateralPaddingM, 40));
+      ui.depth_padding_m = Math.max(5, n(ipMeshDepthPaddingM, 80));
+      ui.max_cells = Math.max(1000, Math.trunc(n(ipMeshMaxCells, 18000)));
+    } else if (isIpInversionPreviewNode) {
+      ui.influence_radius_m = Math.max(10, n(ipPreviewInfluenceRadiusM, 90));
+      ui.idw_power = Math.max(0.5, Math.min(8, n(ipPreviewIdwPower, 2)));
+      ui.min_support = Math.max(1, Math.trunc(n(ipPreviewMinSupport, 2)));
+      ui.conductivity_bias = Math.max(0, Math.min(1, n(ipPreviewConductivityBias, 0.35)));
     } else if (isHeatmapRasterTileCacheNode) {
       ui.measure = rtcMeasure.trim() || undefined;
       ui.method = rtcMethod === "nearest" ? "nearest" : "idw";
@@ -1747,6 +1810,22 @@ export function NodeInspector({
     mmResampleSpacingM,
     mmDecimatePct,
     mmLlmEnabled,
+    isIpCorridorModelNode,
+    ipCorridorHalfWidthM,
+    ipCorridorDepthCellScale,
+    ipCorridorMinCellThicknessM,
+    isIpInversionMeshNode,
+    ipMeshCellXM,
+    ipMeshCellYM,
+    ipMeshCellZM,
+    ipMeshLateralPaddingM,
+    ipMeshDepthPaddingM,
+    ipMeshMaxCells,
+    isIpInversionPreviewNode,
+    ipPreviewInfluenceRadiusM,
+    ipPreviewIdwPower,
+    ipPreviewMinSupport,
+    ipPreviewConductivityBias,
     isHeatmapRasterTileCacheNode,
     rtcMeasure,
     rtcMethod,
@@ -1870,6 +1949,13 @@ export function NodeInspector({
           csv_delimiter: csvDelimiter || ",",
         };
       }
+      if (kind === "ip_survey_ingest" && csvArtifactKey.trim().length > 0) {
+        inputPayloads[node.id] = {
+          csv_artifact_key: csvArtifactKey,
+          csv_filename: csvName || undefined,
+          csv_delimiter: csvDelimiter || ",",
+        };
+      }
       const res = await runGraph(graphId, {
         dirtyRoots: [node.id],
         includeManual: true,
@@ -1976,6 +2062,12 @@ export function NodeInspector({
                     ? "Block model"
                   : isMagneticMapperNode
                     ? "Mag model"
+                  : isIpCorridorModelNode
+                    ? "IP corridor"
+                  : isIpInversionMeshNode
+                    ? "IP mesh"
+                  : isIpInversionPreviewNode
+                    ? "IP preview"
                   : isHeatmapRasterTileCacheNode
                     ? "Heatmap tiles"
                   : isMdViewerNode
@@ -1983,7 +2075,7 @@ export function NodeInspector({
                     : isPlotChartNode
                       ? "Chart"
               : "Config",
-    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMagneticMapperNode, isHeatmapRasterTileCacheNode, isMdViewerNode, isPlotChartNode]
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMagneticMapperNode, isIpCorridorModelNode, isIpInversionMeshNode, isIpInversionPreviewNode, isHeatmapRasterTileCacheNode, isMdViewerNode, isPlotChartNode]
   );
 
   const tabs = useMemo(() => {
@@ -3713,6 +3805,179 @@ export function NodeInspector({
                     value={bgVariogramRange}
                     onChange={(e) => setBgVariogramRange(e.target.value)}
                     placeholder="auto"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isIpCorridorModelNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Inflate pseudosection rows into a fast corridor pseudo-volume for immediate 3D IP
+              review.
+            </p>
+            <div style={mapGrid}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Corridor half-width (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipCorridorHalfWidthM}
+                    onChange={(e) => setIpCorridorHalfWidthM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Depth cell scale</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipCorridorDepthCellScale}
+                    onChange={(e) => setIpCorridorDepthCellScale(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Min cell thickness (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipCorridorMinCellThicknessM}
+                    onChange={(e) => setIpCorridorMinCellThicknessM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isIpInversionMeshNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Build a regular preview mesh from pseudosection extents. This is the handoff layer
+              between TDIP observations and any future inversion engine.
+            </p>
+            <div style={mapGrid}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Cell X (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipMeshCellXM}
+                    onChange={(e) => setIpMeshCellXM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Cell Y (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipMeshCellYM}
+                    onChange={(e) => setIpMeshCellYM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Cell Z (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipMeshCellZM}
+                    onChange={(e) => setIpMeshCellZM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Lateral padding (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipMeshLateralPaddingM}
+                    onChange={(e) => setIpMeshLateralPaddingM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Depth padding (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipMeshDepthPaddingM}
+                    onChange={(e) => setIpMeshDepthPaddingM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Max cells</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={ipMeshMaxCells}
+                    onChange={(e) => setIpMeshMaxCells(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isIpInversionPreviewNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Interpolate pseudosection responses onto the preview mesh for 3D inversion-style
+              testing. Confidence is shown explicitly so low-support areas stay visible but honest.
+            </p>
+            <div style={mapGrid}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Influence radius (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipPreviewInfluenceRadiusM}
+                    onChange={(e) => setIpPreviewInfluenceRadiusM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>IDW power</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipPreviewIdwPower}
+                    onChange={(e) => setIpPreviewIdwPower(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Minimum support</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={ipPreviewMinSupport}
+                    onChange={(e) => setIpPreviewMinSupport(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Conductivity bias</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipPreviewConductivityBias}
+                    onChange={(e) => setIpPreviewConductivityBias(e.target.value)}
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>

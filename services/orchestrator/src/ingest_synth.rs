@@ -114,8 +114,14 @@ fn collar_payload_from_ui(node: &NodeRecord, project_crs: Option<&CrsRecord>) ->
     if hole_col.is_empty() {
         return None;
     }
-    let x_col = mapping.get("x").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
-    let y_col = mapping.get("y").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let x_col = mapping
+        .get("x")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let y_col = mapping
+        .get("y")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
     let z_col = mapping
         .get("z")
         .and_then(|v| v.as_str())
@@ -126,12 +132,10 @@ fn collar_payload_from_ui(node: &NodeRecord, project_crs: Option<&CrsRecord>) ->
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let crs = if use_project {
-        project_crs
-            .cloned()
-            .unwrap_or_else(|| CrsRecord {
-                epsg: Some(4326),
-                wkt: None,
-            })
+        project_crs.cloned().unwrap_or_else(|| CrsRecord {
+            epsg: Some(4326),
+            wkt: None,
+        })
     } else {
         let epsg = ui
             .get("source_crs_epsg")
@@ -360,8 +364,14 @@ fn surface_sample_payload_from_ui(
     }
     let rows: Vec<Vec<String>> = rows_from_ui(ui)?;
     let mapping = ui.get("mapping")?.as_object()?;
-    let x_col = mapping.get("x").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
-    let y_col = mapping.get("y").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let x_col = mapping
+        .get("x")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
+    let y_col = mapping
+        .get("y")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?;
     let id_col = mapping
         .get("sample_id")
         .and_then(|v| v.as_str())
@@ -376,12 +386,10 @@ fn surface_sample_payload_from_ui(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let crs = if use_project {
-        project_crs
-            .cloned()
-            .unwrap_or_else(|| CrsRecord {
-                epsg: Some(4326),
-                wkt: None,
-            })
+        project_crs.cloned().unwrap_or_else(|| CrsRecord {
+            epsg: Some(4326),
+            wkt: None,
+        })
     } else {
         let epsg = ui
             .get("source_crs_epsg")

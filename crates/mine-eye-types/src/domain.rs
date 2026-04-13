@@ -45,6 +45,39 @@ pub struct PointSampleRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IpElectrodeRecord {
+    pub electrode_id: String,
+    pub line_id: Option<String>,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub crs: CrsRecord,
+    pub qa_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IpMeasurementRecord {
+    pub measurement_id: String,
+    pub line_id: Option<String>,
+    pub survey_mode: String,
+    pub array_type: String,
+    pub a_id: String,
+    pub b_id: String,
+    pub m_id: String,
+    pub n_id: String,
+    pub current_ma: f64,
+    pub voltage_mv: f64,
+    pub apparent_resistivity_ohm_m: f64,
+    pub chargeability_mv_v: f64,
+    pub gate_start_ms: Option<f64>,
+    pub gate_end_ms: Option<f64>,
+    pub stack_count: Option<u32>,
+    pub reciprocity_error_pct: Option<f64>,
+    pub qa_flags: Vec<String>,
+    pub attributes: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SurfacePointRecord {
     pub x: f64,
     pub y: f64,

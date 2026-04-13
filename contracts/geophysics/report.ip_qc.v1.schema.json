@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report.ip_qc.v1",
+  "title": "Induced Polarization QC Report",
+  "type": "object",
+  "required": ["schema_id", "type", "summary"],
+  "properties": {
+    "schema_id": { "const": "report.ip_qc.v1" },
+    "type": { "const": "ip_qc_report" },
+    "summary": {
+      "type": "object",
+      "required": ["input_measurements", "retained_measurements", "rejected_measurements", "electrode_count"],
+      "properties": {
+        "input_measurements": { "type": "integer" },
+        "retained_measurements": { "type": "integer" },
+        "rejected_measurements": { "type": "integer" },
+        "electrode_count": { "type": "integer" }
+      }
+    },
+    "thresholds": { "type": "object" },
+    "rejected_reason_counts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["reason", "count"],
+        "properties": {
+          "reason": { "type": "string" },
+          "count": { "type": "integer" }
+        }
+      }
+    }
+  }
+}

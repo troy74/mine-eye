@@ -85,7 +85,14 @@ pub(crate) async fn read_artifact_bytes(
 pub(crate) async fn collect_drillhole_inputs(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
-) -> Result<(Vec<CollarRecord>, Vec<SurveyStationRecord>, Vec<IntervalSampleRecord>), NodeError> {
+) -> Result<
+    (
+        Vec<CollarRecord>,
+        Vec<SurveyStationRecord>,
+        Vec<IntervalSampleRecord>,
+    ),
+    NodeError,
+> {
     let mut collars: Vec<CollarRecord> = Vec::new();
     let mut surveys: Vec<SurveyStationRecord> = Vec::new();
     let mut assays: Vec<IntervalSampleRecord> = Vec::new();
@@ -324,9 +331,11 @@ pub(crate) fn collect_xyz_points(v: &serde_json::Value) -> Vec<XYZ> {
             };
             if let Some(from_xyz) = obj.get("from_xyz").and_then(|x| x.as_array()) {
                 if from_xyz.len() >= 3 {
-                    if let (Some(x), Some(y), Some(z)) =
-                        (from_xyz[0].as_f64(), from_xyz[1].as_f64(), from_xyz[2].as_f64())
-                    {
+                    if let (Some(x), Some(y), Some(z)) = (
+                        from_xyz[0].as_f64(),
+                        from_xyz[1].as_f64(),
+                        from_xyz[2].as_f64(),
+                    ) {
                         out.push(XYZ { x, y, z });
                     }
                 }
@@ -536,7 +545,12 @@ pub(crate) fn infer_extent_xy(points: &[(f64, f64)], pad_pct: f64) -> Option<(f6
     let dx = (xmax - xmin).abs().max(1e-6);
     let dy = (ymax - ymin).abs().max(1e-6);
     let pad = pad_pct.clamp(0.0, 2.0);
-    Some((xmin - dx * pad, xmax + dx * pad, ymin - dy * pad, ymax + dy * pad))
+    Some((
+        xmin - dx * pad,
+        xmax + dx * pad,
+        ymin - dy * pad,
+        ymax + dy * pad,
+    ))
 }
 
 pub(crate) fn merge_extents(
@@ -544,12 +558,9 @@ pub(crate) fn merge_extents(
     b: Option<(f64, f64, f64, f64)>,
 ) -> Option<(f64, f64, f64, f64)> {
     match (a, b) {
-        (Some((ax0, ax1, ay0, ay1)), Some((bx0, bx1, by0, by1))) => Some((
-            ax0.min(bx0),
-            ax1.max(bx1),
-            ay0.min(by0),
-            ay1.max(by1),
-        )),
+        (Some((ax0, ax1, ay0, ay1)), Some((bx0, bx1, by0, by1))) => {
+            Some((ax0.min(bx0), ax1.max(bx1), ay0.min(by0), ay1.max(by1)))
+        }
         (Some(a), None) => Some(a),
         (None, Some(b)) => Some(b),
         (None, None) => None,
@@ -902,7 +913,8 @@ pub(crate) async fn run_assay_heatmap_impl(
         } else if contour_mode == "quantile" {
             for i in 1..contour_levels {
                 let t = (i as f64) / (contour_levels as f64);
-                let idx = ((transformed_values.len().saturating_sub(1)) as f64 * t).round() as usize;
+                let idx =
+                    ((transformed_values.len().saturating_sub(1)) as f64 * t).round() as usize;
                 contour_breaks
                     .push(transformed_values[idx.min(transformed_values.len().saturating_sub(1))]);
             }
@@ -1040,7 +1052,11 @@ pub(crate) async fn run_assay_heatmap_impl(
                 };
                 let gx = (rv - lv) * 0.5;
                 let gy = (tv - bv) * 0.5;
-                let g = if gradient_mode == "directional" { gy.atan2(gx) } else { (gx * gx + gy * gy).sqrt() };
+                let g = if gradient_mode == "directional" {
+                    gy.atan2(gx)
+                } else {
+                    (gx * gx + gy * gy).sqrt()
+                };
                 gradient_values[iy * nx + ix] = Some(g);
             }
         }
@@ -1115,8 +1131,17 @@ pub(crate) async fn run_assay_heatmap_impl(
         "metrics": {"n": residuals.len(), "mae": mae, "rmse": rmse, "bias": bias}
     });
     let residual_bytes = serde_json::to_vec(&residual_json)?;
-    let residual_key = format!("graphs/{}/nodes/{}/residuals.json", job.graph_id, job.node_id);
-    let residual_ref = write_artifact(ctx, &residual_key, &residual_bytes, Some("application/json")).await?;
+    let residual_key = format!(
+        "graphs/{}/nodes/{}/residuals.json",
+        job.graph_id, job.node_id
+    );
+    let residual_ref = write_artifact(
+        ctx,
+        &residual_key,
+        &residual_bytes,
+        Some("application/json"),
+    )
+    .await?;
     outputs.push(residual_ref.clone());
     hashes.push(residual_ref.content_hash.clone());
 
@@ -1126,8 +1151,17 @@ pub(crate) async fn run_assay_heatmap_impl(
             "features": contour_features
         });
         let contour_bytes = serde_json::to_vec(&contours_json)?;
-        let contour_key = format!("graphs/{}/nodes/{}/contours.geojson", job.graph_id, job.node_id);
-        let contour_ref = write_artifact(ctx, &contour_key, &contour_bytes, Some("application/geo+json")).await?;
+        let contour_key = format!(
+            "graphs/{}/nodes/{}/contours.geojson",
+            job.graph_id, job.node_id
+        );
+        let contour_ref = write_artifact(
+            ctx,
+            &contour_key,
+            &contour_bytes,
+            Some("application/geo+json"),
+        )
+        .await?;
         outputs.push(contour_ref.clone());
         hashes.push(contour_ref.content_hash.clone());
     }
@@ -1145,8 +1179,17 @@ pub(crate) async fn run_assay_heatmap_impl(
             "values": gradient_values
         });
         let gradient_bytes = serde_json::to_vec(&gradient_json)?;
-        let gradient_key = format!("graphs/{}/nodes/{}/gradient.json", job.graph_id, job.node_id);
-        let gradient_ref = write_artifact(ctx, &gradient_key, &gradient_bytes, Some("application/json")).await?;
+        let gradient_key = format!(
+            "graphs/{}/nodes/{}/gradient.json",
+            job.graph_id, job.node_id
+        );
+        let gradient_ref = write_artifact(
+            ctx,
+            &gradient_key,
+            &gradient_bytes,
+            Some("application/json"),
+        )
+        .await?;
         outputs.push(gradient_ref.clone());
         hashes.push(gradient_ref.content_hash.clone());
     }
@@ -1204,10 +1247,7 @@ pub(crate) async fn run_surface_iso_extract_impl(
             "surface_grid has no finite values".into(),
         ));
     }
-    let vmin = finite_vals
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
+    let vmin = finite_vals.iter().copied().fold(f64::INFINITY, f64::min);
     let vmax = finite_vals
         .iter()
         .copied()
@@ -1280,8 +1320,13 @@ pub(crate) async fn run_surface_iso_extract_impl(
         "graphs/{}/nodes/{}/iso_contours.geojson",
         job.graph_id, job.node_id
     );
-    let contour_ref =
-        write_artifact(ctx, &contour_key, &contour_bytes, Some("application/geo+json")).await?;
+    let contour_ref = write_artifact(
+        ctx,
+        &contour_key,
+        &contour_bytes,
+        Some("application/geo+json"),
+    )
+    .await?;
 
     let meta = serde_json::json!({
         "type":"iso_extract_meta",
@@ -1294,7 +1339,10 @@ pub(crate) async fn run_surface_iso_extract_impl(
         "source_surface_stats":{"min":vmin,"max":vmax}
     });
     let meta_bytes = serde_json::to_vec(&meta)?;
-    let meta_key = format!("graphs/{}/nodes/{}/iso_meta.json", job.graph_id, job.node_id);
+    let meta_key = format!(
+        "graphs/{}/nodes/{}/iso_meta.json",
+        job.graph_id, job.node_id
+    );
     let meta_ref = write_artifact(ctx, &meta_key, &meta_bytes, Some("application/json")).await?;
 
     Ok(JobResult {
@@ -1367,7 +1415,8 @@ pub(crate) async fn run_terrain_adjust_impl(
 
     let mut matched: Vec<(XYZ, f64)> = Vec::new();
     for cp in &control_points {
-        if let Some(pred) = bilinear_from_grid(nx, ny, xmin, xmax, ymin, ymax, &values, cp.x, cp.y) {
+        if let Some(pred) = bilinear_from_grid(nx, ny, xmin, xmax, ymin, ymax, &values, cp.x, cp.y)
+        {
             matched.push((*cp, pred));
         }
     }
@@ -1544,10 +1593,10 @@ pub(crate) async fn run_xyz_to_surface_impl(
         ));
     }
 
-    let (xmin, xmax, ymin, ymax) = infer_extent(&xyz_points, pad_pct).ok_or_else(|| {
-        NodeError::InvalidConfig("unable to infer extent from XYZ points".into())
-    })?;
-    let (mut nx, mut ny) = grid_dims_from_extent(xmin, xmax, ymin, ymax, resolution_hint, max_cells);
+    let (xmin, xmax, ymin, ymax) = infer_extent(&xyz_points, pad_pct)
+        .ok_or_else(|| NodeError::InvalidConfig("unable to infer extent from XYZ points".into()))?;
+    let (mut nx, mut ny) =
+        grid_dims_from_extent(xmin, xmax, ymin, ymax, resolution_hint, max_cells);
     if let Some(v) = nx_cfg {
         nx = v.clamp(2, 1024);
     }
@@ -1593,7 +1642,10 @@ pub(crate) async fn run_xyz_to_surface_impl(
         "crs": job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326))
     });
     let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/xyz_surface.json", job.graph_id, job.node_id);
+    let key = format!(
+        "graphs/{}/nodes/{}/xyz_surface.json",
+        job.graph_id, job.node_id
+    );
     let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
     Ok(JobResult {
         job_id: job.job_id,
@@ -1603,7 +1655,6 @@ pub(crate) async fn run_xyz_to_surface_impl(
         error_message: None,
     })
 }
-
 
 fn bilinear_sample_grid(
     ncols: usize,
@@ -1674,7 +1725,9 @@ fn parse_aai_grid(text: &str) -> Option<(usize, usize, f64, f64, f64, f64, Vec<O
         }
         values_start = i + 1;
     }
-    let (Some(ncols), Some(nrows), Some(xll), Some(yll), Some(cell)) = (ncols, nrows, xll, yll, cell) else {
+    let (Some(ncols), Some(nrows), Some(xll), Some(yll), Some(cell)) =
+        (ncols, nrows, xll, yll, cell)
+    else {
         return None;
     };
     let mut vals: Vec<Option<f64>> = Vec::with_capacity(ncols * nrows);
@@ -1692,7 +1745,6 @@ fn parse_aai_grid(text: &str) -> Option<(usize, usize, f64, f64, f64, f64, Vec<O
     }
     Some((ncols, nrows, xll, yll, cell, nodata, vals))
 }
-
 
 // ── Cached elevation fetch wrappers ──────────────────────────────────────────
 //
@@ -1741,8 +1793,8 @@ async fn fetch_opentopography_cached(
     let pad_lon = ((east - west).abs() * 0.01).max(1e-5);
     south = (south - pad_lat).max(-90.0);
     north = (north + pad_lat).min(90.0);
-    west  = (west  - pad_lon).max(-180.0);
-    east  = (east  + pad_lon).min(180.0);
+    west = (west - pad_lon).max(-180.0);
+    east = (east + pad_lon).min(180.0);
 
     // Use only the first 8 hex chars of the API key hash (never log the key).
     let key_tag = {
@@ -1787,10 +1839,10 @@ async fn fetch_opentopography_cached(
         .get("https://portal.opentopography.org/API/globaldem")
         .query(&[
             ("demtype", "COP30"),
-            ("south",  &format!("{south:.8}")),
-            ("north",  &format!("{north:.8}")),
-            ("west",   &format!("{west:.8}")),
-            ("east",   &format!("{east:.8}")),
+            ("south", &format!("{south:.8}")),
+            ("north", &format!("{north:.8}")),
+            ("west", &format!("{west:.8}")),
+            ("east", &format!("{east:.8}")),
             ("outputFormat", "AAIGrid"),
             ("API_Key", api_key),
         ])
@@ -1805,13 +1857,16 @@ async fn fetch_opentopography_cached(
     };
 
     // Cache the raw AAI text (only if it actually parsed successfully).
-    let result = if let Some((ncols, nrows, xll, yll, cell, _nodata, vals)) = parse_aai_grid(&text) {
+    let result = if let Some((ncols, nrows, xll, yll, cell, _nodata, vals)) = parse_aai_grid(&text)
+    {
         let sampled: Vec<Option<f64>> = lat_lon
             .iter()
             .map(|(lat, lon)| bilinear_sample_grid(ncols, nrows, xll, yll, cell, &vals, *lon, *lat))
             .collect();
         // Store the raw text so future runs with the same bbox skip the fetch.
-        cache.put("dem", &cache_key, text.as_bytes(), DEM_TTL_S).await;
+        cache
+            .put("dem", &cache_key, text.as_bytes(), DEM_TTL_S)
+            .await;
         sampled
     } else {
         vec![None; lat_lon.len()]
@@ -1892,17 +1947,18 @@ async fn fetch_open_meteo_cached(
                 continue;
             }
         };
-        let batch: Vec<Option<f64>> = if let Some(arr) = json.get("elevation").and_then(|v| v.as_array()) {
-            (0..part.len())
-                .map(|i| arr.get(i).and_then(|v| v.as_f64()))
-                .collect()
-        } else {
-            // API returned an error response (e.g. rate-limit JSON).  Do NOT
-            // cache the empty result — a stale all-None entry would poison
-            // every subsequent run for up to OPEN_METEO_TTL_S seconds.
-            out.extend((0..part.len()).map(|_| None));
-            continue;
-        };
+        let batch: Vec<Option<f64>> =
+            if let Some(arr) = json.get("elevation").and_then(|v| v.as_array()) {
+                (0..part.len())
+                    .map(|i| arr.get(i).and_then(|v| v.as_f64()))
+                    .collect()
+            } else {
+                // API returned an error response (e.g. rate-limit JSON).  Do NOT
+                // cache the empty result — a stale all-None entry would poison
+                // every subsequent run for up to OPEN_METEO_TTL_S seconds.
+                out.extend((0..part.len()).map(|_| None));
+                continue;
+            };
 
         // Only cache batches that contain at least one real elevation value.
         let has_data = batch.iter().any(|v| v.is_some());
@@ -2036,7 +2092,10 @@ pub(crate) async fn run_dem_fetch_impl(
         let y0 = bbox_cfg[1].as_f64().unwrap_or(0.0);
         let x1 = bbox_cfg[2].as_f64().unwrap_or(1.0);
         let y1 = bbox_cfg[3].as_f64().unwrap_or(1.0);
-        (Some((x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1))), "node_ui_bbox")
+        (
+            Some((x0.min(x1), x0.max(x1), y0.min(y1), y0.max(y1))),
+            "node_ui_bbox",
+        )
     } else {
         let from_xyz = infer_extent(&xyz_points, pad_pct);
         let from_xy = infer_extent_xy(&xy_points, pad_pct);
@@ -2056,7 +2115,8 @@ pub(crate) async fn run_dem_fetch_impl(
         )
     })?;
 
-    let (mut nx, mut ny) = grid_dims_from_extent(xmin, xmax, ymin, ymax, resolution_hint, max_cells);
+    let (mut nx, mut ny) =
+        grid_dims_from_extent(xmin, xmax, ymin, ymax, resolution_hint, max_cells);
     if let Some(v) = nx_cfg {
         nx = v.clamp(2, 1024);
     }
@@ -2081,14 +2141,26 @@ pub(crate) async fn run_dem_fetch_impl(
                 transform_xy(&src, &wgs84, x, y).ok()
             };
             if let Some((lon, lat)) = ll {
-                if lon.is_finite() && lat.is_finite() && lon >= -180.0 && lon <= 180.0 && lat >= -90.0 && lat <= 90.0 {
+                if lon.is_finite()
+                    && lat.is_finite()
+                    && lon >= -180.0
+                    && lon <= 180.0
+                    && lat >= -90.0
+                    && lat <= 90.0
+                {
                     lat_lon.push((lat, lon));
                     continue;
                 }
             }
             if source_crs == 4326 {
                 if let Ok((lon, lat)) = transform_xy(&CrsRecord::epsg(3857), &wgs84, x, y) {
-                    if lon.is_finite() && lat.is_finite() && lon >= -180.0 && lon <= 180.0 && lat >= -90.0 && lat <= 90.0 {
+                    if lon.is_finite()
+                        && lat.is_finite()
+                        && lon >= -180.0
+                        && lon <= 180.0
+                        && lat >= -90.0
+                        && lat <= 90.0
+                    {
                         lat_lon.push((lat, lon));
                         continue;
                     }
@@ -2187,10 +2259,15 @@ pub(crate) async fn run_dem_fetch_impl(
     // Optional DEM fitting stage: nudge provider DEM to upstream XYZ control points.
     let mut fit_qc = serde_json::Value::Null;
     let mut fit_applied = false;
-    if fit_mode != "none" && xyz_points.len() >= fit_min_points && source_used != "fallback_idw_from_xyz" {
+    if fit_mode != "none"
+        && xyz_points.len() >= fit_min_points
+        && source_used != "fallback_idw_from_xyz"
+    {
         let mut matched: Vec<(XYZ, f64)> = Vec::new();
         for cp in &xyz_points {
-            if let Some(pred) = bilinear_from_grid(nx, ny, xmin, xmax, ymin, ymax, &grid_values, cp.x, cp.y) {
+            if let Some(pred) =
+                bilinear_from_grid(nx, ny, xmin, xmax, ymin, ymax, &grid_values, cp.x, cp.y)
+            {
                 matched.push((*cp, pred));
             }
         }
@@ -2240,8 +2317,10 @@ pub(crate) async fn run_dem_fetch_impl(
                     let Some(v0) = grid_values[idx] else {
                         continue;
                     };
-                    let x = xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
-                    let y = ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
+                    let x =
+                        xmin + (ix as f64 / (nx.saturating_sub(1).max(1) as f64)) * (xmax - xmin);
+                    let y =
+                        ymin + (iy as f64 / (ny.saturating_sub(1).max(1) as f64)) * (ymax - ymin);
                     let corr = dz + ax * (x - cx) + ay * (y - cy);
                     grid_values[idx] = Some(v0 + corr);
                 }
@@ -2280,7 +2359,11 @@ pub(crate) async fn run_dem_fetch_impl(
     } else {
         for i in 0..confidence_class.len() {
             confidence_class[i] = if provider_mask[i] {
-                if fit_applied { 3 } else { 2 }
+                if fit_applied {
+                    3
+                } else {
+                    2
+                }
             } else if filled_mask[i] && grid_values[i].is_some() {
                 1
             } else {
@@ -2402,7 +2485,10 @@ pub(crate) async fn run_dem_fetch_impl(
         "crs": CrsRecord::epsg(source_crs)
     });
     let bytes = serde_json::to_vec(&out)?;
-    let key = format!("graphs/{}/nodes/{}/dem_surface.json", job.graph_id, job.node_id);
+    let key = format!(
+        "graphs/{}/nodes/{}/dem_surface.json",
+        job.graph_id, job.node_id
+    );
     let artifact = write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
     Ok(JobResult {
         job_id: job.job_id,
@@ -2439,7 +2525,6 @@ fn bbox_from_geojson_like(geom: &serde_json::Value) -> Option<(f64, f64, f64, f6
     }
 }
 
-
 fn lonlat_to_web_mercator(lon_deg: f64, lat_deg: f64) -> (f64, f64) {
     let max_lat = 85.051_128_78_f64;
     let lat = lat_deg.max(-max_lat).min(max_lat);
@@ -2461,7 +2546,9 @@ fn imagery_url_host_variants(url: &str) -> Vec<String> {
     out
 }
 
-fn imagery_provider_meta(provider_id: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+fn imagery_provider_meta(
+    provider_id: &str,
+) -> (&'static str, &'static str, &'static str, &'static str) {
     match provider_id {
         "esri_world_topo" => (
             "Esri World Topo",
@@ -2501,8 +2588,12 @@ fn build_imagery_urls(
     resolution_ladder: &[i64],
 ) -> Result<Vec<String>, NodeError> {
     let mut urls: Vec<String> = Vec::new();
-    let is_wgs84_bounds =
-        xmin >= -180.0 && xmax <= 180.0 && ymin >= -90.0 && ymax <= 90.0 && xmin < xmax && ymin < ymax;
+    let is_wgs84_bounds = xmin >= -180.0
+        && xmax <= 180.0
+        && ymin >= -90.0
+        && ymax <= 90.0
+        && xmin < xmax
+        && ymin < ymax;
     if !is_wgs84_bounds {
         return Ok(urls);
     }
@@ -2524,14 +2615,21 @@ fn build_imagery_urls(
     let (x1, y1) = lonlat_to_web_mercator(xmax, ymax);
     for w in size_bases {
         for sr in &crs_order {
-            let mut u = reqwest::Url::parse(export_url)
-                .map_err(|e| NodeError::InvalidConfig(format!("invalid provider export url: {e}")))?;
+            let mut u = reqwest::Url::parse(export_url).map_err(|e| {
+                NodeError::InvalidConfig(format!("invalid provider export url: {e}"))
+            })?;
             match *sr {
                 3857 => {
                     u.query_pairs_mut()
                         .append_pair(
                             "bbox",
-                            &format!("{},{},{},{}", x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)),
+                            &format!(
+                                "{},{},{},{}",
+                                x0.min(x1),
+                                y0.min(y1),
+                                x0.max(x1),
+                                y0.max(y1)
+                            ),
                         )
                         .append_pair("bboxSR", "3857")
                         .append_pair("imageSR", "3857");
@@ -2664,11 +2762,15 @@ pub(crate) async fn build_imagery_like_contract(
         .pointer("/node_ui/debounce_profile")
         .and_then(|v| v.as_str())
         .unwrap_or("free_default");
-    let (provider_label, attribution, export_url, image_format) = imagery_provider_meta(provider_id);
+    let (provider_label, attribution, export_url, image_format) =
+        imagery_provider_meta(provider_id);
 
     let mut bbox: Option<(f64, f64, f64, f64)> = None;
     let mut aoi_source_used = String::from("fallback_default");
-    let mut target_crs = job.project_crs.clone().unwrap_or_else(|| CrsRecord::epsg(4326));
+    let mut target_crs = job
+        .project_crs
+        .clone()
+        .unwrap_or_else(|| CrsRecord::epsg(4326));
     let mut has_surface_grid = false;
     let mut passthrough_surface_grid: Option<serde_json::Value> = None;
     let mut passthrough_surface_grid_cells: usize = 0;
@@ -2703,8 +2805,7 @@ pub(crate) async fn build_imagery_like_contract(
                 let xmax = g.get("xmax").and_then(|x| x.as_f64());
                 let ymin = g.get("ymin").and_then(|y| y.as_f64());
                 let ymax = g.get("ymax").and_then(|y| y.as_f64());
-                if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax)
-                {
+                if let (Some(xmin), Some(xmax), Some(ymin), Some(ymax)) = (xmin, xmax, ymin, ymax) {
                     bbox = Some((xmin, xmax, ymin, ymax));
                     aoi_source_used = "terrain_input".into();
                 }
@@ -2754,8 +2855,12 @@ pub(crate) async fn build_imagery_like_contract(
     let used_fallback_bbox = bbox.is_none();
     let (xmin, xmax, ymin, ymax) = bbox.unwrap_or((-0.5, 0.5, -0.5, 0.5));
     let source_crs = CrsRecord::epsg(4326);
-    let is_wgs84_bounds =
-        xmin >= -180.0 && xmax <= 180.0 && ymin >= -90.0 && ymax <= 90.0 && xmin < xmax && ymin < ymax;
+    let is_wgs84_bounds = xmin >= -180.0
+        && xmax <= 180.0
+        && ymin >= -90.0
+        && ymax <= 90.0
+        && xmin < xmax
+        && ymin < ymax;
     let mut warnings = if used_fallback_bbox {
         vec!["fallback_aoi_default".to_string()]
     } else {
@@ -2790,8 +2895,11 @@ pub(crate) async fn build_imagery_like_contract(
         vec!["bbox_not_wgs84_reprojection_required".to_string()]
     };
     let fingerprint = hash_bytes(
-        format!("{provider_id}:{xmin:.6}:{xmax:.6}:{ymin:.6}:{ymax:.6}:{}", target_crs.epsg.unwrap_or(0))
-            .as_bytes(),
+        format!(
+            "{provider_id}:{xmin:.6}:{xmax:.6}:{ymin:.6}:{ymax:.6}:{}",
+            target_crs.epsg.unwrap_or(0)
+        )
+        .as_bytes(),
     );
 
     Ok(serde_json::json!({

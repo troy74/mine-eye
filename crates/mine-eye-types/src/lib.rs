@@ -17,7 +17,8 @@ pub use branching::{
 pub use crs::{CrsRecord, ProjectCrs};
 pub use domain::{
     BlockModelMeta, CollarRecord, DemRecord, DesurveyedInterval, IntervalSampleRecord,
-    PointSampleRecord, ScalarFieldMeta, SurfacePointRecord, SurveyStationRecord, TrajectorySegment,
+    IpElectrodeRecord, IpMeasurementRecord, PointSampleRecord, ScalarFieldMeta, SurfacePointRecord,
+    SurveyStationRecord, TrajectorySegment,
 };
 pub use envelope::{ArtifactRef, JobEnvelope, JobResult, JobStatus};
 pub use graph_meta::{ApprovalRecord, GraphMeta, LockState, OwnerRef, WorkspaceStatus};

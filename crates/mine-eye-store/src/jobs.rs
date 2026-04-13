@@ -269,7 +269,14 @@ impl JobQueue for PgJobQueue {
         graph_id: Uuid,
         node_id: Uuid,
     ) -> Result<Option<JobRuntimeStatus>, StoreError> {
-        let row: Option<(Uuid, String, chrono::DateTime<chrono::Utc>, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>, Option<Value>)> = sqlx::query_as(
+        let row: Option<(
+            Uuid,
+            String,
+            chrono::DateTime<chrono::Utc>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<Value>,
+        )> = sqlx::query_as(
             r#"
             SELECT
               id,

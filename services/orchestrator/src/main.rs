@@ -4,22 +4,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_stream::stream;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
-use axum::response::Response;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::Response;
 use axum::routing::{delete, get, get_service, patch, post};
 use axum::{Extension, Json, Router};
-use async_stream::stream;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 mod ai_chat;
 mod ingest_synth;
+mod registry;
 mod viewer_manifest;
-pub(crate) const NODE_REGISTRY_JSON: &str = include_str!("node-registry.json");
 
+use crate::registry::NodeRegistry;
 use mine_eye_graph::propagate_stale;
 use mine_eye_scheduler::{collect_dirty_nodes, Scheduler};
 use mine_eye_store::{JobQueue, PgJobQueue, PgStore, StoreError};
@@ -35,8 +36,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::types::chrono;
 use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 use viewer_manifest::ViewerManifest;
 
@@ -133,7 +134,10 @@ fn default_authorized_parties() -> Vec<String> {
 }
 
 fn extract_session_token(headers: &axum::http::HeaderMap) -> Option<String> {
-    if let Some(value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+    if let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(token) = value.strip_prefix("Bearer ") {
             let trimmed = token.trim();
             if !trimmed.is_empty() {
@@ -160,21 +164,34 @@ struct UnverifiedClerkClaims {
 }
 
 fn parse_unverified_issuer(token: &str) -> Result<Option<String>, (StatusCode, String)> {
-    let payload = token
-        .split('.')
-        .nth(1)
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid Clerk token payload".into()))?;
-    let decoded = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk token payload: {e}")))?;
-    let claims = serde_json::from_slice::<UnverifiedClerkClaims>(&decoded)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk token claims: {e}")))?;
+    let payload = token.split('.').nth(1).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "invalid Clerk token payload".into(),
+        )
+    })?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid Clerk token payload: {e}"),
+        )
+    })?;
+    let claims = serde_json::from_slice::<UnverifiedClerkClaims>(&decoded).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid Clerk token claims: {e}"),
+        )
+    })?;
     Ok(claims.iss)
 }
 
 fn jwks_url_from_frontend_api(frontend_api: &str) -> Result<String, (StatusCode, String)> {
-    let url = reqwest::Url::parse(frontend_api)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk issuer URL: {e}")))?;
+    let url = reqwest::Url::parse(frontend_api).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid Clerk issuer URL: {e}"),
+        )
+    })?;
     let host = url
         .host_str()
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk issuer host".into()))?;
@@ -207,26 +224,42 @@ fn resolve_clerk_jwks_url(token: &str) -> Result<String, (StatusCode, String)> {
             return jwks_url_from_frontend_api(trimmed);
         }
     }
-    let iss = parse_unverified_issuer(token)?
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk issuer claim".into()))?;
+    let iss = parse_unverified_issuer(token)?.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "missing Clerk issuer claim".into(),
+        )
+    })?;
     jwks_url_from_frontend_api(&iss)
 }
 
-async fn refresh_clerk_jwks(
-    state: &AppState,
-    jwks_url: &str,
-) -> Result<(), (StatusCode, String)> {
+async fn refresh_clerk_jwks(state: &AppState, jwks_url: &str) -> Result<(), (StatusCode, String)> {
     let jwks = state
         .clerk_http
         .get(jwks_url)
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("failed to fetch Clerk JWKS: {e}")))?
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to fetch Clerk JWKS: {e}"),
+            )
+        })?
         .error_for_status()
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("failed to fetch Clerk JWKS: {e}")))?
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to fetch Clerk JWKS: {e}"),
+            )
+        })?
         .json::<ClerkJwksResponse>()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("invalid Clerk JWKS payload: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("invalid Clerk JWKS payload: {e}"),
+            )
+        })?;
 
     let mut next_keys = HashMap::new();
     for key in jwks.keys {
@@ -235,7 +268,10 @@ async fn refresh_clerk_jwks(
         next_keys.insert(key.kid, ClerkRsaKey { n, e });
     }
     if next_keys.is_empty() {
-        return Err((StatusCode::BAD_GATEWAY, "Clerk JWKS did not contain any RSA keys".into()));
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "Clerk JWKS did not contain any RSA keys".into(),
+        ));
     }
 
     let mut cache = state.clerk_jwks_cache.write().await;
@@ -275,32 +311,55 @@ async fn verify_clerk_token(
     state: &AppState,
     token: &str,
 ) -> Result<AuthContext, (StatusCode, String)> {
-    let header = decode_header(token)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid session token header: {e}")))?;
+    let header = decode_header(token).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid session token header: {e}"),
+        )
+    })?;
     if header.alg != Algorithm::RS256 {
-        return Err((StatusCode::UNAUTHORIZED, "unsupported Clerk token algorithm".into()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "unsupported Clerk token algorithm".into(),
+        ));
     }
     let kid = header
         .kid
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Clerk key id".into()))?;
     let jwks_url = resolve_clerk_jwks_url(token)?;
     let rsa_key = cached_clerk_key(state, &jwks_url, &kid).await?;
-    let decoding_key = DecodingKey::from_rsa_components(&rsa_key.n, &rsa_key.e)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid Clerk decoding key: {e}")))?;
+    let decoding_key = DecodingKey::from_rsa_components(&rsa_key.n, &rsa_key.e).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("invalid Clerk decoding key: {e}"),
+        )
+    })?;
 
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_aud = false;
 
     let claims = decode::<ClerkClaims>(token, &decoding_key, &validation)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid session token: {e}")))?
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                format!("invalid session token: {e}"),
+            )
+        })?
         .claims;
 
     if matches!(claims.sts.as_deref(), Some("pending")) {
-        return Err((StatusCode::UNAUTHORIZED, "session is pending organization activation".into()));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "session is pending organization activation".into(),
+        ));
     }
 
     if let Some(azp) = claims.azp.as_deref() {
-        if !state.clerk_authorized_parties.iter().any(|allowed| allowed == azp) {
+        if !state
+            .clerk_authorized_parties
+            .iter()
+            .any(|allowed| allowed == azp)
+        {
             return Err((StatusCode::UNAUTHORIZED, "invalid authorized party".into()));
         }
     }
@@ -428,13 +487,12 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(Any);
 
     let artifact_dir = PathBuf::from(&artifact_root);
-    let immutable_files = get_service(
-        ServeDir::new(artifact_dir.clone()).append_index_html_on_directories(false),
-    )
-    .layer(SetResponseHeaderLayer::if_not_present(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
-    ));
+    let immutable_files =
+        get_service(ServeDir::new(artifact_dir.clone()).append_index_html_on_directories(false))
+            .layer(SetResponseHeaderLayer::if_not_present(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            ));
     let protected = Router::new()
         .route("/registry/nodes", get(get_node_registry))
         .route("/chart-templates", get(list_chart_templates))
@@ -488,7 +546,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphs/{graph_id}/edges", post(add_edge))
         .route("/graphs/{graph_id}/edges/{edge_id}", delete(delete_edge))
         .route("/graphs/{graph_id}/run", post(run_graph))
-        .route("/graphs/{graph_id}/uploads/tabular", post(upload_tabular_file))
+        .route(
+            "/graphs/{graph_id}/uploads/tabular",
+            post(upload_tabular_file),
+        )
         .route("/graphs/{graph_id}/artifacts", get(list_artifacts))
         .route(
             "/graphs/{graph_id}/viewers/{viewer_node_id}/manifest",
@@ -525,18 +586,19 @@ async fn health() -> &'static str {
 }
 
 async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let mut v: serde_json::Value = serde_json::from_str(NODE_REGISTRY_JSON)
+    let registry =
+        NodeRegistry::global().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut v = serde_json::to_value(registry.root())
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if let Some(nodes) = v.get_mut("nodes").and_then(|x| x.as_array_mut()) {
         for n in nodes {
-            let Some(obj) = n.as_object_mut() else { continue };
+            let Some(obj) = n.as_object_mut() else {
+                continue;
+            };
             if obj.get("interaction").is_some() {
                 continue;
             }
-            let kind = obj
-                .get("kind")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default();
+            let kind = obj.get("kind").and_then(|x| x.as_str()).unwrap_or_default();
             let edit_enabled = matches!(
                 kind,
                 "collar_ingest"
@@ -554,8 +616,19 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "tilebroker"
             );
             let edit_tab = match kind {
-                "collar_ingest" | "survey_ingest" | "surface_sample_ingest" | "assay_ingest" | "observation_ingest" | "magnetic_model" => "mapping",
-                "data_model_transform" | "assay_heatmap" | "heatmap_raster_tile_cache" | "terrain_adjust" | "surface_iso_extract" | "aoi" | "tilebroker" => "config",
+                "collar_ingest"
+                | "survey_ingest"
+                | "surface_sample_ingest"
+                | "assay_ingest"
+                | "observation_ingest"
+                | "magnetic_model" => "mapping",
+                "data_model_transform"
+                | "assay_heatmap"
+                | "heatmap_raster_tile_cache"
+                | "terrain_adjust"
+                | "surface_iso_extract"
+                | "aoi"
+                | "tilebroker" => "config",
                 _ => "summary",
             };
             obj.insert(
@@ -600,14 +673,16 @@ async fn list_chart_templates(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let out = rows
         .into_iter()
-        .map(|(id, key, name, description, template_schema, updated_at)| ChartTemplateDto {
-            id,
-            key,
-            name,
-            description,
-            template_schema,
-            updated_at,
-        })
+        .map(
+            |(id, key, name, description, template_schema, updated_at)| ChartTemplateDto {
+                id,
+                key,
+                name,
+                description,
+                template_schema,
+                updated_at,
+            },
+        )
         .collect::<Vec<_>>();
     Ok(Json(out))
 }
@@ -644,7 +719,12 @@ async fn search_epsg(
         .header("accept", "application/json")
         .send()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("epsg upstream error: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("epsg upstream error: {}", e),
+            )
+        })?;
     if !resp.status().is_success() {
         return Err((
             StatusCode::BAD_GATEWAY,
@@ -919,11 +999,7 @@ async fn commit_graph_revision(
     let branches = store.list_branches(graph_id).await?;
     let branch = branch_id
         .and_then(|id| branches.iter().find(|b| b.id == id))
-        .or_else(|| {
-            branches
-        .iter()
-        .find(|b| b.name == "main")
-        })
+        .or_else(|| branches.iter().find(|b| b.name == "main"))
         .or_else(|| branches.first());
 
     let branch_id = if let Some(b) = branch {
@@ -990,7 +1066,8 @@ fn state_from_snapshot(s: mine_eye_graph::GraphSnapshot) -> GraphState {
 fn state_from_revision_meta(meta: &serde_json::Value) -> Option<GraphState> {
     let snap = meta.get("snapshot")?;
     let nodes: Vec<NodeRecord> = serde_json::from_value(snap.get("nodes")?.clone()).ok()?;
-    let edges: Vec<mine_eye_graph::EdgeRef> = serde_json::from_value(snap.get("edges")?.clone()).ok()?;
+    let edges: Vec<mine_eye_graph::EdgeRef> =
+        serde_json::from_value(snap.get("edges")?.clone()).ok()?;
     Some(GraphState { nodes, edges })
 }
 
@@ -1006,9 +1083,12 @@ fn merge_graph_states_3way(
     source: &GraphState,
     target: &GraphState,
 ) -> Result<GraphState, serde_json::Value> {
-    let base_nodes: HashMap<Uuid, NodeRecord> = base.nodes.iter().cloned().map(|n| (n.id, n)).collect();
-    let source_nodes: HashMap<Uuid, NodeRecord> = source.nodes.iter().cloned().map(|n| (n.id, n)).collect();
-    let target_nodes: HashMap<Uuid, NodeRecord> = target.nodes.iter().cloned().map(|n| (n.id, n)).collect();
+    let base_nodes: HashMap<Uuid, NodeRecord> =
+        base.nodes.iter().cloned().map(|n| (n.id, n)).collect();
+    let source_nodes: HashMap<Uuid, NodeRecord> =
+        source.nodes.iter().cloned().map(|n| (n.id, n)).collect();
+    let target_nodes: HashMap<Uuid, NodeRecord> =
+        target.nodes.iter().cloned().map(|n| (n.id, n)).collect();
 
     let mut all_node_ids = HashSet::new();
     all_node_ids.extend(base_nodes.keys().copied());
@@ -1034,7 +1114,9 @@ fn merge_graph_states_3way(
                 if node_def(sn) == node_def(tn) {
                     merged_nodes.insert(id, sn.clone());
                 } else {
-                    conflicts.push(serde_json::json!({"type":"same_node_added_differently","node_id":id}));
+                    conflicts.push(
+                        serde_json::json!({"type":"same_node_added_differently","node_id":id}),
+                    );
                 }
             }
             (Some(_), None, None) => {}
@@ -1059,26 +1141,50 @@ fn merge_graph_states_3way(
                 } else if tdef == bdef {
                     merged_nodes.insert(id, sn.clone());
                 } else {
-                    conflicts.push(serde_json::json!({"type":"node_edited_differently","node_id":id}));
+                    conflicts
+                        .push(serde_json::json!({"type":"node_edited_differently","node_id":id}));
                 }
             }
         }
     }
 
-    let base_edges: HashMap<(Uuid, String, Uuid, String, SemanticPortType), mine_eye_graph::EdgeRef> =
-        base.edges.iter().cloned().map(|e| (edge_key(&e), e)).collect();
-    let source_edges: HashMap<(Uuid, String, Uuid, String, SemanticPortType), mine_eye_graph::EdgeRef> =
-        source.edges.iter().cloned().map(|e| (edge_key(&e), e)).collect();
-    let target_edges: HashMap<(Uuid, String, Uuid, String, SemanticPortType), mine_eye_graph::EdgeRef> =
-        target.edges.iter().cloned().map(|e| (edge_key(&e), e)).collect();
+    let base_edges: HashMap<
+        (Uuid, String, Uuid, String, SemanticPortType),
+        mine_eye_graph::EdgeRef,
+    > = base
+        .edges
+        .iter()
+        .cloned()
+        .map(|e| (edge_key(&e), e))
+        .collect();
+    let source_edges: HashMap<
+        (Uuid, String, Uuid, String, SemanticPortType),
+        mine_eye_graph::EdgeRef,
+    > = source
+        .edges
+        .iter()
+        .cloned()
+        .map(|e| (edge_key(&e), e))
+        .collect();
+    let target_edges: HashMap<
+        (Uuid, String, Uuid, String, SemanticPortType),
+        mine_eye_graph::EdgeRef,
+    > = target
+        .edges
+        .iter()
+        .cloned()
+        .map(|e| (edge_key(&e), e))
+        .collect();
 
     let mut all_edge_keys = HashSet::new();
     all_edge_keys.extend(base_edges.keys().cloned());
     all_edge_keys.extend(source_edges.keys().cloned());
     all_edge_keys.extend(target_edges.keys().cloned());
 
-    let mut merged_edges: HashMap<(Uuid, String, Uuid, String, SemanticPortType), mine_eye_graph::EdgeRef> =
-        HashMap::new();
+    let mut merged_edges: HashMap<
+        (Uuid, String, Uuid, String, SemanticPortType),
+        mine_eye_graph::EdgeRef,
+    > = HashMap::new();
     for key in all_edge_keys {
         match (
             base_edges.get(&key),
@@ -1281,10 +1387,18 @@ async fn diff_graph_revisions(
         .find(|r| r.id == to_revision_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "to revision not found".to_string()))?;
 
-    let from_state = state_from_revision_meta(&from.meta)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "from revision missing snapshot".to_string()))?;
-    let to_state = state_from_revision_meta(&to.meta)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "to revision missing snapshot".to_string()))?;
+    let from_state = state_from_revision_meta(&from.meta).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "from revision missing snapshot".to_string(),
+        )
+    })?;
+    let to_state = state_from_revision_meta(&to.meta).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "to revision missing snapshot".to_string(),
+        )
+    })?;
 
     Ok(Json(serde_json::json!({
         "from_revision_id": from_revision_id,
@@ -1312,9 +1426,7 @@ async fn commit_current_to_branch(
         &s.store,
         graph_id,
         &auth.user_id,
-        body.event
-            .as_deref()
-            .unwrap_or("manual_branch_commit"),
+        body.event.as_deref().unwrap_or("manual_branch_commit"),
         Some(branch_id),
         body.details.unwrap_or_else(|| serde_json::json!({})),
     )
@@ -1345,9 +1457,12 @@ async fn checkout_graph_branch(
         .iter()
         .find(|b| b.id == branch_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "branch not found".to_string()))?;
-    let head_id = branch
-        .head_revision_id
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "branch has no head revision".to_string()))?;
+    let head_id = branch.head_revision_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "branch has no head revision".to_string(),
+        )
+    })?;
 
     let revs = s
         .store
@@ -1358,8 +1473,12 @@ async fn checkout_graph_branch(
         .into_iter()
         .find(|r| r.id == head_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "head revision not found".to_string()))?;
-    let state = state_from_revision_meta(&head.meta)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "head revision missing snapshot".to_string()))?;
+    let state = state_from_revision_meta(&head.meta).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "head revision missing snapshot".to_string(),
+        )
+    })?;
 
     s.store
         .replace_graph_definition(graph_id, &state.nodes, &state.edges)
@@ -1471,9 +1590,12 @@ async fn execute_graph_promotion(
         .find(|b| b.id == body.target_branch_id)
         .ok_or_else(|| (StatusCode::NOT_FOUND, "target branch not found".to_string()))?;
 
-    let source_head = source
-        .head_revision_id
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "source branch has no head revision".to_string()))?;
+    let source_head = source.head_revision_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "source branch has no head revision".to_string(),
+        )
+    })?;
     let target_head = target.head_revision_id;
     let source_base = source.base_revision_id;
 
@@ -1728,7 +1850,14 @@ fn stable_graph_sig(snap: &mine_eye_graph::GraphSnapshot, arts: &[ArtifactEntry]
     let mut nodes = snap.nodes.values().cloned().collect::<Vec<_>>();
     nodes.sort_by_key(|n| n.id);
     let mut edges = snap.edges.clone();
-    edges.sort_by_key(|e| (e.from_node, e.to_node, e.from_port.clone(), e.to_port.clone()));
+    edges.sort_by_key(|e| {
+        (
+            e.from_node,
+            e.to_node,
+            e.from_port.clone(),
+            e.to_port.clone(),
+        )
+    });
     let mut art_map: BTreeMap<String, String> = BTreeMap::new();
     for a in arts {
         art_map.insert(format!("{}:{}", a.node_id, a.key), a.content_hash.clone());
@@ -1745,7 +1874,10 @@ async fn graph_events(
     State(s): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(graph_id): Path<Uuid>,
-) -> Result<Sse<impl futures_core::Stream<Item = Result<Event, std::convert::Infallible>>>, (StatusCode, String)> {
+) -> Result<
+    Sse<impl futures_core::Stream<Item = Result<Event, std::convert::Infallible>>>,
+    (StatusCode, String),
+> {
     require_graph_access(&s, &auth, graph_id).await?;
     let stream = stream! {
         let mut last_sig = String::new();
@@ -1791,7 +1923,8 @@ struct AddEdgeReq {
     from_port: String,
     to_node: Uuid,
     to_port: String,
-    semantic_type: SemanticPortType,
+    #[serde(default)]
+    semantic_type: Option<String>,
     branch_id: Option<Uuid>,
 }
 
@@ -1802,6 +1935,51 @@ async fn add_edge(
     Json(body): Json<AddEdgeReq>,
 ) -> Result<Json<IdResp>, (StatusCode, String)> {
     require_graph_access(&s, &auth, graph_id).await?;
+    let snapshot = s
+        .store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let from_kind = snapshot
+        .nodes
+        .get(&body.from_node)
+        .map(|n| n.config.kind.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("from_node '{}' not found", body.from_node),
+            )
+        })?;
+    let to_kind = snapshot
+        .nodes
+        .get(&body.to_node)
+        .map(|n| n.config.kind.as_str())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("to_node '{}' not found", body.to_node),
+            )
+        })?;
+    let registry =
+        NodeRegistry::global().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let resolved_semantic = registry
+        .resolve_edge_semantic(from_kind, &body.from_port, to_kind, &body.to_port)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if let Some(requested) = body.semantic_type.as_deref() {
+        let requested_semantic: SemanticPortType = requested
+            .parse()
+            .map_err(|e: String| (StatusCode::BAD_REQUEST, e))?;
+        if requested_semantic != resolved_semantic {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "semantic_type '{}' does not match resolved wire semantic '{}'",
+                    requested,
+                    resolved_semantic.as_str()
+                ),
+            ));
+        }
+    }
     let eid = s
         .store
         .add_edge(
@@ -1810,7 +1988,7 @@ async fn add_edge(
             &body.from_port,
             body.to_node,
             &body.to_port,
-            body.semantic_type,
+            resolved_semantic,
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -1824,7 +2002,7 @@ async fn add_edge(
             "edge_id": eid,
             "from_node": body.from_node,
             "to_node": body.to_node,
-            "semantic_type": body.semantic_type
+            "semantic_type": resolved_semantic
         }),
     )
     .await
@@ -1923,9 +2101,8 @@ async fn run_graph(
         .graph_workspace_meta(graph_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let project_crs: Option<CrsRecord> = workspace_meta
-        .as_ref()
-        .and_then(|(_, _, crs)| crs.clone());
+    let project_crs: Option<CrsRecord> =
+        workspace_meta.as_ref().and_then(|(_, _, crs)| crs.clone());
     let workspace_cache_settings = if let Some((workspace_id, _, _)) = workspace_meta.as_ref() {
         s.store
             .workspace_cache_settings(*workspace_id)
@@ -1936,17 +2113,15 @@ async fn run_graph(
         serde_json::json!({})
     };
 
-    let plan = s
-        .scheduler
-        .plan(
-            &snapshot,
-            &dirty,
-            &root_set,
-            &input_map,
-            Uuid::new_v4(),
-            project_crs.clone(),
-            body.include_manual.unwrap_or(false),
-        );
+    let plan = s.scheduler.plan(
+        &snapshot,
+        &dirty,
+        &root_set,
+        &input_map,
+        Uuid::new_v4(),
+        project_crs.clone(),
+        body.include_manual.unwrap_or(false),
+    );
 
     let mut queued = Vec::new();
     for mut job in plan.jobs {
@@ -2073,7 +2248,9 @@ fn detect_delimiter_from_sample(sample: &str) -> u8 {
     best.0
 }
 
-fn profile_tabular_bytes(bytes: &[u8]) -> (u8, Vec<String>, Vec<Vec<String>>, Vec<Vec<String>>, usize) {
+fn profile_tabular_bytes(
+    bytes: &[u8],
+) -> (u8, Vec<String>, Vec<Vec<String>>, Vec<Vec<String>>, usize) {
     let text = String::from_utf8_lossy(bytes);
     let delim = detect_delimiter_from_sample(&text);
     let mut rdr = csv::ReaderBuilder::new()
@@ -2181,13 +2358,21 @@ async fn upload_tabular_file(
         bytes = Some(data.to_vec());
         break;
     }
-    let data = bytes.ok_or_else(|| (StatusCode::BAD_REQUEST, "multipart field `file` is required".to_string()))?;
+    let data = bytes.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "multipart field `file` is required".to_string(),
+        )
+    })?;
     let size_bytes = data.len();
     if size_bytes == 0 {
         return Err((StatusCode::BAD_REQUEST, "empty upload".to_string()));
     }
     if size_bytes > 256 * 1024 * 1024 {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "max upload size is 256 MB".to_string()));
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "max upload size is 256 MB".to_string(),
+        ));
     }
 
     let ws_id = s
@@ -2196,7 +2381,12 @@ async fn upload_tabular_file(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(|(_, ws, _)| ws)
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "workspace not found for graph".to_string()))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "workspace not found for graph".to_string(),
+            )
+        })?;
 
     let content_hash = hash_bytes(&data);
     let key = format!(
@@ -2217,7 +2407,8 @@ async fn upload_tabular_file(
 
     let sample_text = String::from_utf8_lossy(&data);
     let fmt = detect_format(&filename, &media_type, &sample_text);
-    let (delim, headers, preview_rows, tail_rows, line_count_estimate) = profile_tabular_bytes(&data);
+    let (delim, headers, preview_rows, tail_rows, line_count_estimate) =
+        profile_tabular_bytes(&data);
     let preview_text = if headers.is_empty() && preview_rows.is_empty() {
         sample_text
             .lines()
@@ -2495,8 +2686,20 @@ async fn demo_seed(
     // Semantic port types per V1SPEC; collar/survey/assay links use distinct types for graph UI.
     let edges_spec: [(Uuid, &str, Uuid, &str, S); 4] = [
         (n_collar, "collars", n_desurvey, "collars_in", S::PointSet),
-        (n_survey, "surveys", n_desurvey, "surveys_in", S::TrajectorySet),
-        (n_desurvey, "trajectory", n_drillhole, "trajectory_in", S::TrajectorySet),
+        (
+            n_survey,
+            "surveys",
+            n_desurvey,
+            "surveys_in",
+            S::TrajectorySet,
+        ),
+        (
+            n_desurvey,
+            "trajectory",
+            n_drillhole,
+            "trajectory_in",
+            S::TrajectorySet,
+        ),
         (n_assay, "assays", n_drillhole, "assays_in", S::IntervalSet),
     ];
     for (from, fp, to, tp, sem) in edges_spec {
@@ -2539,7 +2742,7 @@ async fn demo_seed(
             "assay_points",
             n_viewer,
             "in",
-            SemanticPortType::Table,
+            SemanticPortType::DataTable,
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -2569,17 +2772,15 @@ async fn demo_seed(
     let input_map = build_input_artifacts(&s.store, &snapshot)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let plan = s
-        .scheduler
-        .plan(
-            &snapshot,
-            &dirty,
-            &root_set,
-            &input_map,
-            Uuid::new_v4(),
-            Some(CrsRecord::epsg(4326)),
-            false,
-        );
+    let plan = s.scheduler.plan(
+        &snapshot,
+        &dirty,
+        &root_set,
+        &input_map,
+        Uuid::new_v4(),
+        Some(CrsRecord::epsg(4326)),
+        false,
+    );
 
     for mut job in plan.jobs {
         if job.node_id == n_collar {

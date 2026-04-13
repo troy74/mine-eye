@@ -26,7 +26,7 @@ export const PortTaxon = {
   surveyTable: "domain.survey",
   // Wire aliases (legacy / transport)
   wirePointSet: "wire.point_set",
-  wireTable: "wire.table",
+  wireDataTable: "wire.data_table",
   wireSemanticJson: "wire.semantic_json",
   wireIntervalSet: "wire.interval_set",
   wireTrajectorySet: "wire.trajectory_set",
@@ -48,7 +48,7 @@ export const INHERITS: Record<string, string | null> = {
   [PortTaxon.assayTable]: PortTaxon.dataframe,
   [PortTaxon.surveyTable]: PortTaxon.dataframe,
   [PortTaxon.wirePointSet]: PortTaxon.dataframe2d,
-  [PortTaxon.wireTable]: PortTaxon.dataframe,
+  [PortTaxon.wireDataTable]: PortTaxon.dataframe,
   [PortTaxon.wireSemanticJson]: PortTaxon.dataframe,
   [PortTaxon.wireIntervalSet]: PortTaxon.dataframe,
   [PortTaxon.wireTrajectorySet]: PortTaxon.dataframe3d,
@@ -79,8 +79,8 @@ export function wireSemanticToTaxonomy(semantic: string): string {
   switch (k) {
     case "point_set":
       return PortTaxon.wirePointSet;
-    case "table":
-      return PortTaxon.wireTable;
+    case "data_table":
+      return PortTaxon.wireDataTable;
     case "semantic_json":
       return PortTaxon.wireSemanticJson;
     case "interval_set":
@@ -100,7 +100,7 @@ export function isPlanViewInputSemantic(semantic: string): boolean {
   const k = normalizeSemantic(semantic);
   return (
     k === "point_set" ||
-    k === "table" ||
+    k === "data_table" ||
     k === "semantic_json" ||
     k === "interval_set" ||
     k === "trajectory_set" ||
@@ -114,7 +114,7 @@ export function isSceneViewInputSemantic(semantic: string): boolean {
   const k = normalizeSemantic(semantic);
   return (
     k === "point_set" ||
-    k === "table" ||
+    k === "data_table" ||
     k === "interval_set" ||
     k === "trajectory_set" ||
     k === "surface" ||
@@ -132,6 +132,6 @@ Constrained types inherit from these (e.g. collar ⇒ 3d dataframe with required
 id/az/dip; assays ⇒ tabular with hole/interval codes and grade columns). A collar stream can feed a
 2d consumer (plan view uses x,y only) or 3d; the reverse needs the consumer’s minimum columns.
 
-Wire enum (Rust today): point_set, table, interval_set, trajectory_set, … maps to the taxonomy for UI
+Wire enum (Rust today): point_set, data_table, interval_set, trajectory_set, … maps to the taxonomy for UI
 and future strict validation.
 `.trim();

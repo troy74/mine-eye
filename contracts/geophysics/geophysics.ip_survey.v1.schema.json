@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geophysics.ip_survey.v1",
+  "title": "Induced Polarization Survey",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "type", "survey_mode", "crs", "electrodes", "measurements"],
+  "properties": {
+    "schema_id": { "const": "geophysics.ip_survey.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "type": { "const": "ip_survey" },
+    "survey_mode": { "type": "string" },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "wkt": { "type": ["string", "null"] }
+      }
+    },
+    "electrodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["electrode_id", "x", "y", "z", "crs", "qa_flags"],
+        "properties": {
+          "electrode_id": { "type": "string" },
+          "line_id": { "type": ["string", "null"] },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "z": { "type": "number" },
+          "crs": { "type": "object" },
+          "qa_flags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "measurement_id",
+          "survey_mode",
+          "array_type",
+          "a_id",
+          "b_id",
+          "m_id",
+          "n_id",
+          "current_ma",
+          "voltage_mv",
+          "apparent_resistivity_ohm_m",
+          "chargeability_mv_v",
+          "qa_flags",
+          "attributes"
+        ],
+        "properties": {
+          "measurement_id": { "type": "string" },
+          "line_id": { "type": ["string", "null"] },
+          "survey_mode": { "type": "string" },
+          "array_type": { "type": "string" },
+          "a_id": { "type": "string" },
+          "b_id": { "type": "string" },
+          "m_id": { "type": "string" },
+          "n_id": { "type": "string" },
+          "current_ma": { "type": "number" },
+          "voltage_mv": { "type": "number" },
+          "apparent_resistivity_ohm_m": { "type": "number" },
+          "chargeability_mv_v": { "type": "number" },
+          "gate_start_ms": { "type": ["number", "null"] },
+          "gate_end_ms": { "type": ["number", "null"] },
+          "stack_count": { "type": ["integer", "null"] },
+          "reciprocity_error_pct": { "type": ["number", "null"] },
+          "qa_flags": { "type": "array", "items": { "type": "string" } },
+          "attributes": { "type": ["object", "array", "string", "number", "boolean", "null"] }
+        }
+      }
+    }
+  }
+}

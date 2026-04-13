@@ -3,6 +3,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::commit_graph_revision;
+use crate::registry::NodeRegistry;
 use axum::http::StatusCode;
 use mine_eye_scheduler::{collect_dirty_nodes, Scheduler};
 use mine_eye_store::{JobQueue, PgJobQueue, PgStore};
@@ -13,7 +15,6 @@ use mine_eye_types::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
-use crate::{commit_graph_revision, NODE_REGISTRY_JSON};
 
 const DEFAULT_MODEL: &str = "openai/gpt-5.4";
 const DEFAULT_BASE: &str = "https://openrouter.ai/api/v1";
@@ -94,39 +95,6 @@ struct OrToolCall {
 struct OrFunctionCall {
     name: String,
     arguments: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RegistryRoot {
-    #[serde(default)]
-    nodes: Vec<RegistryNode>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RegistryNode {
-    kind: String,
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
-    category: Option<String>,
-    #[serde(default)]
-    ports: RegistryPorts,
-}
-
-#[derive(Debug, Deserialize, Serialize, Default, Clone)]
-struct RegistryPorts {
-    #[serde(default)]
-    inputs: Vec<RegistryPort>,
-    #[serde(default)]
-    outputs: Vec<RegistryPort>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct RegistryPort {
-    id: String,
-    semantic: String,
 }
 
 pub async fn run_ai_chat(
@@ -227,7 +195,12 @@ pub async fn run_ai_chat(
             .json(&body)
             .send()
             .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("openrouter request failed: {}", e)))?;
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("openrouter request failed: {}", e),
+                )
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -238,10 +211,12 @@ pub async fn run_ai_chat(
             ));
         }
 
-        let raw: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| (StatusCode::BAD_GATEWAY, format!("openrouter decode failed: {}", e)))?;
+        let raw: serde_json::Value = resp.json().await.map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("openrouter decode failed: {}", e),
+            )
+        })?;
 
         let message = raw
             .get("choices")
@@ -267,8 +242,8 @@ pub async fn run_ai_chat(
             }));
 
             for tc in tool_calls {
-                let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .unwrap_or_else(|_| json!({}));
+                let args: serde_json::Value =
+                    serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
                 let r = execute_tool(
                     &store,
                     &jobs,
@@ -285,11 +260,7 @@ pub async fn run_ai_chat(
                 .await;
                 let (ok, summary, payload) = match r {
                     Ok(v) => (true, summarize_tool_payload(&v), v),
-                    Err(e) => (
-                        false,
-                        truncate(&e, 180),
-                        json!({ "error": e }),
-                    ),
+                    Err(e) => (false, truncate(&e, 180), json!({ "error": e })),
                 };
                 tool_events.push(ToolEvent {
                     name: tc.function.name.clone(),
@@ -309,7 +280,8 @@ pub async fn run_ai_chat(
 
         final_text = extract_content_text(message.get("content"));
         if final_text.trim().is_empty() {
-            final_text = "I completed the tool pass but did not receive a final assistant message.".to_string();
+            final_text = "I completed the tool pass but did not receive a final assistant message."
+                .to_string();
         }
         break;
     }
@@ -764,8 +736,14 @@ async fn execute_tool(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "name is required".to_string())?;
-            let head_lines = args.get("head_lines").and_then(|v| v.as_u64()).unwrap_or(25) as usize;
-            let tail_lines = args.get("tail_lines").and_then(|v| v.as_u64()).unwrap_or(25) as usize;
+            let head_lines = args
+                .get("head_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(25) as usize;
+            let tail_lines = args
+                .get("tail_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(25) as usize;
             tool_uploaded_file_top_tail(uploaded_docs, name, head_lines, tail_lines)
         }
         "uploaded_csv_profile" => {
@@ -773,7 +751,10 @@ async fn execute_tool(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "name is required".to_string())?;
-            let sample_rows = args.get("sample_rows").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+            let sample_rows = args
+                .get("sample_rows")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200) as usize;
             tool_uploaded_csv_profile(uploaded_docs, name, sample_rows)
         }
         "suggest_ingest_mapping_from_upload" => {
@@ -821,8 +802,14 @@ async fn execute_tool(
                 .get("include_artifact_samples")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let head_lines = args.get("head_lines").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let tail_lines = args.get("tail_lines").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            let head_lines = args
+                .get("head_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
+            let tail_lines = args
+                .get("tail_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
             tool_graph_audit_bundle(
                 store,
                 artifact_root,
@@ -837,7 +824,8 @@ async fn execute_tool(
         "list_nodes" => tool_list_nodes(store, graph_id).await,
         "list_edges" => tool_list_edges(store, graph_id).await,
         "list_node_artifacts" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             tool_list_node_artifacts(store, node_id).await
         }
         "read_registry_kind" => {
@@ -848,21 +836,38 @@ async fn execute_tool(
             tool_read_registry_kind(kind)
         }
         "read_node" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             tool_read_node(store, graph_id, node_id).await
         }
         "artifact_top_tail" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             let artifact_key = args
                 .get("artifact_key")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let head_lines = args.get("head_lines").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
-            let tail_lines = args.get("tail_lines").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
-            tool_artifact_top_tail(store, artifact_root, node_id, artifact_key, head_lines, tail_lines).await
+            let head_lines = args
+                .get("head_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(40) as usize;
+            let tail_lines = args
+                .get("tail_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(40) as usize;
+            tool_artifact_top_tail(
+                store,
+                artifact_root,
+                node_id,
+                artifact_key,
+                head_lines,
+                tail_lines,
+            )
+            .await
         }
         "json_path_extract" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             let artifact_key = args
                 .get("artifact_key")
                 .and_then(|v| v.as_str())
@@ -874,16 +879,21 @@ async fn execute_tool(
             tool_json_path_extract(store, artifact_root, node_id, artifact_key, path).await
         }
         "csv_profile" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             let artifact_key = args
                 .get("artifact_key")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            let sample_rows = args.get("sample_rows").and_then(|v| v.as_u64()).unwrap_or(200) as usize;
+            let sample_rows = args
+                .get("sample_rows")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200) as usize;
             tool_csv_profile(store, artifact_root, node_id, artifact_key, sample_rows).await
         }
         "suggest_measure_fields" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             let artifact_key = args
                 .get("artifact_key")
                 .and_then(|v| v.as_str())
@@ -898,7 +908,8 @@ async fn execute_tool(
             tool_trace_upstream_tabular_sources(store, graph_id, target, max_depth).await
         }
         "profile_numeric_distribution" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             let artifact_key = args
                 .get("artifact_key")
                 .and_then(|v| v.as_str())
@@ -907,17 +918,28 @@ async fn execute_tool(
                 .get("column")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "column is required".to_string())?;
-            tool_profile_numeric_distribution(store, artifact_root, node_id, artifact_key, column).await
+            tool_profile_numeric_distribution(store, artifact_root, node_id, artifact_key, column)
+                .await
         }
         "infer_transform_patch" => {
             let source_node_id = parse_uuid(args.get("source_node_id"))
                 .ok_or_else(|| "source_node_id is required".to_string())?;
-            let goal = args.get("goal").and_then(|v| v.as_str()).unwrap_or("heatmap");
+            let goal = args
+                .get("goal")
+                .and_then(|v| v.as_str())
+                .unwrap_or("heatmap");
             let preferred_measure = args
                 .get("preferred_measure")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            tool_infer_transform_patch(store, artifact_root, source_node_id, goal, preferred_measure).await
+            tool_infer_transform_patch(
+                store,
+                artifact_root,
+                source_node_id,
+                goal,
+                preferred_measure,
+            )
+            .await
         }
         "preview_graph_diff_for_plan" => {
             let ops = args
@@ -940,27 +962,64 @@ async fn execute_tool(
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "kind is required".to_string())?;
-            let alias = args.get("alias").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let params = args
-                .get("params")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            tool_add_node(store, graph_id, kind, alias, params, apply_mutations, actor, branch_id).await
+            let alias = args
+                .get("alias")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let params = args.get("params").cloned().unwrap_or_else(|| json!({}));
+            tool_add_node(
+                store,
+                graph_id,
+                kind,
+                alias,
+                params,
+                apply_mutations,
+                actor,
+                branch_id,
+            )
+            .await
         }
         "patch_node_config" => {
-            let node_id = parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
+            let node_id =
+                parse_uuid(args.get("node_id")).ok_or_else(|| "node_id is required".to_string())?;
             let patch = args
                 .get("params_patch")
                 .cloned()
                 .ok_or_else(|| "params_patch is required".to_string())?;
-            tool_patch_node_config(store, graph_id, node_id, patch, apply_mutations, actor, branch_id).await
+            tool_patch_node_config(
+                store,
+                graph_id,
+                node_id,
+                patch,
+                apply_mutations,
+                actor,
+                branch_id,
+            )
+            .await
         }
         "wire_nodes" => {
-            let from_node = parse_uuid(args.get("from_node")).ok_or_else(|| "from_node is required".to_string())?;
-            let to_node = parse_uuid(args.get("to_node")).ok_or_else(|| "to_node is required".to_string())?;
-            let from_port = args.get("from_port").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let to_port = args.get("to_port").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let semantic = args.get("semantic_type").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let from_node = parse_uuid(args.get("from_node"))
+                .ok_or_else(|| "from_node is required".to_string())?;
+            let to_node =
+                parse_uuid(args.get("to_node")).ok_or_else(|| "to_node is required".to_string())?;
+            let from_port = args
+                .get("from_port")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let to_port = args
+                .get("to_port")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let semantic = args
+                .get("semantic_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if from_port.is_empty() || to_port.is_empty() || semantic.is_empty() {
                 return Err("from_port, to_port and semantic_type are required".to_string());
             }
@@ -979,15 +1038,22 @@ async fn execute_tool(
             .await
         }
         "unwire_edge" => {
-            let edge_id = parse_uuid(args.get("edge_id")).ok_or_else(|| "edge_id is required".to_string())?;
+            let edge_id =
+                parse_uuid(args.get("edge_id")).ok_or_else(|| "edge_id is required".to_string())?;
             tool_unwire_edge(store, graph_id, edge_id, apply_mutations, actor, branch_id).await
         }
         _ => Err(format!("unknown tool: {}", name)),
     }
 }
 
-async fn tool_list_nodes(store: &Arc<PgStore>, graph_id: Uuid) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+async fn tool_list_nodes(
+    store: &Arc<PgStore>,
+    graph_id: Uuid,
+) -> Result<serde_json::Value, String> {
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut out = snap
         .nodes
         .values()
@@ -1008,7 +1074,12 @@ async fn tool_list_nodes(store: &Arc<PgStore>, graph_id: Uuid) -> Result<serde_j
             })
         })
         .collect::<Vec<_>>();
-    out.sort_by_key(|v| v.get("node_id").and_then(|x| x.as_str()).unwrap_or("").to_string());
+    out.sort_by_key(|v| {
+        v.get("node_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
     Ok(json!({ "nodes": out }))
 }
 
@@ -1087,12 +1158,21 @@ fn tool_suggest_ingest_mapping_from_upload(
     let doc = find_uploaded_doc(uploaded_docs, name)?;
     let (headers, rows, delimiter) = parse_delimited_text(&doc.text);
     if headers.is_empty() {
-        return Err(format!("uploaded file '{}' has no tabular header row", name));
+        return Err(format!(
+            "uploaded file '{}' has no tabular header row",
+            name
+        ));
     }
     let mapping = infer_ingest_mapping(node_kind, &headers);
     let required_missing = required_mapping_keys(node_kind)
         .into_iter()
-        .filter(|k| mapping.get(*k).and_then(|v| v.as_str()).unwrap_or("").is_empty())
+        .filter(|k| {
+            mapping
+                .get(*k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+        })
         .collect::<Vec<_>>();
     let confidence = mapping_confidence_score(node_kind, &mapping);
     Ok(json!({
@@ -1119,7 +1199,10 @@ async fn tool_apply_upload_to_ingest_node(
     branch_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
     let doc = find_uploaded_doc(uploaded_docs, name)?;
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let node = snap
         .nodes
         .get(&node_id)
@@ -1142,7 +1225,13 @@ async fn tool_apply_upload_to_ingest_node(
     let mapping = infer_ingest_mapping(kind, &headers);
     let missing_required = required_mapping_keys(kind)
         .into_iter()
-        .filter(|k| mapping.get(*k).and_then(|v| v.as_str()).unwrap_or("").is_empty())
+        .filter(|k| {
+            mapping
+                .get(*k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+        })
         .collect::<Vec<_>>();
     let patch = json!({
         "ui": {
@@ -1194,8 +1283,11 @@ async fn tool_graph_audit_bundle(
     head_lines: usize,
     tail_lines: usize,
 ) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
-    let registry = load_registry_ports()?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let registry = NodeRegistry::global()?;
     let capabilities = tool_registry_capability_matrix()?;
 
     let mut node_rows: Vec<serde_json::Value> = Vec::new();
@@ -1220,8 +1312,12 @@ async fn tool_graph_audit_bundle(
         if exec == "failed" {
             failed_nodes.push(node_id);
         }
-        if matches!(n.config.kind.as_str(), "collar_ingest" | "survey_ingest" | "assay_ingest" | "surface_sample_ingest")
-            && last_error.to_ascii_lowercase().contains("missing input_payload")
+        if matches!(
+            n.config.kind.as_str(),
+            "collar_ingest" | "survey_ingest" | "assay_ingest" | "surface_sample_ingest"
+        ) && last_error
+            .to_ascii_lowercase()
+            .contains("missing input_payload")
         {
             ingest_missing_payload.push(node_id);
         }
@@ -1280,7 +1376,10 @@ async fn tool_graph_audit_bundle(
             None
         };
 
-        let ports = registry.get(&n.config.kind).cloned().unwrap_or_default();
+        let ports = registry
+            .ports_for_kind(&n.config.kind)
+            .cloned()
+            .unwrap_or_default();
         node_rows.push(json!({
             "node_id": n.id,
             "kind": n.config.kind,
@@ -1319,11 +1418,16 @@ async fn tool_graph_audit_bundle(
                 "to_node": e.to_node,
                 "to_kind": tk,
                 "to_port": e.to_port,
-                "semantic_type": format!("{:?}", e.semantic_type).to_ascii_lowercase(),
+                "semantic_type": e.semantic_type.as_str(),
             })
         })
         .collect::<Vec<_>>();
-    edges.sort_by_key(|v| v.get("edge_id").and_then(|x| x.as_str()).unwrap_or("").to_string());
+    edges.sort_by_key(|v| {
+        v.get("edge_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
 
     Ok(json!({
         "graph_id": graph_id,
@@ -1348,7 +1452,10 @@ async fn tool_run_graph(
     dirty_roots: Option<Vec<Uuid>>,
     include_manual: bool,
 ) -> Result<serde_json::Value, String> {
-    let snapshot = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+    let snapshot = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let roots = dirty_roots.unwrap_or_else(|| snapshot.nodes.keys().copied().collect::<Vec<_>>());
     let root_set: HashSet<Uuid> = roots.iter().copied().collect();
     let dirty = collect_dirty_nodes(&snapshot, &roots);
@@ -1419,8 +1526,7 @@ async fn build_input_artifacts_for_chat(
 }
 
 fn tool_registry_capability_matrix() -> Result<serde_json::Value, String> {
-    let root: RegistryRoot = serde_json::from_str(NODE_REGISTRY_JSON)
-        .map_err(|e| format!("node registry parse failed: {}", e))?;
+    let root = NodeRegistry::global()?.root().clone();
     let mut rows = root
         .nodes
         .into_iter()
@@ -1430,7 +1536,10 @@ fn tool_registry_capability_matrix() -> Result<serde_json::Value, String> {
             let archived = {
                 let l = label.to_ascii_lowercase();
                 let r = role.to_ascii_lowercase();
-                l.contains("historic") || l.contains("archive") || r.contains("historic") || r.contains("archive")
+                l.contains("historic")
+                    || l.contains("archive")
+                    || r.contains("historic")
+                    || r.contains("archive")
             };
             json!({
                 "kind": n.kind,
@@ -1444,12 +1553,23 @@ fn tool_registry_capability_matrix() -> Result<serde_json::Value, String> {
             })
         })
         .collect::<Vec<_>>();
-    rows.sort_by_key(|v| v.get("kind").and_then(|x| x.as_str()).unwrap_or("").to_string());
+    rows.sort_by_key(|v| {
+        v.get("kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
     Ok(json!({ "kinds": rows }))
 }
 
-async fn tool_list_edges(store: &Arc<PgStore>, graph_id: Uuid) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+async fn tool_list_edges(
+    store: &Arc<PgStore>,
+    graph_id: Uuid,
+) -> Result<serde_json::Value, String> {
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut out = snap
         .edges
         .iter()
@@ -1460,11 +1580,16 @@ async fn tool_list_edges(store: &Arc<PgStore>, graph_id: Uuid) -> Result<serde_j
                 "from_port": e.from_port,
                 "to_node": e.to_node,
                 "to_port": e.to_port,
-                "semantic_type": format!("{:?}", e.semantic_type).to_ascii_lowercase(),
+                "semantic_type": e.semantic_type.as_str(),
             })
         })
         .collect::<Vec<_>>();
-    out.sort_by_key(|v| v.get("edge_id").and_then(|x| x.as_str()).unwrap_or("").to_string());
+    out.sort_by_key(|v| {
+        v.get("edge_id")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
     Ok(json!({ "edges": out }))
 }
 
@@ -1500,12 +1625,10 @@ async fn tool_list_node_artifacts(
 }
 
 fn tool_read_registry_kind(kind: &str) -> Result<serde_json::Value, String> {
-    let root: RegistryRoot = serde_json::from_str(NODE_REGISTRY_JSON)
-        .map_err(|e| format!("node registry parse failed: {}", e))?;
-    let n = root
-        .nodes
-        .into_iter()
-        .find(|n| n.kind == kind)
+    let registry = NodeRegistry::global()?;
+    let n = registry
+        .kind(kind)
+        .cloned()
         .ok_or_else(|| format!("kind '{}' not found in registry", kind))?;
     Ok(json!({
         "kind": n.kind,
@@ -1522,7 +1645,10 @@ async fn tool_read_node(
     graph_id: Uuid,
     node_id: Uuid,
 ) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let node = snap
         .nodes
         .get(&node_id)
@@ -1544,7 +1670,8 @@ async fn tool_artifact_top_tail(
     head_lines: usize,
     tail_lines: usize,
 ) -> Result<serde_json::Value, String> {
-    let (selected_key, bytes) = read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
+    let (selected_key, bytes) =
+        read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
 
     let mut is_text = true;
     for b in bytes.iter().take(1024) {
@@ -1614,10 +1741,12 @@ async fn tool_json_path_extract(
     artifact_key: Option<String>,
     path: &str,
 ) -> Result<serde_json::Value, String> {
-    let (selected_key, bytes) = read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
+    let (selected_key, bytes) =
+        read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
     let root: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("artifact is not valid JSON: {}", e))?;
-    let found = json_lookup_path(&root, path).ok_or_else(|| format!("path '{}' not found", path))?;
+    let found =
+        json_lookup_path(&root, path).ok_or_else(|| format!("path '{}' not found", path))?;
     Ok(json!({
         "artifact_key": selected_key,
         "path": path,
@@ -1632,14 +1761,23 @@ async fn tool_csv_profile(
     artifact_key: Option<String>,
     sample_rows: usize,
 ) -> Result<serde_json::Value, String> {
-    let (selected_key, bytes) = read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
+    let (selected_key, bytes) =
+        read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
     let text = String::from_utf8(bytes).map_err(|_| "artifact is not UTF-8 text".to_string())?;
-    let lines = text.lines().filter(|l| !l.trim().is_empty()).take(1200).collect::<Vec<_>>();
+    let lines = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(1200)
+        .collect::<Vec<_>>();
     if lines.is_empty() {
         return Err("artifact has no non-empty lines".to_string());
     }
     let delimiter = detect_delimiter(lines[0]);
-    let split = |line: &str| line.split(delimiter).map(|s| s.trim().to_string()).collect::<Vec<_>>();
+    let split = |line: &str| {
+        line.split(delimiter)
+            .map(|s| s.trim().to_string())
+            .collect::<Vec<_>>()
+    };
 
     let headers = split(lines[0]);
     if headers.is_empty() {
@@ -1686,14 +1824,23 @@ async fn tool_suggest_measure_fields(
     artifact_key: Option<String>,
     top_k: usize,
 ) -> Result<serde_json::Value, String> {
-    let (selected_key, bytes) = read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
+    let (selected_key, bytes) =
+        read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
     let text = String::from_utf8(bytes).map_err(|_| "artifact is not UTF-8 text".to_string())?;
-    let lines = text.lines().filter(|l| !l.trim().is_empty()).take(1200).collect::<Vec<_>>();
+    let lines = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(1200)
+        .collect::<Vec<_>>();
     if lines.len() < 2 {
         return Err("artifact needs header + data rows for field suggestion".to_string());
     }
     let delimiter = detect_delimiter(lines[0]);
-    let split = |line: &str| line.split(delimiter).map(|s| s.trim().to_string()).collect::<Vec<_>>();
+    let split = |line: &str| {
+        line.split(delimiter)
+            .map(|s| s.trim().to_string())
+            .collect::<Vec<_>>()
+    };
     let headers = split(lines[0]);
     if headers.is_empty() {
         return Err("could not parse headers".to_string());
@@ -1756,7 +1903,10 @@ async fn tool_trace_upstream_tabular_sources(
     target_node_id: Uuid,
     max_depth: usize,
 ) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     if !snap.nodes.contains_key(&target_node_id) {
         return Err(format!("target_node_id {} not found", target_node_id));
     }
@@ -1819,9 +1969,14 @@ async fn tool_profile_numeric_distribution(
     artifact_key: Option<String>,
     column: &str,
 ) -> Result<serde_json::Value, String> {
-    let (selected_key, bytes) = read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
+    let (selected_key, bytes) =
+        read_artifact_bytes(store, artifact_root, node_id, artifact_key).await?;
     let text = String::from_utf8(bytes).map_err(|_| "artifact is not UTF-8 text".to_string())?;
-    let lines = text.lines().filter(|l| !l.trim().is_empty()).take(5000).collect::<Vec<_>>();
+    let lines = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(5000)
+        .collect::<Vec<_>>();
     if lines.len() < 2 {
         return Err("artifact needs header + rows".to_string());
     }
@@ -1887,14 +2042,8 @@ async fn tool_infer_transform_patch(
     goal: &str,
     preferred_measure: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let suggested = tool_suggest_measure_fields(
-        store,
-        artifact_root,
-        source_node_id,
-        None,
-        8,
-    )
-    .await?;
+    let suggested =
+        tool_suggest_measure_fields(store, artifact_root, source_node_id, None, 8).await?;
     let top_candidates = suggested
         .get("top_candidates")
         .and_then(|v| v.as_array())
@@ -1903,8 +2052,17 @@ async fn tool_infer_transform_patch(
     let chosen = if let Some(pref) = preferred_measure.as_deref() {
         top_candidates
             .iter()
-            .find(|v| v.get("column").and_then(|x| x.as_str()).map(|s| s.eq_ignore_ascii_case(pref)).unwrap_or(false))
-            .and_then(|v| v.get("column").and_then(|x| x.as_str()).map(|s| s.to_string()))
+            .find(|v| {
+                v.get("column")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.eq_ignore_ascii_case(pref))
+                    .unwrap_or(false)
+            })
+            .and_then(|v| {
+                v.get("column")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| pref.to_string())
     } else {
         top_candidates
@@ -1942,8 +2100,11 @@ async fn tool_preview_graph_diff_for_plan(
     graph_id: Uuid,
     operations: &[serde_json::Value],
 ) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
-    let registry = load_registry_ports()?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let registry = NodeRegistry::global()?;
     let mut results = Vec::new();
     for (i, op) in operations.iter().enumerate() {
         let t = op.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1951,9 +2112,15 @@ async fn tool_preview_graph_diff_for_plan(
             "patch_node_config" => {
                 let node_id = parse_uuid(op.get("node_id"));
                 match node_id {
-                    Some(id) if snap.nodes.contains_key(&id) => json!({"index": i, "type": t, "ok": true, "summary": "node exists"}),
-                    Some(id) => json!({"index": i, "type": t, "ok": false, "summary": format!("node {} not found", id)}),
-                    None => json!({"index": i, "type": t, "ok": false, "summary": "node_id missing/invalid"})
+                    Some(id) if snap.nodes.contains_key(&id) => {
+                        json!({"index": i, "type": t, "ok": true, "summary": "node exists"})
+                    }
+                    Some(id) => {
+                        json!({"index": i, "type": t, "ok": false, "summary": format!("node {} not found", id)})
+                    }
+                    None => {
+                        json!({"index": i, "type": t, "ok": false, "summary": "node_id missing/invalid"})
+                    }
                 }
             }
             "wire_nodes" => {
@@ -1961,24 +2128,37 @@ async fn tool_preview_graph_diff_for_plan(
                 let to = parse_uuid(op.get("to_node"));
                 let fp = op.get("from_port").and_then(|v| v.as_str()).unwrap_or("");
                 let tp = op.get("to_port").and_then(|v| v.as_str()).unwrap_or("");
-                let sem = op.get("semantic_type").and_then(|v| v.as_str()).unwrap_or("");
                 let ok = if let (Some(f), Some(tn)) = (from, to) {
-                    if let (Some(fn_rec), Some(tn_rec)) = (snap.nodes.get(&f), snap.nodes.get(&tn)) {
-                        validate_wire_against_registry(&registry, &fn_rec.config.kind, fp, &tn_rec.config.kind, tp, sem).is_ok()
-                    } else { false }
-                } else { false };
+                    if let (Some(fn_rec), Some(tn_rec)) = (snap.nodes.get(&f), snap.nodes.get(&tn))
+                    {
+                        registry
+                            .resolve_edge_semantic(&fn_rec.config.kind, fp, &tn_rec.config.kind, tp)
+                            .is_ok()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 json!({"index": i, "type": t, "ok": ok, "summary": if ok { "valid wire plan" } else { "invalid wire plan" }})
             }
             "unwire_edge" => {
                 let edge_id = parse_uuid(op.get("edge_id"));
-                let ok = edge_id.map(|id| snap.edges.iter().any(|e| e.id == id)).unwrap_or(false);
+                let ok = edge_id
+                    .map(|id| snap.edges.iter().any(|e| e.id == id))
+                    .unwrap_or(false);
                 json!({"index": i, "type": t, "ok": ok, "summary": if ok { "edge exists" } else { "edge missing/invalid" }})
             }
-            _ => json!({"index": i, "type": t, "ok": false, "summary": "unsupported operation type"}),
+            _ => {
+                json!({"index": i, "type": t, "ok": false, "summary": "unsupported operation type"})
+            }
         };
         results.push(result);
     }
-    let ok_count = results.iter().filter(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)).count();
+    let ok_count = results
+        .iter()
+        .filter(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+        .count();
     Ok(json!({
         "operation_count": operations.len(),
         "ok_count": ok_count,
@@ -1992,7 +2172,10 @@ async fn tool_validate_pipeline_for_goal(
     goal: &str,
     target_node_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let goal_norm = goal.trim().to_ascii_lowercase();
     let mut findings: Vec<serde_json::Value> = Vec::new();
     let kinds = snap
@@ -2025,7 +2208,9 @@ async fn tool_validate_pipeline_for_goal(
         }
     }
     if findings.is_empty() {
-        findings.push(json!({"severity":"ok","message":"No obvious structural issues for stated goal"}));
+        findings.push(
+            json!({"severity":"ok","message":"No obvious structural issues for stated goal"}),
+        );
     }
     Ok(json!({
         "goal": goal,
@@ -2045,7 +2230,11 @@ async fn tool_add_node(
     branch_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
     let category = node_category_for_kind(kind)?;
-    let mut params_obj = if params.is_object() { params } else { json!({}) };
+    let mut params_obj = if params.is_object() {
+        params
+    } else {
+        json!({})
+    };
     if let Some(a) = alias {
         if let Some(obj) = params_obj.as_object_mut() {
             obj.insert("_alias".to_string(), json!(a));
@@ -2122,7 +2311,12 @@ async fn tool_patch_node_config(
         }));
     }
     let updated = store
-        .patch_node_config(graph_id, node_id, params_patch.clone(), Option::<NodeExecutionPolicy>::None)
+        .patch_node_config(
+            graph_id,
+            node_id,
+            params_patch.clone(),
+            Option::<NodeExecutionPolicy>::None,
+        )
         .await
         .map_err(|e| e.to_string())?;
     let _ = commit_graph_revision(
@@ -2157,7 +2351,10 @@ async fn tool_wire_nodes(
     actor: &str,
     branch_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
-    let snap = store.load_graph(graph_id).await.map_err(|e| e.to_string())?;
+    let snap = store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let from_node_ref = snap
         .nodes
         .get(&from_node)
@@ -2167,24 +2364,30 @@ async fn tool_wire_nodes(
         .get(&to_node)
         .ok_or_else(|| format!("to_node {} not found", to_node))?;
 
-    let registry = load_registry_ports()?;
-    validate_wire_against_registry(
-        &registry,
+    let registry = NodeRegistry::global()?;
+    let resolved_semantic = registry.resolve_edge_semantic(
         &from_node_ref.config.kind,
         from_port,
         &to_node_ref.config.kind,
         to_port,
-        semantic_type,
     )?;
+    let requested_semantic: SemanticPortType = semantic_type.parse()?;
+    if requested_semantic != resolved_semantic {
+        return Err(format!(
+            "semantic_type '{}' does not match resolved wire semantic '{}'",
+            semantic_type,
+            resolved_semantic.as_str()
+        ));
+    }
 
-    if snap
-        .edges
-        .iter()
-        .any(|e| e.from_node == from_node && e.from_port == from_port && e.to_node == to_node && e.to_port == to_port)
-    {
+    if snap.edges.iter().any(|e| {
+        e.from_node == from_node
+            && e.from_port == from_port
+            && e.to_node == to_node
+            && e.to_port == to_port
+    }) {
         return Err("edge already exists".to_string());
     }
-    let sem = parse_semantic_type(semantic_type)?;
     if !apply_mutations {
         return Ok(json!({
             "dry_run": true,
@@ -2193,13 +2396,20 @@ async fn tool_wire_nodes(
                 "from_port": from_port,
                 "to_node": to_node,
                 "to_port": to_port,
-                "semantic_type": semantic_type
+                "semantic_type": resolved_semantic.as_str()
             },
             "note": "Mutation skipped because apply_mutations=false"
         }));
     }
     let edge_id = store
-        .add_edge(graph_id, from_node, from_port, to_node, to_port, sem)
+        .add_edge(
+            graph_id,
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+            resolved_semantic,
+        )
         .await
         .map_err(|e| e.to_string())?;
     let _ = commit_graph_revision(
@@ -2214,7 +2424,7 @@ async fn tool_wire_nodes(
             "from_port": from_port,
             "to_node": to_node,
             "to_port": to_port,
-            "semantic_type": semantic_type
+            "semantic_type": resolved_semantic.as_str()
         }),
     )
     .await
@@ -2225,7 +2435,7 @@ async fn tool_wire_nodes(
         "from_port": from_port,
         "to_node": to_node,
         "to_port": to_port,
-        "semantic_type": semantic_type
+        "semantic_type": resolved_semantic.as_str()
     }))
 }
 
@@ -2265,24 +2475,8 @@ async fn tool_unwire_edge(
     }))
 }
 
-fn parse_semantic_type(s: &str) -> Result<SemanticPortType, String> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "table" => Ok(SemanticPortType::Table),
-        "point_set" | "pointset" => Ok(SemanticPortType::PointSet),
-        "interval_set" | "intervalset" => Ok(SemanticPortType::IntervalSet),
-        "trajectory_set" | "trajectoryset" => Ok(SemanticPortType::TrajectorySet),
-        "surface" => Ok(SemanticPortType::Surface),
-        "raster" => Ok(SemanticPortType::Raster),
-        "mesh" => Ok(SemanticPortType::Mesh),
-        "block_model" | "blockmodel" => Ok(SemanticPortType::BlockModel),
-        "semantic_json" | "semanticjson" => Ok(SemanticPortType::SemanticJson),
-        other => Err(format!("unsupported semantic_type '{}'", other)),
-    }
-}
-
 fn node_category_for_kind(kind: &str) -> Result<NodeCategory, String> {
-    let root: RegistryRoot = serde_json::from_str(NODE_REGISTRY_JSON)
-        .map_err(|e| format!("node registry parse failed: {}", e))?;
+    let root = NodeRegistry::global()?.root().clone();
     let cat = root
         .nodes
         .into_iter()
@@ -2298,64 +2492,6 @@ fn node_category_for_kind(kind: &str) -> Result<NodeCategory, String> {
         "export" => Ok(NodeCategory::Export),
         other => Err(format!("unsupported node category '{}'", other)),
     }
-}
-
-fn normalize_semantic(s: &str) -> String {
-    s.trim().to_ascii_lowercase().replace('-', "_")
-}
-
-fn load_registry_ports() -> Result<HashMap<String, RegistryPorts>, String> {
-    let root: RegistryRoot = serde_json::from_str(NODE_REGISTRY_JSON)
-        .map_err(|e| format!("node registry parse failed: {}", e))?;
-    let mut out = HashMap::new();
-    for n in root.nodes {
-        out.insert(n.kind, n.ports);
-    }
-    Ok(out)
-}
-
-fn validate_wire_against_registry(
-    registry: &HashMap<String, RegistryPorts>,
-    from_kind: &str,
-    from_port: &str,
-    to_kind: &str,
-    to_port: &str,
-    semantic_type: &str,
-) -> Result<(), String> {
-    let from_ports = registry
-        .get(from_kind)
-        .ok_or_else(|| format!("from node kind '{}' missing from registry", from_kind))?;
-    let to_ports = registry
-        .get(to_kind)
-        .ok_or_else(|| format!("to node kind '{}' missing from registry", to_kind))?;
-    let out_port = from_ports
-        .outputs
-        .iter()
-        .find(|p| p.id == from_port)
-        .ok_or_else(|| format!("from_port '{}' not found on kind '{}'", from_port, from_kind))?;
-    let in_port = to_ports
-        .inputs
-        .iter()
-        .find(|p| p.id == to_port)
-        .ok_or_else(|| format!("to_port '{}' not found on kind '{}'", to_port, to_kind))?;
-
-    let req_sem = normalize_semantic(semantic_type);
-    let out_sem = normalize_semantic(&out_port.semantic);
-    let in_sem = normalize_semantic(&in_port.semantic);
-
-    if out_sem != "any" && req_sem != out_sem {
-        return Err(format!(
-            "semantic_type '{}' does not match source port semantic '{}' ({}.{})",
-            semantic_type, out_port.semantic, from_kind, from_port
-        ));
-    }
-    if in_sem != "any" && req_sem != in_sem {
-        return Err(format!(
-            "semantic_type '{}' does not match target port semantic '{}' ({}.{})",
-            semantic_type, in_port.semantic, to_kind, to_port
-        ));
-    }
-    Ok(())
 }
 
 fn parse_uuid(v: Option<&serde_json::Value>) -> Option<Uuid> {
@@ -2381,7 +2517,10 @@ async fn read_artifact_bytes(
         if rows.iter().any(|r| r.0 == key) {
             key
         } else {
-            return Err(format!("artifact_key '{}' not found for node {}", key, node_id));
+            return Err(format!(
+                "artifact_key '{}' not found for node {}",
+                key, node_id
+            ));
         }
     } else {
         rows[0].0.clone()
@@ -2420,7 +2559,10 @@ fn detect_delimiter(header: &str) -> char {
     best.0
 }
 
-fn find_uploaded_doc<'a>(uploaded_docs: &'a [UploadedDoc], name: &str) -> Result<&'a UploadedDoc, String> {
+fn find_uploaded_doc<'a>(
+    uploaded_docs: &'a [UploadedDoc],
+    name: &str,
+) -> Result<&'a UploadedDoc, String> {
     uploaded_docs
         .iter()
         .find(|d| d.name.eq_ignore_ascii_case(name))
@@ -2445,7 +2587,10 @@ fn parse_delimited_text(text: &str) -> (Vec<String>, usize, Option<char>) {
     (headers, rows, Some(delimiter))
 }
 
-fn parse_delimited_rows(text: &str, max_rows: usize) -> (Vec<String>, Vec<Vec<String>>, Option<char>) {
+fn parse_delimited_rows(
+    text: &str,
+    max_rows: usize,
+) -> (Vec<String>, Vec<Vec<String>>, Option<char>) {
     let lines = text
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -2470,12 +2615,20 @@ fn parse_delimited_rows(text: &str, max_rows: usize) -> (Vec<String>, Vec<Vec<St
 }
 
 fn profile_csv_text(text: &str, sample_rows: usize) -> Result<serde_json::Value, String> {
-    let lines = text.lines().filter(|l| !l.trim().is_empty()).take(1200).collect::<Vec<_>>();
+    let lines = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(1200)
+        .collect::<Vec<_>>();
     if lines.is_empty() {
         return Err("file has no non-empty lines".to_string());
     }
     let delimiter = detect_delimiter(lines[0]);
-    let split = |line: &str| line.split(delimiter).map(|s| s.trim().to_string()).collect::<Vec<_>>();
+    let split = |line: &str| {
+        line.split(delimiter)
+            .map(|s| s.trim().to_string())
+            .collect::<Vec<_>>()
+    };
     let headers = split(lines[0]);
     if headers.is_empty() {
         return Err("could not parse headers".to_string());
@@ -2564,7 +2717,7 @@ fn infer_ingest_mapping(kind: &str, headers: &[String]) -> serde_json::Value {
             "y": pick_header(headers, &["y", "northing", "north", "lat", "latitude"]),
             "z": pick_header(headers, &["z", "elev", "elevation", "rl"])
         }),
-        _ => json!({})
+        _ => json!({}),
     }
 }
 
@@ -2585,7 +2738,13 @@ fn mapping_confidence_score(kind: &str, mapping: &serde_json::Value) -> f64 {
     }
     let hit = required
         .iter()
-        .filter(|k| mapping.get(**k).and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+        .filter(|k| {
+            mapping
+                .get(**k)
+                .and_then(|v| v.as_str())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        })
         .count();
     (hit as f64 / required.len() as f64 * 1000.0).round() / 1000.0
 }
@@ -2595,6 +2754,12 @@ fn node_prompt_fragment(kind: &str) -> &'static str {
         "collar_ingest" => "Load collar table with hole_id + x/y (+optional z). Set ui.csv_headers/csv_rows and ui.mapping to enable ingest payload synthesis.",
         "survey_ingest" => "Load survey stations with hole_id + depth_or_length_m + azimuth_deg + dip_deg. Missing any required mapping blocks desurvey.",
         "assay_ingest" => "Load interval assays with hole_id + from_m + to_m and preserve geochem columns in attributes for downstream model/visualisation.",
+        "ip_survey_ingest" => "Load TDIP/DCIP quadrupole rows with inline A/B/M/N electrode geometry or structured payload rows. Produces a canonical IP survey contract plus electrode points.",
+        "ip_qc_normalize" => "Run conservative IP QC before modelling. Rejects malformed quadrupoles, high-reciprocity-error rows, and out-of-bounds chargeability values.",
+        "ip_pseudosection" => "Convert cleaned IP survey rows into pseudo-depth points and rows for fast section-style QC in the existing 3D/table tooling.",
+        "ip_corridor_model" => "Inflate pseudosection rows into a stitched pseudo-volume that reuses the existing block voxel renderer for immediate 3D IP context.",
+        "ip_inversion_mesh" => "Build a regular preview mesh/domain from pseudosection rows so later TDIP solvers can target a stable middle-layer contract.",
+        "ip_inversion_preview" => "Interpolate pseudosection responses onto the preview mesh to create testable 3D TDIP voxels with explicit confidence metadata.",
         "surface_sample_ingest" => "Load surface samples with x/y (+optional z/sample_id). Use project CRS when available.",
         "desurvey_trajectory" => "Requires collars_in (point_set) and surveys_in (trajectory_set). Produces 3D trajectory segments.",
         "drillhole_model" => "Requires trajectory_in + assays_in to generate assay points/meshes for 3D display.",
@@ -2611,8 +2776,8 @@ fn measure_name_score(name: &str) -> f64 {
     let n = name.to_ascii_lowercase();
     let mut s: f64 = 0.0;
     for kw in [
-        "au", "gold", "cu", "copper", "zn", "zinc", "pb", "lead", "ag", "silver", "grade",
-        "ppm", "ppb", "pct", "%", "value", "assay",
+        "au", "gold", "cu", "copper", "zn", "zinc", "pb", "lead", "ag", "silver", "grade", "ppm",
+        "ppb", "pct", "%", "value", "assay",
     ] {
         if n.contains(kw) {
             s += 0.12;
@@ -2644,8 +2809,10 @@ impl TypeCounts {
             self.numeric_like += 1;
             return;
         }
-        if matches!(v.to_ascii_lowercase().as_str(), "true" | "false" | "yes" | "no" | "0" | "1")
-        {
+        if matches!(
+            v.to_ascii_lowercase().as_str(),
+            "true" | "false" | "yes" | "no" | "0" | "1"
+        ) {
             self.bool_like += 1;
             return;
         }
@@ -2807,7 +2974,10 @@ fn safe_artifact_path(artifact_root: &Path, key: &str) -> Result<PathBuf, String
     Ok(artifact_root.join(rel))
 }
 
-async fn collect_uploaded_docs(messages: &[AiChatMessage], artifact_root: &Path) -> Vec<UploadedDoc> {
+async fn collect_uploaded_docs(
+    messages: &[AiChatMessage],
+    artifact_root: &Path,
+) -> Vec<UploadedDoc> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for m in messages {
@@ -2998,11 +3168,7 @@ fn load_memory_context() -> (String, Vec<String>) {
             continue;
         }
         used.push(rel.to_string());
-        chunks.push(format!(
-            "\n# {}\n{}",
-            rel,
-            truncate(&content, 6_000)
-        ));
+        chunks.push(format!("\n# {}\n{}", rel, truncate(&content, 6_000)));
     }
     (chunks.join("\n"), used)
 }

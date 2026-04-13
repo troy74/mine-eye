@@ -6,9 +6,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use super::parse_util::{lookup_numeric_ci, parse_numeric_value, percentile_value};
 use crate::executor::ExecutionContext;
 use crate::NodeError;
-use super::parse_util::{lookup_numeric_ci, parse_numeric_value, percentile_value};
 
 /// Compact enum replacing the heap-allocated `String` used per-block.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -25,9 +25,9 @@ impl ConfidenceClass {
     #[allow(dead_code)]
     fn as_str(self) -> &'static str {
         match self {
-            ConfidenceClass::High   => "high",
+            ConfidenceClass::High => "high",
             ConfidenceClass::Medium => "medium",
-            ConfidenceClass::Low    => "low",
+            ConfidenceClass::Low => "low",
         }
     }
 }
@@ -154,25 +154,25 @@ struct NeighborStats {
 /// so that a plain SquaredEuclidean query is equivalent to the search-ellipsoid
 /// constraint applied in the original linear scan.
 struct GradeIndex {
-    tree:   KdTree<f64, 3>,
+    tree: KdTree<f64, 3>,
     /// Original Euclidean coordinates, indexed parallel to k-d tree leaves.
-    ex:     Vec<f64>,
-    ey:     Vec<f64>,
-    ez:     Vec<f64>,
+    ex: Vec<f64>,
+    ey: Vec<f64>,
+    ez: Vec<f64>,
     values: Vec<f64>,
 }
 
 impl GradeIndex {
     fn build(samples: &[GradeSample], p: &ModelParams) -> Self {
-        let az  = p.search_azimuth_deg.to_radians();
+        let az = p.search_azimuth_deg.to_radians();
         let (sin_az, cos_az) = az.sin_cos();
-        let ax  = p.anisotropy_x.max(1e-6);
-        let ay  = p.anisotropy_y.max(1e-6);
+        let ax = p.anisotropy_x.max(1e-6);
+        let ay = p.anisotropy_y.max(1e-6);
         let aaz = p.anisotropy_z.max(1e-6);
         let mut tree: KdTree<f64, 3> = KdTree::new();
-        let mut ex     = Vec::with_capacity(samples.len());
-        let mut ey     = Vec::with_capacity(samples.len());
-        let mut ez     = Vec::with_capacity(samples.len());
+        let mut ex = Vec::with_capacity(samples.len());
+        let mut ey = Vec::with_capacity(samples.len());
+        let mut ez = Vec::with_capacity(samples.len());
         let mut values = Vec::with_capacity(samples.len());
         for (i, s) in samples.iter().enumerate() {
             let rx = cos_az * s.x + sin_az * s.y;
@@ -183,26 +183,34 @@ impl GradeIndex {
             ez.push(s.z);
             values.push(s.value);
         }
-        Self { tree, ex, ey, ez, values }
+        Self {
+            tree,
+            ex,
+            ey,
+            ez,
+            values,
+        }
     }
 
     fn query(&self, x: f64, y: f64, z: f64, p: &ModelParams) -> Option<(f64, NeighborStats)> {
         if self.values.is_empty() {
             return None;
         }
-        let az  = p.search_azimuth_deg.to_radians();
+        let az = p.search_azimuth_deg.to_radians();
         let (sin_az, cos_az) = az.sin_cos();
-        let ax  = p.anisotropy_x.max(1e-6);
-        let ay  = p.anisotropy_y.max(1e-6);
+        let ax = p.anisotropy_x.max(1e-6);
+        let ay = p.anisotropy_y.max(1e-6);
         let aaz = p.anisotropy_z.max(1e-6);
-        let rx  = cos_az * x + sin_az * y;
-        let ry  = -sin_az * x + cos_az * y;
-        let k   = p.max_samples.max(1).min(self.values.len());
+        let rx = cos_az * x + sin_az * y;
+        let ry = -sin_az * x + cos_az * y;
+        let k = p.max_samples.max(1).min(self.values.len());
 
         // Use the search radius in normalised space (sphere radius = search_radius_m / 1.0 in
         // each axis after division).  We query up to k neighbours and then
         // filter by the anisotropic distance.
-        let candidates = self.tree.nearest_n::<SquaredEuclidean>(&[rx / ax, ry / ay, z / aaz], k);
+        let candidates = self
+            .tree
+            .nearest_n::<SquaredEuclidean>(&[rx / ax, ry / ay, z / aaz], k);
 
         // Filter to those inside the search ellipsoid.
         let mut near: Vec<(f64, f64, f64)> = candidates
@@ -233,7 +241,11 @@ impl GradeIndex {
 
         let nearest_m = near[0].1;
         let mean_m = near.iter().map(|(_, d, _)| *d).sum::<f64>() / near.len() as f64;
-        let stats = NeighborStats { n_used: near.len(), nearest_m, mean_m };
+        let stats = NeighborStats {
+            n_used: near.len(),
+            nearest_m,
+            mean_m,
+        };
 
         if near[0].0 <= 1e-9 || p.estimation_method.eq_ignore_ascii_case("nearest") {
             return Some((near[0].2, stats));
@@ -275,14 +287,14 @@ struct TriangleMesh {
 /// Reduces mesh containment queries from O(T) to O(cells_per_query),
 /// where typically cells_per_query ≪ T for reasonable grid resolutions.
 struct TriangleMeshIndex {
-    mesh:    TriangleMesh,
+    mesh: TriangleMesh,
     /// Grid resolution (same in X and Y).
-    cell_w:  f64,
-    cell_h:  f64,
-    cols:    usize,
-    rows:    usize,
+    cell_w: f64,
+    cell_h: f64,
+    cols: usize,
+    rows: usize,
     /// Each cell stores triangle indices.
-    cells:   Vec<Vec<usize>>,
+    cells: Vec<Vec<usize>>,
 }
 
 impl TriangleMeshIndex {
@@ -301,16 +313,27 @@ impl TriangleMeshIndex {
             let tri_ymin = tri.a[1].min(tri.b[1]).min(tri.c[1]);
             let tri_ymax = tri.a[1].max(tri.b[1]).max(tri.c[1]);
             let c0 = (((tri_xmin - mesh.xmin) / cell_w).floor() as isize).max(0) as usize;
-            let c1 = (((tri_xmax - mesh.xmin) / cell_w).ceil() as isize).min(cols as isize - 1).max(0) as usize;
+            let c1 = (((tri_xmax - mesh.xmin) / cell_w).ceil() as isize)
+                .min(cols as isize - 1)
+                .max(0) as usize;
             let r0 = (((tri_ymin - mesh.ymin) / cell_h).floor() as isize).max(0) as usize;
-            let r1 = (((tri_ymax - mesh.ymin) / cell_h).ceil() as isize).min(rows as isize - 1).max(0) as usize;
+            let r1 = (((tri_ymax - mesh.ymin) / cell_h).ceil() as isize)
+                .min(rows as isize - 1)
+                .max(0) as usize;
             for rr in r0..=r1 {
                 for cc in c0..=c1 {
                     cells[rr * cols + cc].push(ti);
                 }
             }
         }
-        Self { mesh, cell_w, cell_h, cols, rows, cells }
+        Self {
+            mesh,
+            cell_w,
+            cell_h,
+            cols,
+            rows,
+            cells,
+        }
     }
 
     fn point_inside_vertical(&self, x: f64, y: f64, z: f64) -> bool {
@@ -332,7 +355,8 @@ impl TriangleMeshIndex {
                 continue;
             }
             if !point_in_triangle_2d(
-                x, y,
+                x,
+                y,
                 [tri.a[0], tri.a[1]],
                 [tri.b[0], tri.b[1]],
                 [tri.c[0], tri.c[1]],
@@ -393,8 +417,14 @@ impl Extent3D {
 
 fn parse_surface_grid(root: &serde_json::Value) -> Option<SurfaceGrid> {
     let g = root.get("surface_grid")?.as_object()?;
-    let nx = g.get("nx").and_then(parse_numeric_value).map(|v| v as usize)?;
-    let ny = g.get("ny").and_then(parse_numeric_value).map(|v| v as usize)?;
+    let nx = g
+        .get("nx")
+        .and_then(parse_numeric_value)
+        .map(|v| v as usize)?;
+    let ny = g
+        .get("ny")
+        .and_then(parse_numeric_value)
+        .map(|v| v as usize)?;
     if nx < 2 || ny < 2 {
         return None;
     }
@@ -406,7 +436,10 @@ fn parse_surface_grid(root: &serde_json::Value) -> Option<SurfaceGrid> {
     if raw_values.len() != nx * ny {
         return None;
     }
-    let values = raw_values.iter().map(parse_numeric_value).collect::<Vec<_>>();
+    let values = raw_values
+        .iter()
+        .map(parse_numeric_value)
+        .collect::<Vec<_>>();
     Some(SurfaceGrid {
         nx,
         ny,
@@ -556,7 +589,8 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
         sensitivity_max_cutoff: ui("/node_ui/sensitivity_max_cutoff").and_then(parse_numeric_value),
         sensitivity_steps: parse_usize("/node_ui/sensitivity_steps", 8).clamp(3, 40),
         variogram_lags: parse_usize("/node_ui/variogram_lags", 12).clamp(6, 40),
-        variogram_max_pairs: parse_usize("/node_ui/variogram_max_pairs", 300000).clamp(2000, 3_000_000),
+        variogram_max_pairs: parse_usize("/node_ui/variogram_max_pairs", 300000)
+            .clamp(2000, 3_000_000),
         variogram_max_range_m: parse_f64("/node_ui/variogram_max_range_m", 0.0).max(0.0),
         composite_length_m: parse_f64("/node_ui/composite_length_m", 0.0).max(0.0),
         top_cut_mode: parse_str("/node_ui/top_cut_mode", "none"),
@@ -565,10 +599,7 @@ fn parse_params(job: &JobEnvelope) -> ModelParams {
     }
 }
 
-fn choose_element_field(
-    requested: &Option<String>,
-    fields: &BTreeSet<String>,
-) -> Option<String> {
+fn choose_element_field(requested: &Option<String>, fields: &BTreeSet<String>) -> Option<String> {
     if let Some(wanted) = requested {
         if fields.contains(wanted) {
             return Some(wanted.clone());
@@ -662,8 +693,8 @@ fn point_in_polygon_xy(x: f64, y: f64, poly: &DomainPolygon) -> bool {
     for i in 0..n {
         let (x1, y1) = poly.vertices[i];
         let (x2, y2) = poly.vertices[(i + 1) % n];
-        let intersects = ((y1 > y) != (y2 > y))
-            && (x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-12) + x1);
+        let intersects =
+            ((y1 > y) != (y2 > y)) && (x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-12) + x1);
         if intersects {
             inside = !inside;
         }
@@ -729,8 +760,12 @@ fn parse_domain_polygon(root: &serde_json::Value) -> Option<DomainPolygon> {
             if pa.len() < 2 {
                 continue;
             }
-            let Some(x) = parse_numeric_value(&pa[0]) else { continue };
-            let Some(y) = parse_numeric_value(&pa[1]) else { continue };
+            let Some(x) = parse_numeric_value(&pa[0]) else {
+                continue;
+            };
+            let Some(y) = parse_numeric_value(&pa[1]) else {
+                continue;
+            };
             verts.push((x, y));
         }
         if verts.len() >= 3 {
@@ -741,12 +776,7 @@ fn parse_domain_polygon(root: &serde_json::Value) -> Option<DomainPolygon> {
 }
 
 fn parse_triangle_mesh(root: &serde_json::Value) -> Option<TriangleMesh> {
-    fn push_tri(
-        tris: &mut Vec<Triangle3>,
-        a: [f64; 3],
-        b: [f64; 3],
-        c: [f64; 3],
-    ) {
+    fn push_tri(tris: &mut Vec<Triangle3>, a: [f64; 3], b: [f64; 3], c: [f64; 3]) {
         tris.push(Triangle3 { a, b, c });
     }
 
@@ -790,9 +820,15 @@ fn parse_triangle_mesh(root: &serde_json::Value) -> Option<TriangleMesh> {
             if pa.len() < 3 {
                 continue;
             }
-            let Some(x) = parse_numeric_value(&pa[0]) else { continue };
-            let Some(y) = parse_numeric_value(&pa[1]) else { continue };
-            let Some(z) = parse_numeric_value(&pa[2]) else { continue };
+            let Some(x) = parse_numeric_value(&pa[0]) else {
+                continue;
+            };
+            let Some(y) = parse_numeric_value(&pa[1]) else {
+                continue;
+            };
+            let Some(z) = parse_numeric_value(&pa[2]) else {
+                continue;
+            };
             vv.push([x, y, z]);
         }
         for f in fcs {
@@ -890,7 +926,13 @@ fn z_at_xy_on_triangle(x: f64, y: f64, tri: &Triangle3) -> Option<f64> {
 fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bool {
     // Thin wrapper preserved for non-indexed callers and tests.
     // The hot path in run_block_grade_model uses TriangleMeshIndex directly.
-    if x < mesh.xmin || x > mesh.xmax || y < mesh.ymin || y > mesh.ymax || z < mesh.zmin || z > mesh.zmax {
+    if x < mesh.xmin
+        || x > mesh.xmax
+        || y < mesh.ymin
+        || y > mesh.ymax
+        || z < mesh.zmin
+        || z > mesh.zmax
+    {
         return false;
     }
     let mut z_hits = Vec::<f64>::new();
@@ -903,7 +945,8 @@ fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bo
             continue;
         }
         if !point_in_triangle_2d(
-            x, y,
+            x,
+            y,
             [tri.a[0], tri.a[1]],
             [tri.b[0], tri.b[1]],
             [tri.c[0], tri.c[1]],
@@ -931,7 +974,10 @@ fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bo
 }
 
 fn classify_confidence(stats: NeighborStats, block_diag_m: f64) -> ConfidenceClass {
-    if stats.n_used >= 12 && stats.nearest_m <= 0.75 * block_diag_m && stats.mean_m <= 2.0 * block_diag_m {
+    if stats.n_used >= 12
+        && stats.nearest_m <= 0.75 * block_diag_m
+        && stats.mean_m <= 2.0 * block_diag_m
+    {
         ConfidenceClass::High
     } else if stats.n_used >= 6 && stats.nearest_m <= 1.5 * block_diag_m {
         ConfidenceClass::Medium
@@ -975,7 +1021,12 @@ fn compute_cutoff_sensitivity(
     out
 }
 
-fn compute_variogram(samples: &[GradeSample], lags: usize, max_range: f64, max_pairs: usize) -> Vec<serde_json::Value> {
+fn compute_variogram(
+    samples: &[GradeSample],
+    lags: usize,
+    max_range: f64,
+    max_pairs: usize,
+) -> Vec<serde_json::Value> {
     if samples.len() < 2 || lags < 2 {
         return Vec::new();
     }
@@ -1085,60 +1136,78 @@ fn compute_bins(values: &[f64]) -> Vec<serde_json::Value> {
 ///
 /// Replaces the 11-parameter `flush` closure in `composite_records`.
 struct CompositeAccumulator {
-    acc_len:     f64,
-    acc_x:       f64,
-    acc_y:       f64,
-    acc_z:       f64,
-    acc_g:       f64,
-    acc_sg:      f64,
-    acc_sg_w:    f64,
-    from_start:  Option<f64>,
+    acc_len: f64,
+    acc_x: f64,
+    acc_y: f64,
+    acc_z: f64,
+    acc_g: f64,
+    acc_sg: f64,
+    acc_sg_w: f64,
+    from_start: Option<f64>,
     depth_start: Option<f64>,
-    to_last:     Option<f64>,
-    depth_last:  Option<f64>,
+    to_last: Option<f64>,
+    depth_last: Option<f64>,
 }
 
 impl CompositeAccumulator {
     fn new() -> Self {
         Self {
-            acc_len: 0.0, acc_x: 0.0, acc_y: 0.0, acc_z: 0.0,
-            acc_g: 0.0, acc_sg: 0.0, acc_sg_w: 0.0,
-            from_start: None, depth_start: None, to_last: None, depth_last: None,
+            acc_len: 0.0,
+            acc_x: 0.0,
+            acc_y: 0.0,
+            acc_z: 0.0,
+            acc_g: 0.0,
+            acc_sg: 0.0,
+            acc_sg_w: 0.0,
+            from_start: None,
+            depth_start: None,
+            to_last: None,
+            depth_last: None,
         }
     }
 
     fn add(&mut self, r: &SampleRecord) {
         let w = r.support_m.max(1e-6);
-        if self.from_start.is_none()  { self.from_start  = r.from_m;  }
-        if self.depth_start.is_none() { self.depth_start = r.depth_m; }
-        self.to_last    = r.to_m.or(r.depth_m);
+        if self.from_start.is_none() {
+            self.from_start = r.from_m;
+        }
+        if self.depth_start.is_none() {
+            self.depth_start = r.depth_m;
+        }
+        self.to_last = r.to_m.or(r.depth_m);
         self.depth_last = r.depth_m;
-        self.acc_len  += w;
-        self.acc_x    += r.x * w;
-        self.acc_y    += r.y * w;
-        self.acc_z    += r.z * w;
-        self.acc_g    += r.value * w;
+        self.acc_len += w;
+        self.acc_x += r.x * w;
+        self.acc_y += r.y * w;
+        self.acc_z += r.z * w;
+        self.acc_g += r.value * w;
         if let Some(sgv) = r.sg_value {
-            self.acc_sg   += sgv * w;
+            self.acc_sg += sgv * w;
             self.acc_sg_w += w;
         }
     }
 
     fn flush(&mut self, hole_id: &Option<String>, out: &mut Vec<SampleRecord>) {
-        if self.acc_len <= 0.0 { return; }
-        let sg_value = if self.acc_sg_w > 0.0 { Some(self.acc_sg / self.acc_sg_w) } else { None };
+        if self.acc_len <= 0.0 {
+            return;
+        }
+        let sg_value = if self.acc_sg_w > 0.0 {
+            Some(self.acc_sg / self.acc_sg_w)
+        } else {
+            None
+        };
         out.push(SampleRecord {
-            x:       self.acc_x / self.acc_len,
-            y:       self.acc_y / self.acc_len,
-            z:       self.acc_z / self.acc_len,
-            value:   self.acc_g / self.acc_len,
+            x: self.acc_x / self.acc_len,
+            y: self.acc_y / self.acc_len,
+            z: self.acc_z / self.acc_len,
+            value: self.acc_g / self.acc_len,
             hole_id: hole_id.clone(),
-            from_m:  self.from_start,
-            to_m:    self.to_last,
+            from_m: self.from_start,
+            to_m: self.to_last,
             depth_m: match (self.depth_start, self.depth_last) {
                 (Some(a), Some(b)) => Some(0.5 * (a + b)),
-                (Some(a), None)    => Some(a),
-                _                  => None,
+                (Some(a), None) => Some(a),
+                _ => None,
             },
             support_m: self.acc_len,
             sg_value,
@@ -1227,7 +1296,9 @@ pub async fn run_block_grade_model(
                 &root,
                 project_epsg.or(job.project_crs.as_ref().and_then(|c| c.epsg)),
             );
-            if pri > best_terrain_priority || (pri == best_terrain_priority && cells > best_terrain_cells) {
+            if pri > best_terrain_priority
+                || (pri == best_terrain_priority && cells > best_terrain_cells)
+            {
                 best_terrain = Some(sg);
                 best_terrain_priority = pri;
                 best_terrain_cells = cells;
@@ -1464,9 +1535,7 @@ pub async fn run_block_grade_model(
 
     // Generate all block centre coordinates up front so we can par_iter over them.
     let block_coords: Vec<(usize, usize, usize)> = (0..grid.2)
-        .flat_map(|iz| {
-            (0..grid.1).flat_map(move |iy| (0..grid.0).map(move |ix| (ix, iy, iz)))
-        })
+        .flat_map(|iz| (0..grid.1).flat_map(move |iy| (0..grid.0).map(move |ix| (ix, iy, iz))))
         .collect();
 
     let blocks: Vec<BlockCell> = block_coords
@@ -1506,7 +1575,10 @@ pub async fn run_block_grade_model(
             }
 
             // Mesh containment filter.
-            if params.domain_constraint_mode.eq_ignore_ascii_case("mesh_containment") {
+            if params
+                .domain_constraint_mode
+                .eq_ignore_ascii_case("mesh_containment")
+            {
                 if let Some(idx) = mesh_index.as_ref() {
                     if !idx.point_inside_vertical(x, y, z) {
                         return None;
@@ -1516,9 +1588,15 @@ pub async fn run_block_grade_model(
 
             // Grade estimation.
             let (mut grade, support) = grade_index.query(x, y, z, &params)?;
-            if let Some(gmin) = params.grade_min { grade = grade.max(gmin); }
-            if let Some(gmax) = params.grade_max { grade = grade.min(gmax); }
-            if !grade.is_finite() { return None; }
+            if let Some(gmin) = params.grade_min {
+                grade = grade.max(gmin);
+            }
+            if let Some(gmax) = params.grade_max {
+                grade = grade.min(gmax);
+            }
+            if !grade.is_finite() {
+                return None;
+            }
 
             let sg_here = if params.sg_mode.eq_ignore_ascii_case("field") {
                 sg_index
@@ -1530,14 +1608,22 @@ pub async fn run_block_grade_model(
                 params.sg_constant
             };
 
-            let volume_m3         = dx * dy * dz;
-            let tonnage_t         = volume_m3 * sg_here;
+            let volume_m3 = dx * dy * dz;
+            let tonnage_t = volume_m3 * sg_here;
             let contained_unscaled = tonnage_t * grade;
-            let confidence_class  = classify_confidence(support, block_diag_m);
+            let confidence_class = classify_confidence(support, block_diag_m);
 
             Some(BlockCell {
-                x, y, z, dx, dy, dz, grade, sg: sg_here,
-                tonnage_t, contained_unscaled,
+                x,
+                y,
+                z,
+                dx,
+                dy,
+                dz,
+                grade,
+                sg: sg_here,
+                tonnage_t,
+                contained_unscaled,
                 above_cutoff: grade >= params.cutoff_grade,
                 n_samples_used: support.n_used,
                 nearest_sample_distance_m: support.nearest_m,
@@ -1590,9 +1676,9 @@ pub async fn run_block_grade_model(
         sum_nearest_m += b.nearest_sample_distance_m;
         sum_mean_dist_m += b.mean_sample_distance_m;
         match b.confidence_class {
-            ConfidenceClass::High   => conf_high += 1,
+            ConfidenceClass::High => conf_high += 1,
             ConfidenceClass::Medium => conf_medium += 1,
-            ConfidenceClass::Low    => conf_low += 1,
+            ConfidenceClass::Low => conf_low += 1,
         }
     }
     grade_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1603,14 +1689,23 @@ pub async fn run_block_grade_model(
     };
     let min_grade = *grade_values.first().unwrap_or(&0.0);
     let max_grade = *grade_values.last().unwrap_or(&0.0);
-    let mean_n_samples_used = if blocks.is_empty() { 0.0 } else { sum_n_samples / blocks.len() as f64 };
-    let mean_nearest_sample_distance_m = if blocks.is_empty() { 0.0 } else { sum_nearest_m / blocks.len() as f64 };
-    let mean_sample_distance_m = if blocks.is_empty() { 0.0 } else { sum_mean_dist_m / blocks.len() as f64 };
+    let mean_n_samples_used = if blocks.is_empty() {
+        0.0
+    } else {
+        sum_n_samples / blocks.len() as f64
+    };
+    let mean_nearest_sample_distance_m = if blocks.is_empty() {
+        0.0
+    } else {
+        sum_nearest_m / blocks.len() as f64
+    };
+    let mean_sample_distance_m = if blocks.is_empty() {
+        0.0
+    } else {
+        sum_mean_dist_m / blocks.len() as f64
+    };
 
-    let render_blocks = blocks
-        .iter()
-        .filter(|b| b.above_cutoff)
-        .collect::<Vec<_>>();
+    let render_blocks = blocks.iter().filter(|b| b.above_cutoff).collect::<Vec<_>>();
 
     let block_rows = render_blocks
         .iter()
@@ -1828,7 +1923,10 @@ pub async fn run_block_grade_model(
     summary_map.insert("estimation_method".into(), json!(params.estimation_method));
     summary_map.insert("idw_power".into(), json!(params.idw_power));
     summary_map.insert("search_radius_m".into(), json!(params.search_radius_m));
-    summary_map.insert("search_azimuth_deg".into(), json!(params.search_azimuth_deg));
+    summary_map.insert(
+        "search_azimuth_deg".into(),
+        json!(params.search_azimuth_deg),
+    );
     summary_map.insert("anisotropy_x".into(), json!(params.anisotropy_x));
     summary_map.insert("anisotropy_y".into(), json!(params.anisotropy_y));
     summary_map.insert("anisotropy_z".into(), json!(params.anisotropy_z));
@@ -1845,7 +1943,10 @@ pub async fn run_block_grade_model(
         "domain_constraint_mode".into(),
         json!(params.domain_constraint_mode),
     );
-    summary_map.insert("composite_length_m".into(), json!(params.composite_length_m));
+    summary_map.insert(
+        "composite_length_m".into(),
+        json!(params.composite_length_m),
+    );
     summary_map.insert("top_cut_mode".into(), json!(params.top_cut_mode));
     summary_map.insert("top_cut_value".into(), json!(params.top_cut_value));
     summary_map.insert(
@@ -1871,8 +1972,14 @@ pub async fn run_block_grade_model(
         "total_contained_unscaled".into(),
         json!(total_contained_unscaled),
     );
-    summary_map.insert("total_contained_metal_t".into(), json!(total_contained_metal_t));
-    summary_map.insert("total_contained_metal_oz".into(), json!(total_contained_metal_oz));
+    summary_map.insert(
+        "total_contained_metal_t".into(),
+        json!(total_contained_metal_t),
+    );
+    summary_map.insert(
+        "total_contained_metal_oz".into(),
+        json!(total_contained_metal_oz),
+    );
     summary_map.insert("above_cutoff_tonnage_t".into(), json!(above_cutoff_tonnage));
     summary_map.insert(
         "above_cutoff_contained_unscaled".into(),
@@ -1888,13 +1995,19 @@ pub async fn run_block_grade_model(
     );
     summary_map.insert("mean_n_samples_used".into(), json!(mean_n_samples_used));
     summary_map.insert("input_sample_count".into(), json!(input_sample_count));
-    summary_map.insert("composited_sample_count".into(), json!(composited_sample_count));
+    summary_map.insert(
+        "composited_sample_count".into(),
+        json!(composited_sample_count),
+    );
     summary_map.insert("capped_sample_count".into(), json!(capped_sample_count));
     summary_map.insert(
         "mean_nearest_sample_distance_m".into(),
         json!(mean_nearest_sample_distance_m),
     );
-    summary_map.insert("mean_sample_distance_m".into(), json!(mean_sample_distance_m));
+    summary_map.insert(
+        "mean_sample_distance_m".into(),
+        json!(mean_sample_distance_m),
+    );
     summary_map.insert("confidence_high_blocks".into(), json!(conf_high));
     summary_map.insert("confidence_medium_blocks".into(), json!(conf_medium));
     summary_map.insert("confidence_low_blocks".into(), json!(conf_low));

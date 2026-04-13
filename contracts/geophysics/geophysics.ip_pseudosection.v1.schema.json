@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geophysics.ip_pseudosection.v1",
+  "title": "Induced Polarization Pseudosection",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "type", "crs", "rows"],
+  "properties": {
+    "schema_id": { "const": "geophysics.ip_pseudosection.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "type": { "const": "ip_pseudosection" },
+    "crs": { "type": "object" },
+    "rows": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

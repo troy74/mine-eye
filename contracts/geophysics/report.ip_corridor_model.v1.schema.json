@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report.ip_corridor_model.v1",
+  "title": "Induced Polarization Corridor Model Report",
+  "type": "object",
+  "required": ["schema_id", "type", "summary"],
+  "properties": {
+    "schema_id": { "const": "report.ip_corridor_model.v1" },
+    "type": { "const": "ip_corridor_model_report" },
+    "summary": { "type": "object" }
+  }
+}

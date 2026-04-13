@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report.ip_inversion_mesh.v1",
+  "title": "Induced Polarization Inversion Mesh Report",
+  "type": "object",
+  "required": ["schema_id", "type", "summary"],
+  "properties": {
+    "schema_id": { "const": "report.ip_inversion_mesh.v1" },
+    "type": { "const": "ip_inversion_mesh_report" },
+    "summary": { "type": "object" }
+  }
+}

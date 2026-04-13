@@ -62,7 +62,12 @@ fn parse_params(job: &JobEnvelope) -> ChartParams {
 fn n(v: &Value) -> Option<f64> {
     match v {
         Value::Number(x) => x.as_f64().filter(|k| k.is_finite()),
-        Value::String(s) => s.trim().replace(',', ".").parse::<f64>().ok().filter(|k| k.is_finite()),
+        Value::String(s) => s
+            .trim()
+            .replace(',', ".")
+            .parse::<f64>()
+            .ok()
+            .filter(|k| k.is_finite()),
         _ => None,
     }
 }
@@ -100,7 +105,11 @@ fn infer_template_defaults(template_key: &str) -> Value {
     }
 }
 
-fn extract_array_rows(source: &Value, pointer: Option<&str>, candidates: &[String]) -> (Vec<Map<String, Value>>, String) {
+fn extract_array_rows(
+    source: &Value,
+    pointer: Option<&str>,
+    candidates: &[String],
+) -> (Vec<Map<String, Value>>, String) {
     let mut targets = Vec::<String>::new();
     if let Some(p) = pointer {
         targets.push(p.to_string());
@@ -167,7 +176,11 @@ fn numeric_columns(rows: &[Map<String, Value>]) -> Vec<String> {
     cols.into_iter().map(|x| x.0).collect()
 }
 
-fn default_plot_plan(template_key: &str, rows: &[Map<String, Value>], title_hint: Option<&str>) -> Value {
+fn default_plot_plan(
+    template_key: &str,
+    rows: &[Map<String, Value>],
+    title_hint: Option<&str>,
+) -> Value {
     let numeric = numeric_columns(rows);
     let x = if template_key == "variogram" {
         if numeric.iter().any(|c| c == "lag_mid_m") {
@@ -220,7 +233,11 @@ fn apply_simple_data_plan(rows: &mut [Map<String, Value>], plot_plan: &mut Value
         .pointer("/mapping/weight")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let mut point_size_col = plot_plan.pointer("/mapping/point_size").and_then(|v| v.as_str()).unwrap_or("point_size").to_string();
+    let mut point_size_col = plot_plan
+        .pointer("/mapping/point_size")
+        .and_then(|v| v.as_str())
+        .unwrap_or("point_size")
+        .to_string();
     if let Some(wc) = weight_col.as_deref() {
         if plot_plan.pointer("/mapping/point_size").is_none() {
             if let Some(obj) = plot_plan.get_mut("mapping").and_then(|m| m.as_object_mut()) {
@@ -234,14 +251,8 @@ fn apply_simple_data_plan(rows: &mut [Map<String, Value>], plot_plan: &mut Value
                 raw.push(w.max(0.0).sqrt());
             }
         }
-        let rmin = raw
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, |a, b| a.min(b));
-        let rmax = raw
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, |a, b| a.max(b));
+        let rmin = raw.iter().copied().fold(f64::INFINITY, |a, b| a.min(b));
+        let rmax = raw.iter().copied().fold(f64::NEG_INFINITY, |a, b| a.max(b));
         let span = (rmax - rmin).max(1e-9);
         for row in rows {
             if row.get(&point_size_col).is_none() {
@@ -266,10 +277,22 @@ fn sort_rows(rows: &mut [Map<String, Value>], x_col: &str) {
 }
 
 fn render_plotly_html(plot_plan: &Value, rows: &[Map<String, Value>]) -> String {
-    let template = plot_plan.pointer("/template").and_then(|v| v.as_str()).unwrap_or("scatter");
-    let title = plot_plan.pointer("/title").and_then(|v| v.as_str()).unwrap_or("Chart");
-    let x_col = plot_plan.pointer("/mapping/x").and_then(|v| v.as_str()).unwrap_or("x");
-    let y_col = plot_plan.pointer("/mapping/y").and_then(|v| v.as_str()).unwrap_or("y");
+    let template = plot_plan
+        .pointer("/template")
+        .and_then(|v| v.as_str())
+        .unwrap_or("scatter");
+    let title = plot_plan
+        .pointer("/title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Chart");
+    let x_col = plot_plan
+        .pointer("/mapping/x")
+        .and_then(|v| v.as_str())
+        .unwrap_or("x");
+    let y_col = plot_plan
+        .pointer("/mapping/y")
+        .and_then(|v| v.as_str())
+        .unwrap_or("y");
     let x_label = plot_plan
         .pointer("/axis/x_label")
         .and_then(|v| v.as_str())
@@ -281,7 +304,11 @@ fn render_plotly_html(plot_plan: &Value, rows: &[Map<String, Value>]) -> String 
     let size_col = plot_plan
         .pointer("/mapping/point_size")
         .and_then(|v| v.as_str())
-        .or_else(|| plot_plan.pointer("/mapping/weight").and_then(|v| v.as_str()))
+        .or_else(|| {
+            plot_plan
+                .pointer("/mapping/weight")
+                .and_then(|v| v.as_str())
+        })
         .unwrap_or("point_size");
     let mut x = Vec::<Value>::new();
     let mut y = Vec::<Value>::new();
@@ -420,20 +447,23 @@ fn render_plotly_html(plot_plan: &Value, rows: &[Map<String, Value>]) -> String 
 fn summarise_numeric(rows: &[Map<String, Value>], cols: &[String]) -> Value {
     let mut out = Map::<String, Value>::new();
     for c in cols {
-        let vals = rows.iter().filter_map(|r| r.get(c).and_then(n)).collect::<Vec<_>>();
+        let vals = rows
+            .iter()
+            .filter_map(|r| r.get(c).and_then(n))
+            .collect::<Vec<_>>();
         if vals.is_empty() {
             continue;
         }
-        let min = vals
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, |a, b| a.min(b));
+        let min = vals.iter().copied().fold(f64::INFINITY, |a, b| a.min(b));
         let max = vals
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, |a, b| a.max(b));
         let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-        out.insert(c.clone(), json!({ "min": min, "max": max, "mean": mean, "count": vals.len() }));
+        out.insert(
+            c.clone(),
+            json!({ "min": min, "max": max, "mean": mean, "count": vals.len() }),
+        );
     }
     Value::Object(out)
 }
@@ -469,7 +499,10 @@ async fn llm_plan(compact: &Value, template_key: &str, objective: Option<&str>) 
         ],
         "temperature": 0.1
     });
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(24)).build().ok()?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(24))
+        .build()
+        .ok()?;
     let resp = client
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header(AUTHORIZATION, format!("Bearer {}", api_key))
@@ -482,7 +515,9 @@ async fn llm_plan(compact: &Value, template_key: &str, objective: Option<&str>) 
         return None;
     }
     let v: Value = resp.json().await.ok()?;
-    let content = v.pointer("/choices/0/message/content").and_then(|x| x.as_str())?;
+    let content = v
+        .pointer("/choices/0/message/content")
+        .and_then(|x| x.as_str())?;
     parse_llm_json(content)
 }
 
@@ -495,7 +530,11 @@ fn score_source(v: &Value, template_key: &str) -> i32 {
     if t == "variogram_report" {
         s += 550;
     }
-    if template_key == "variogram" && v.pointer("/variogram/bins").and_then(|x| x.as_array()).is_some() {
+    if template_key == "variogram"
+        && v.pointer("/variogram/bins")
+            .and_then(|x| x.as_array())
+            .is_some()
+    {
         s += 800;
     }
     if template_key == "variogram" && v.pointer("/bins").and_then(|x| x.as_array()).is_some() {
@@ -530,7 +569,9 @@ pub async fn run_plot_chart(
     let mut best_key = String::new();
     let mut best_score = i32::MIN;
     for ar in &job.input_artifact_refs {
-        let Ok(v) = super::runtime::read_json_artifact(ctx, &ar.key).await else { continue };
+        let Ok(v) = super::runtime::read_json_artifact(ctx, &ar.key).await else {
+            continue;
+        };
         let sc = score_source(&v, &params.template_key);
         if sc > best_score {
             best_score = sc;
@@ -539,20 +580,19 @@ pub async fn run_plot_chart(
         }
     }
     let Some(source) = best_source else {
-        return Err(NodeError::InvalidConfig("plot_chart requires upstream semantic JSON".into()));
+        return Err(NodeError::InvalidConfig(
+            "plot_chart requires upstream semantic JSON".into(),
+        ));
     };
 
     let (mut rows, pointer_used) = extract_array_rows(
         &source,
-        params
-            .data_json_pointer
-            .as_deref()
-            .or_else(|| {
-                params
-                    .data_fragment
-                    .as_deref()
-                    .filter(|f| !f.eq_ignore_ascii_case("auto") && !f.eq_ignore_ascii_case("custom"))
-            }),
+        params.data_json_pointer.as_deref().or_else(|| {
+            params
+                .data_fragment
+                .as_deref()
+                .filter(|f| !f.eq_ignore_ascii_case("auto") && !f.eq_ignore_ascii_case("custom"))
+        }),
         &candidate_ptrs,
     );
     if rows.is_empty() {
@@ -562,21 +602,18 @@ pub async fn run_plot_chart(
     }
     inject_root_metadata(&mut rows, &source);
 
-    let inferred_title = params
-        .title
-        .clone()
-        .unwrap_or_else(|| {
-            if params.template_key == "variogram" {
-                let element = source
-                    .pointer("/summary/element_field")
-                    .or_else(|| source.pointer("/element_field"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("grade");
-                format!("Variogram Analysis ({})", element)
-            } else {
-                format!("{} chart", params.template_key)
-            }
-        });
+    let inferred_title = params.title.clone().unwrap_or_else(|| {
+        if params.template_key == "variogram" {
+            let element = source
+                .pointer("/summary/element_field")
+                .or_else(|| source.pointer("/element_field"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("grade");
+            format!("Variogram Analysis ({})", element)
+        } else {
+            format!("{} chart", params.template_key)
+        }
+    });
     let mut plot_plan = default_plot_plan(&params.template_key, &rows, Some(&inferred_title));
     let numeric_cols = numeric_columns(&rows);
     let top = rows
@@ -603,9 +640,16 @@ pub async fn run_plot_chart(
         "top_rows": top,
         "tail_rows": tail,
     });
-    let mut llm_meta = json!({"used": false, "provider": "openrouter", "model": "openai/gpt-5-mini"});
+    let mut llm_meta =
+        json!({"used": false, "provider": "openrouter", "model": "openai/gpt-5-mini"});
     if params.llm_enabled {
-        if let Some(plan) = llm_plan(&context, &params.template_key, params.user_objective.as_deref()).await {
+        if let Some(plan) = llm_plan(
+            &context,
+            &params.template_key,
+            params.user_objective.as_deref(),
+        )
+        .await
+        {
             if let Some(pp) = plan.get("plot_plan") {
                 plot_plan = pp.clone();
             }
@@ -626,7 +670,10 @@ pub async fn run_plot_chart(
     }
 
     apply_simple_data_plan(&mut rows, &mut plot_plan);
-    let x_col = plot_plan.pointer("/mapping/x").and_then(|v| v.as_str()).unwrap_or("x");
+    let x_col = plot_plan
+        .pointer("/mapping/x")
+        .and_then(|v| v.as_str())
+        .unwrap_or("x");
     sort_rows(&mut rows, x_col);
     if rows.len() > params.max_render_rows {
         rows.truncate(params.max_render_rows);
@@ -673,26 +720,43 @@ pub async fn run_plot_chart(
         .unwrap_or_default()
         .as_bytes()
         .to_vec();
-    let spec_key = format!("graphs/{}/nodes/{}/plot_chart_spec.json", job.graph_id, job.node_id);
-    let view_key = format!("graphs/{}/nodes/{}/plot_chart_view.json", job.graph_id, job.node_id);
+    let spec_key = format!(
+        "graphs/{}/nodes/{}/plot_chart_spec.json",
+        job.graph_id, job.node_id
+    );
+    let view_key = format!(
+        "graphs/{}/nodes/{}/plot_chart_view.json",
+        job.graph_id, job.node_id
+    );
     let snap_key = format!(
         "graphs/{}/nodes/{}/plot_chart_data_snapshot.json",
         job.graph_id, job.node_id
     );
-    let html_key = format!("graphs/{}/nodes/{}/plot_chart_view.html", job.graph_id, job.node_id);
+    let html_key = format!(
+        "graphs/{}/nodes/{}/plot_chart_view.html",
+        job.graph_id, job.node_id
+    );
     let spec_ref =
-        super::runtime::write_artifact(ctx, &spec_key, &spec_bytes, Some("application/json")).await?;
+        super::runtime::write_artifact(ctx, &spec_key, &spec_bytes, Some("application/json"))
+            .await?;
     let view_ref =
-        super::runtime::write_artifact(ctx, &view_key, &view_bytes, Some("application/json")).await?;
+        super::runtime::write_artifact(ctx, &view_key, &view_bytes, Some("application/json"))
+            .await?;
     let snap_ref =
-        super::runtime::write_artifact(ctx, &snap_key, &snap_bytes, Some("application/json")).await?;
+        super::runtime::write_artifact(ctx, &snap_key, &snap_bytes, Some("application/json"))
+            .await?;
     let html_ref =
         super::runtime::write_artifact(ctx, &html_key, &html_bytes, Some("text/html")).await?;
 
     Ok(JobResult {
         job_id: job.job_id,
         status: JobStatus::Succeeded,
-        output_artifact_refs: vec![spec_ref.clone(), view_ref.clone(), snap_ref.clone(), html_ref.clone()],
+        output_artifact_refs: vec![
+            spec_ref.clone(),
+            view_ref.clone(),
+            snap_ref.clone(),
+            html_ref.clone(),
+        ],
         content_hashes: vec![
             spec_ref.content_hash,
             view_ref.content_hash,

@@ -225,7 +225,9 @@ pub async fn run_observation_ingest(
             .clone()
             .unwrap_or_else(|| CrsRecord::epsg(4326))
     } else {
-        let epsg = parse_num(ui.get("source_crs_epsg")).map(|v| v as i32).unwrap_or(4326);
+        let epsg = parse_num(ui.get("source_crs_epsg"))
+            .map(|v| v as i32)
+            .unwrap_or(4326);
         CrsRecord::epsg(epsg)
     };
 
@@ -270,8 +272,9 @@ pub async fn run_observation_ingest(
                                 .and_then(|p| p.as_object())
                                 .cloned()
                                 .unwrap_or_default();
-                            if let Some(coords) =
-                                f.pointer("/geometry/coordinates").and_then(|v| v.as_array())
+                            if let Some(coords) = f
+                                .pointer("/geometry/coordinates")
+                                .and_then(|v| v.as_array())
                             {
                                 if coords.len() >= 2 {
                                     r.insert("lon".into(), coords[0].clone());
@@ -365,20 +368,32 @@ pub async fn run_observation_ingest(
         }
     }
 
-    let x_key = mapped_col(&mapping, "x")
-        .or_else(|| pick_header_ci(&headers, &["x", "x_wgs84", "easting", "east", "utm_e", "x_m", "fx"]));
-    let y_key = mapped_col(&mapping, "y")
-        .or_else(|| pick_header_ci(&headers, &["y", "y_wgs84", "northing", "north", "utm_n", "y_m", "fy"]));
+    let x_key = mapped_col(&mapping, "x").or_else(|| {
+        pick_header_ci(
+            &headers,
+            &["x", "x_wgs84", "easting", "east", "utm_e", "x_m", "fx"],
+        )
+    });
+    let y_key = mapped_col(&mapping, "y").or_else(|| {
+        pick_header_ci(
+            &headers,
+            &["y", "y_wgs84", "northing", "north", "utm_n", "y_m", "fy"],
+        )
+    });
     let z_key = mapped_col(&mapping, "z")
         .or_else(|| pick_header_ci(&headers, &["z", "elevation", "alt", "gpsz", "fz"]));
     let lon_key = mapped_col(&mapping, "lon")
         .or_else(|| pick_header_ci(&headers, &["lon", "longitude", "long"]));
-    let lat_key = mapped_col(&mapping, "lat")
-        .or_else(|| pick_header_ci(&headers, &["lat", "latitude"]));
+    let lat_key =
+        mapped_col(&mapping, "lat").or_else(|| pick_header_ci(&headers, &["lat", "latitude"]));
     let t_key = mapped_col(&mapping, "t")
         .or_else(|| pick_header_ci(&headers, &["utc", "time", "timestamp", "datetime"]));
-    let line_key = mapped_col(&mapping, "line_id")
-        .or_else(|| pick_header_ci(&headers, &["line", "line_id", "flightline", "group", "segment"]));
+    let line_key = mapped_col(&mapping, "line_id").or_else(|| {
+        pick_header_ci(
+            &headers,
+            &["line", "line_id", "flightline", "group", "segment"],
+        )
+    });
 
     let mut points = Vec::<ObsPt>::new();
     let mut malformed_rows = 0usize;
@@ -389,7 +404,10 @@ pub async fn run_observation_ingest(
     let source_epsg = source_crs.epsg.unwrap_or(4326);
     if let (Some(xk), Some(yk)) = (x_key.as_ref(), y_key.as_ref()) {
         for r in &rows {
-            if let (Some(x), Some(y)) = (parse_num(lookup_ci(r, xk).as_ref()), parse_num(lookup_ci(r, yk).as_ref())) {
+            if let (Some(x), Some(y)) = (
+                parse_num(lookup_ci(r, xk).as_ref()),
+                parse_num(lookup_ci(r, yk).as_ref()),
+            ) {
                 projected_total += 1;
                 let looks_geo = x.abs() <= 180.0 && y.abs() <= 90.0;
                 if !looks_geo && x.abs() > 500.0 && y.abs() > 500.0 {
@@ -406,7 +424,10 @@ pub async fn run_observation_ingest(
     let mut lon_lat = Vec::<(f64, f64)>::new();
     if let (Some(lok), Some(lak)) = (lon_key.as_ref(), lat_key.as_ref()) {
         for r in &rows {
-            if let (Some(lon), Some(lat)) = (parse_num(lookup_ci(r, lok).as_ref()), parse_num(lookup_ci(r, lak).as_ref())) {
+            if let (Some(lon), Some(lat)) = (
+                parse_num(lookup_ci(r, lok).as_ref()),
+                parse_num(lookup_ci(r, lak).as_ref()),
+            ) {
                 if lon.abs() <= 180.0 && lat.abs() <= 90.0 {
                     lon_lat.push((lon, lat));
                 }
