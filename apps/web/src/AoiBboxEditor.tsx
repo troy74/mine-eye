@@ -122,8 +122,12 @@ export function AoiBboxEditor({
   // Keep ref in sync on every render so effects with narrow deps always see latest bbox
   currentBboxRef.current = currentBbox;
 
-  // The CRS the saved bbox will be expressed in (starts matching the input)
-  const [bboxEpsg, setBboxEpsg] = useState<string>(String(initialBboxEpsg ?? 4326));
+  // The CRS the saved bbox will be expressed in.
+  // When there is no existing bbox the project CRS is the natural default;
+  // when there is an existing bbox preserve the CRS it was already stored in.
+  const [bboxEpsg, setBboxEpsg] = useState<string>(
+    initialBbox != null ? String(initialBboxEpsg ?? 4326) : String(projectEpsg ?? 4326)
+  );
   const [crsConvertError, setCrsConvertError] = useState<string | null>(null);
   const [drawMode, setDrawMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");

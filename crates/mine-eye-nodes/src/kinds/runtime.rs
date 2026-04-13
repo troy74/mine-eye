@@ -1897,12 +1897,19 @@ async fn fetch_open_meteo_cached(
                 .map(|i| arr.get(i).and_then(|v| v.as_f64()))
                 .collect()
         } else {
-            vec![None; part.len()]
+            // API returned an error response (e.g. rate-limit JSON).  Do NOT
+            // cache the empty result — a stale all-None entry would poison
+            // every subsequent run for up to OPEN_METEO_TTL_S seconds.
+            out.extend((0..part.len()).map(|_| None));
+            continue;
         };
 
-        // Persist for future runs.
-        if let Ok(bytes) = serde_json::to_vec(&batch) {
-            cache.put("dem", &cache_key, &bytes, OPEN_METEO_TTL_S).await;
+        // Only cache batches that contain at least one real elevation value.
+        let has_data = batch.iter().any(|v| v.is_some());
+        if has_data {
+            if let Ok(bytes) = serde_json::to_vec(&batch) {
+                cache.put("dem", &cache_key, &bytes, OPEN_METEO_TTL_S).await;
+            }
         }
         out.extend(batch);
     }
@@ -1941,7 +1948,7 @@ pub(crate) async fn run_dem_fetch_impl(
         .output_spec
         .pointer("/node_ui/timeout_ms")
         .and_then(|v| v.as_u64())
-        .unwrap_or(7000);
+        .unwrap_or(60_000); // large DEMs (e.g. 55 km × 55 km from OpenTopography) can take 30+ s
     let resolution_hint = job
         .output_spec
         .pointer("/node_ui/resolution")

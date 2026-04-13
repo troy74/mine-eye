@@ -1,10 +1,36 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use kiddo::{KdTree, SquaredEuclidean};
 use mine_eye_types::{JobEnvelope, JobResult, JobStatus};
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::executor::ExecutionContext;
 use crate::NodeError;
+use super::parse_util::{lookup_numeric_ci, parse_numeric_value, percentile_value};
+
+/// Compact enum replacing the heap-allocated `String` used per-block.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ConfidenceClass {
+    High,
+    Medium,
+    Low,
+}
+
+impl ConfidenceClass {
+    /// Returns a lowercase `&'static str` for use in diagnostic messages or
+    /// manual string contexts.  JSON serialization uses the `Serialize` derive.
+    #[allow(dead_code)]
+    fn as_str(self) -> &'static str {
+        match self {
+            ConfidenceClass::High   => "high",
+            ConfidenceClass::Medium => "medium",
+            ConfidenceClass::Low    => "low",
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct GradeSample {
@@ -55,7 +81,7 @@ struct BlockCell {
     n_samples_used: usize,
     nearest_sample_distance_m: f64,
     mean_sample_distance_m: f64,
-    confidence_class: String,
+    confidence_class: ConfidenceClass,
 }
 
 #[derive(Clone)]
@@ -122,6 +148,110 @@ struct NeighborStats {
     mean_m: f64,
 }
 
+/// 3-D k-d tree index for grade estimation.
+///
+/// Sample coordinates are stored in the *anisotropically-normalised* space
+/// so that a plain SquaredEuclidean query is equivalent to the search-ellipsoid
+/// constraint applied in the original linear scan.
+struct GradeIndex {
+    tree:   KdTree<f64, 3>,
+    /// Original Euclidean coordinates, indexed parallel to k-d tree leaves.
+    ex:     Vec<f64>,
+    ey:     Vec<f64>,
+    ez:     Vec<f64>,
+    values: Vec<f64>,
+}
+
+impl GradeIndex {
+    fn build(samples: &[GradeSample], p: &ModelParams) -> Self {
+        let az  = p.search_azimuth_deg.to_radians();
+        let (sin_az, cos_az) = az.sin_cos();
+        let ax  = p.anisotropy_x.max(1e-6);
+        let ay  = p.anisotropy_y.max(1e-6);
+        let aaz = p.anisotropy_z.max(1e-6);
+        let mut tree: KdTree<f64, 3> = KdTree::new();
+        let mut ex     = Vec::with_capacity(samples.len());
+        let mut ey     = Vec::with_capacity(samples.len());
+        let mut ez     = Vec::with_capacity(samples.len());
+        let mut values = Vec::with_capacity(samples.len());
+        for (i, s) in samples.iter().enumerate() {
+            let rx = cos_az * s.x + sin_az * s.y;
+            let ry = -sin_az * s.x + cos_az * s.y;
+            tree.add(&[rx / ax, ry / ay, s.z / aaz], i as u64);
+            ex.push(s.x);
+            ey.push(s.y);
+            ez.push(s.z);
+            values.push(s.value);
+        }
+        Self { tree, ex, ey, ez, values }
+    }
+
+    fn query(&self, x: f64, y: f64, z: f64, p: &ModelParams) -> Option<(f64, NeighborStats)> {
+        if self.values.is_empty() {
+            return None;
+        }
+        let az  = p.search_azimuth_deg.to_radians();
+        let (sin_az, cos_az) = az.sin_cos();
+        let ax  = p.anisotropy_x.max(1e-6);
+        let ay  = p.anisotropy_y.max(1e-6);
+        let aaz = p.anisotropy_z.max(1e-6);
+        let rx  = cos_az * x + sin_az * y;
+        let ry  = -sin_az * x + cos_az * y;
+        let k   = p.max_samples.max(1).min(self.values.len());
+
+        // Use the search radius in normalised space (sphere radius = search_radius_m / 1.0 in
+        // each axis after division).  We query up to k neighbours and then
+        // filter by the anisotropic distance.
+        let candidates = self.tree.nearest_n::<SquaredEuclidean>(&[rx / ax, ry / ay, z / aaz], k);
+
+        // Filter to those inside the search ellipsoid.
+        let mut near: Vec<(f64, f64, f64)> = candidates
+            .into_iter()
+            .filter(|n| p.search_radius_m <= 0.0 || n.distance.sqrt() <= p.search_radius_m)
+            .map(|n| {
+                let i = n.item as usize;
+                let dx = x - self.ex[i];
+                let dy = y - self.ey[i];
+                let dz = z - self.ez[i];
+                let d_true = (dx * dx + dy * dy + dz * dz).sqrt();
+                // Re-derive anisotropic model distance from normalised distance
+                let d_model = n.distance.sqrt() * p.search_radius_m.max(1.0);
+                (d_model, d_true, self.values[i])
+            })
+            .collect();
+
+        if near.len() < p.min_samples {
+            return None;
+        }
+        near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if near.len() > p.max_samples {
+            near.truncate(p.max_samples);
+        }
+        if near.len() < p.min_samples {
+            return None;
+        }
+
+        let nearest_m = near[0].1;
+        let mean_m = near.iter().map(|(_, d, _)| *d).sum::<f64>() / near.len() as f64;
+        let stats = NeighborStats { n_used: near.len(), nearest_m, mean_m };
+
+        if near[0].0 <= 1e-9 || p.estimation_method.eq_ignore_ascii_case("nearest") {
+            return Some((near[0].2, stats));
+        }
+        let mut num = 0.0_f64;
+        let mut den = 0.0_f64;
+        for (d_model, _, v) in &near {
+            let w = 1.0 / d_model.max(1e-9).powf(p.idw_power);
+            num += w * v;
+            den += w;
+        }
+        if den <= 0.0 {
+            return None;
+        }
+        Some((num / den, stats))
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Triangle3 {
     a: [f64; 3],
@@ -138,6 +268,96 @@ struct TriangleMesh {
     ymax: f64,
     zmin: f64,
     zmax: f64,
+}
+
+/// Uniform 2-D XY grid index over triangle bounding boxes.
+///
+/// Reduces mesh containment queries from O(T) to O(cells_per_query),
+/// where typically cells_per_query ≪ T for reasonable grid resolutions.
+struct TriangleMeshIndex {
+    mesh:    TriangleMesh,
+    /// Grid resolution (same in X and Y).
+    cell_w:  f64,
+    cell_h:  f64,
+    cols:    usize,
+    rows:    usize,
+    /// Each cell stores triangle indices.
+    cells:   Vec<Vec<usize>>,
+}
+
+impl TriangleMeshIndex {
+    fn build(mesh: TriangleMesh) -> Self {
+        let target_cells = ((mesh.tris.len() as f64).sqrt() as usize).max(4).min(64);
+        let span_x = (mesh.xmax - mesh.xmin).max(1e-6);
+        let span_y = (mesh.ymax - mesh.ymin).max(1e-6);
+        let cols = target_cells;
+        let rows = ((target_cells as f64 * span_y / span_x).round() as usize).max(1);
+        let cell_w = span_x / cols as f64;
+        let cell_h = span_y / rows as f64;
+        let mut cells = vec![Vec::<usize>::new(); cols * rows];
+        for (ti, tri) in mesh.tris.iter().enumerate() {
+            let tri_xmin = tri.a[0].min(tri.b[0]).min(tri.c[0]);
+            let tri_xmax = tri.a[0].max(tri.b[0]).max(tri.c[0]);
+            let tri_ymin = tri.a[1].min(tri.b[1]).min(tri.c[1]);
+            let tri_ymax = tri.a[1].max(tri.b[1]).max(tri.c[1]);
+            let c0 = (((tri_xmin - mesh.xmin) / cell_w).floor() as isize).max(0) as usize;
+            let c1 = (((tri_xmax - mesh.xmin) / cell_w).ceil() as isize).min(cols as isize - 1).max(0) as usize;
+            let r0 = (((tri_ymin - mesh.ymin) / cell_h).floor() as isize).max(0) as usize;
+            let r1 = (((tri_ymax - mesh.ymin) / cell_h).ceil() as isize).min(rows as isize - 1).max(0) as usize;
+            for rr in r0..=r1 {
+                for cc in c0..=c1 {
+                    cells[rr * cols + cc].push(ti);
+                }
+            }
+        }
+        Self { mesh, cell_w, cell_h, cols, rows, cells }
+    }
+
+    fn point_inside_vertical(&self, x: f64, y: f64, z: f64) -> bool {
+        let m = &self.mesh;
+        if x < m.xmin || x > m.xmax || y < m.ymin || y > m.ymax || z < m.zmin || z > m.zmax {
+            return false;
+        }
+        let col = (((x - m.xmin) / self.cell_w).floor() as usize).min(self.cols - 1);
+        let row = (((y - m.ymin) / self.cell_h).floor() as usize).min(self.rows - 1);
+        let candidates = &self.cells[row * self.cols + col];
+        let mut z_hits = Vec::with_capacity(candidates.len());
+        for &ti in candidates {
+            let tri = &m.tris[ti];
+            let tri_xmin = tri.a[0].min(tri.b[0]).min(tri.c[0]);
+            let tri_xmax = tri.a[0].max(tri.b[0]).max(tri.c[0]);
+            let tri_ymin = tri.a[1].min(tri.b[1]).min(tri.c[1]);
+            let tri_ymax = tri.a[1].max(tri.b[1]).max(tri.c[1]);
+            if x < tri_xmin || x > tri_xmax || y < tri_ymin || y > tri_ymax {
+                continue;
+            }
+            if !point_in_triangle_2d(
+                x, y,
+                [tri.a[0], tri.a[1]],
+                [tri.b[0], tri.b[1]],
+                [tri.c[0], tri.c[1]],
+            ) {
+                continue;
+            }
+            if let Some(zh) = z_at_xy_on_triangle(x, y, tri) {
+                z_hits.push(zh);
+            }
+        }
+        if z_hits.is_empty() {
+            return false;
+        }
+        z_hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut i = 0usize;
+        while i + 1 < z_hits.len() {
+            let z0 = z_hits[i];
+            let z1 = z_hits[i + 1];
+            if z >= z0.min(z1) && z <= z0.max(z1) {
+                return true;
+            }
+            i += 2;
+        }
+        false
+    }
 }
 
 impl Extent3D {
@@ -168,14 +388,6 @@ impl Extent3D {
             zmin: self.zmin - pz,
             zmax: self.zmax + pz,
         }
-    }
-}
-
-fn parse_numeric_value(v: &serde_json::Value) -> Option<f64> {
-    match v {
-        serde_json::Value::Number(n) => n.as_f64().filter(|x| x.is_finite()),
-        serde_json::Value::String(s) => s.trim().parse::<f64>().ok().filter(|x| x.is_finite()),
-        _ => None,
     }
 }
 
@@ -284,24 +496,6 @@ fn collect_numeric_fields(
         }
     }
     out
-}
-
-fn lookup_numeric_case_insensitive(
-    obj: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<f64> {
-    if let Some(v) = obj.get(key).and_then(parse_numeric_value) {
-        return Some(v);
-    }
-    let lk = key.to_ascii_lowercase();
-    for (k, v) in obj {
-        if k.to_ascii_lowercase() == lk {
-            if let Some(n) = parse_numeric_value(v) {
-                return Some(n);
-            }
-        }
-    }
-    None
 }
 
 fn parse_params(job: &JobEnvelope) -> ModelParams {
@@ -692,7 +886,10 @@ fn z_at_xy_on_triangle(x: f64, y: f64, tri: &Triangle3) -> Option<f64> {
     Some(u * a[2] + v * b[2] + w * c[2])
 }
 
+#[allow(dead_code)]
 fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bool {
+    // Thin wrapper preserved for non-indexed callers and tests.
+    // The hot path in run_block_grade_model uses TriangleMeshIndex directly.
     if x < mesh.xmin || x > mesh.xmax || y < mesh.ymin || y > mesh.ymax || z < mesh.zmin || z > mesh.zmax {
         return false;
     }
@@ -706,8 +903,7 @@ fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bo
             continue;
         }
         if !point_in_triangle_2d(
-            x,
-            y,
+            x, y,
             [tri.a[0], tri.a[1]],
             [tri.b[0], tri.b[1]],
             [tri.c[0], tri.c[1]],
@@ -734,95 +930,13 @@ fn point_inside_mesh_vertical(x: f64, y: f64, z: f64, mesh: &TriangleMesh) -> bo
     false
 }
 
-fn anisotropic_distance(x: f64, y: f64, z: f64, sx: f64, sy: f64, sz: f64, p: &ModelParams) -> f64 {
-    let mut dx = x - sx;
-    let mut dy = y - sy;
-    let dz = z - sz;
-    if p.search_azimuth_deg.abs() > 1e-9 {
-        let az = p.search_azimuth_deg.to_radians();
-        let c = az.cos();
-        let s = az.sin();
-        let rx = c * dx + s * dy;
-        let ry = -s * dx + c * dy;
-        dx = rx;
-        dy = ry;
-    }
-    let ax = dx / p.anisotropy_x.max(1e-6);
-    let ay = dy / p.anisotropy_y.max(1e-6);
-    let az = dz / p.anisotropy_z.max(1e-6);
-    (ax * ax + ay * ay + az * az).sqrt()
-}
-
-fn estimate_value_with_support(
-    samples: &[GradeSample],
-    x: f64,
-    y: f64,
-    z: f64,
-    p: &ModelParams,
-) -> Option<(f64, NeighborStats)> {
-    let mut near: Vec<(f64, f64, f64)> = Vec::new();
-    for s in samples {
-        let d_model = anisotropic_distance(x, y, z, s.x, s.y, s.z, p);
-        if p.search_radius_m > 0.0 && d_model > p.search_radius_m {
-            continue;
-        }
-        let dx = x - s.x;
-        let dy = y - s.y;
-        let dz = z - s.z;
-        let d_true = (dx * dx + dy * dy + dz * dz).sqrt();
-        near.push((d_model, d_true, s.value));
-    }
-    if near.is_empty() {
-        return None;
-    }
-    near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    if near.len() > p.max_samples {
-        near.truncate(p.max_samples);
-    }
-    if near.len() < p.min_samples {
-        return None;
-    }
-    if near[0].0 <= 1e-9 || p.estimation_method.eq_ignore_ascii_case("nearest") {
-        let nearest = near[0].1;
-        let mean = near.iter().map(|(_, d, _)| *d).sum::<f64>() / near.len() as f64;
-        return Some((
-            near[0].2,
-            NeighborStats {
-                n_used: near.len(),
-                nearest_m: nearest,
-                mean_m: mean,
-            },
-        ));
-    }
-    let mut num = 0.0;
-    let mut den = 0.0;
-    for (d, _, v) in &near {
-        let w = 1.0 / d.max(1e-9).powf(p.idw_power);
-        num += w * *v;
-        den += w;
-    }
-    if den <= 0.0 {
-        return None;
-    }
-    let nearest = near[0].1;
-    let mean = near.iter().map(|(_, d, _)| *d).sum::<f64>() / near.len() as f64;
-    Some((
-        num / den,
-        NeighborStats {
-            n_used: near.len(),
-            nearest_m: nearest,
-            mean_m: mean,
-        },
-    ))
-}
-
-fn classify_confidence(stats: NeighborStats, block_diag_m: f64) -> String {
+fn classify_confidence(stats: NeighborStats, block_diag_m: f64) -> ConfidenceClass {
     if stats.n_used >= 12 && stats.nearest_m <= 0.75 * block_diag_m && stats.mean_m <= 2.0 * block_diag_m {
-        "high".to_string()
+        ConfidenceClass::High
     } else if stats.n_used >= 6 && stats.nearest_m <= 1.5 * block_diag_m {
-        "medium".to_string()
+        ConfidenceClass::Medium
     } else {
-        "low".to_string()
+        ConfidenceClass::Low
     }
 }
 
@@ -888,30 +1002,31 @@ fn compute_variogram(samples: &[GradeSample], lags: usize, max_range: f64, max_p
     let lag_w = (max_d / lags as f64).max(1e-9);
     let mut gamma_sum = vec![0.0_f64; lags];
     let mut count = vec![0usize; lags];
-    let step_i = ((samples.len() * samples.len()).saturating_div(max_pairs.max(1))).max(1);
-    for i in 0..samples.len() {
-        for j in (i + 1)..samples.len() {
-            if ((j - i) % step_i) != 0 {
-                continue;
+    // Sample pairs uniformly by striding the overall pair enumeration order
+    // (not the index gap), giving unbiased coverage of all separation distances.
+    let n = samples.len();
+    let n_pairs_total = (n * (n - 1)) / 2;
+    let stride = (n_pairs_total / max_pairs.max(1)).max(1);
+    let mut seq = 0usize;
+    'outer: for i in 0..n {
+        for j in (i + 1)..n {
+            if seq % stride == 0 {
+                let dx = samples[i].x - samples[j].x;
+                let dy = samples[i].y - samples[j].y;
+                let dz = samples[i].z - samples[j].z;
+                let d = (dx * dx + dy * dy + dz * dz).sqrt();
+                if d > 0.0 && d <= max_d {
+                    let b = ((d / lag_w).floor() as usize).min(lags - 1);
+                    let diff = samples[i].value - samples[j].value;
+                    gamma_sum[b] += 0.5 * diff * diff;
+                    count[b] += 1;
+                    pairs_used += 1;
+                    if pairs_used >= max_pairs {
+                        break 'outer;
+                    }
+                }
             }
-            let dx = samples[i].x - samples[j].x;
-            let dy = samples[i].y - samples[j].y;
-            let dz = samples[i].z - samples[j].z;
-            let d = (dx * dx + dy * dy + dz * dz).sqrt();
-            if d <= 0.0 || d > max_d {
-                continue;
-            }
-            let b = ((d / lag_w).floor() as usize).min(lags - 1);
-            let diff = samples[i].value - samples[j].value;
-            gamma_sum[b] += 0.5 * diff * diff;
-            count[b] += 1;
-            pairs_used += 1;
-            if pairs_used >= max_pairs {
-                break;
-            }
-        }
-        if pairs_used >= max_pairs {
-            break;
+            seq += 1;
         }
     }
     (0..lags)
@@ -966,15 +1081,70 @@ fn compute_bins(values: &[f64]) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn percentile_value(values: &[f64], pct: f64) -> Option<f64> {
-    if values.is_empty() {
-        return None;
+/// Accumulates sample contributions for compositing.
+///
+/// Replaces the 11-parameter `flush` closure in `composite_records`.
+struct CompositeAccumulator {
+    acc_len:     f64,
+    acc_x:       f64,
+    acc_y:       f64,
+    acc_z:       f64,
+    acc_g:       f64,
+    acc_sg:      f64,
+    acc_sg_w:    f64,
+    from_start:  Option<f64>,
+    depth_start: Option<f64>,
+    to_last:     Option<f64>,
+    depth_last:  Option<f64>,
+}
+
+impl CompositeAccumulator {
+    fn new() -> Self {
+        Self {
+            acc_len: 0.0, acc_x: 0.0, acc_y: 0.0, acc_z: 0.0,
+            acc_g: 0.0, acc_sg: 0.0, acc_sg_w: 0.0,
+            from_start: None, depth_start: None, to_last: None, depth_last: None,
+        }
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let p = pct.clamp(0.0, 100.0) / 100.0;
-    let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
-    sorted.get(idx).copied()
+
+    fn add(&mut self, r: &SampleRecord) {
+        let w = r.support_m.max(1e-6);
+        if self.from_start.is_none()  { self.from_start  = r.from_m;  }
+        if self.depth_start.is_none() { self.depth_start = r.depth_m; }
+        self.to_last    = r.to_m.or(r.depth_m);
+        self.depth_last = r.depth_m;
+        self.acc_len  += w;
+        self.acc_x    += r.x * w;
+        self.acc_y    += r.y * w;
+        self.acc_z    += r.z * w;
+        self.acc_g    += r.value * w;
+        if let Some(sgv) = r.sg_value {
+            self.acc_sg   += sgv * w;
+            self.acc_sg_w += w;
+        }
+    }
+
+    fn flush(&mut self, hole_id: &Option<String>, out: &mut Vec<SampleRecord>) {
+        if self.acc_len <= 0.0 { return; }
+        let sg_value = if self.acc_sg_w > 0.0 { Some(self.acc_sg / self.acc_sg_w) } else { None };
+        out.push(SampleRecord {
+            x:       self.acc_x / self.acc_len,
+            y:       self.acc_y / self.acc_len,
+            z:       self.acc_z / self.acc_len,
+            value:   self.acc_g / self.acc_len,
+            hole_id: hole_id.clone(),
+            from_m:  self.from_start,
+            to_m:    self.to_last,
+            depth_m: match (self.depth_start, self.depth_last) {
+                (Some(a), Some(b)) => Some(0.5 * (a + b)),
+                (Some(a), None)    => Some(a),
+                _                  => None,
+            },
+            support_m: self.acc_len,
+            sg_value,
+        });
+        *self = Self::new();
+    }
 }
 
 fn composite_records(records: &[SampleRecord], composite_length_m: f64) -> Vec<SampleRecord> {
@@ -994,14 +1164,8 @@ fn composite_records(records: &[SampleRecord], composite_length_m: f64) -> Vec<S
     let mut out: Vec<SampleRecord> = Vec::new();
     for (_key, mut g) in groups {
         g.sort_by(|a, b| {
-            let da = a
-                .from_m
-                .or(a.depth_m)
-                .unwrap_or(f64::INFINITY);
-            let db = b
-                .from_m
-                .or(b.depth_m)
-                .unwrap_or(f64::INFINITY);
+            let da = a.from_m.or(a.depth_m).unwrap_or(f64::INFINITY);
+            let db = b.from_m.or(b.depth_m).unwrap_or(f64::INFINITY);
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         });
         if g.len() == 1 {
@@ -1009,121 +1173,15 @@ fn composite_records(records: &[SampleRecord], composite_length_m: f64) -> Vec<S
             continue;
         }
 
-        let mut acc_len = 0.0;
-        let mut acc_x = 0.0;
-        let mut acc_y = 0.0;
-        let mut acc_z = 0.0;
-        let mut acc_g = 0.0;
-        let mut acc_sg = 0.0;
-        let mut acc_sg_w = 0.0;
-        let mut from_start: Option<f64> = None;
-        let mut depth_start: Option<f64> = None;
-        let mut to_last: Option<f64> = None;
-        let mut depth_last: Option<f64> = None;
         let hole_id = g[0].hole_id.clone();
-
-        let flush = |out: &mut Vec<SampleRecord>,
-                     acc_len: &mut f64,
-                     acc_x: &mut f64,
-                     acc_y: &mut f64,
-                     acc_z: &mut f64,
-                     acc_g: &mut f64,
-                     acc_sg: &mut f64,
-                     acc_sg_w: &mut f64,
-                     from_start: &mut Option<f64>,
-                     depth_start: &mut Option<f64>,
-                     to_last: &mut Option<f64>,
-                     depth_last: &mut Option<f64>,
-                     hole_id: &Option<String>| {
-            if *acc_len <= 0.0 {
-                return;
-            }
-            let sg_value = if *acc_sg_w > 0.0 {
-                Some(*acc_sg / *acc_sg_w)
-            } else {
-                None
-            };
-            out.push(SampleRecord {
-                x: *acc_x / *acc_len,
-                y: *acc_y / *acc_len,
-                z: *acc_z / *acc_len,
-                value: *acc_g / *acc_len,
-                hole_id: hole_id.clone(),
-                from_m: *from_start,
-                to_m: *to_last,
-                depth_m: match (*depth_start, *depth_last) {
-                    (Some(a), Some(b)) => Some(0.5 * (a + b)),
-                    (Some(a), None) => Some(a),
-                    _ => None,
-                },
-                support_m: *acc_len,
-                sg_value,
-            });
-            *acc_len = 0.0;
-            *acc_x = 0.0;
-            *acc_y = 0.0;
-            *acc_z = 0.0;
-            *acc_g = 0.0;
-            *acc_sg = 0.0;
-            *acc_sg_w = 0.0;
-            *from_start = None;
-            *depth_start = None;
-            *to_last = None;
-            *depth_last = None;
-        };
-
+        let mut acc = CompositeAccumulator::new();
         for r in g {
-            let w = r.support_m.max(1e-6);
-            if from_start.is_none() {
-                from_start = r.from_m;
-            }
-            if depth_start.is_none() {
-                depth_start = r.depth_m;
-            }
-            to_last = r.to_m.or(r.depth_m);
-            depth_last = r.depth_m;
-            acc_len += w;
-            acc_x += r.x * w;
-            acc_y += r.y * w;
-            acc_z += r.z * w;
-            acc_g += r.value * w;
-            if let Some(sgv) = r.sg_value {
-                acc_sg += sgv * w;
-                acc_sg_w += w;
-            }
-            if acc_len >= composite_length_m {
-                flush(
-                    &mut out,
-                    &mut acc_len,
-                    &mut acc_x,
-                    &mut acc_y,
-                    &mut acc_z,
-                    &mut acc_g,
-                    &mut acc_sg,
-                    &mut acc_sg_w,
-                    &mut from_start,
-                    &mut depth_start,
-                    &mut to_last,
-                    &mut depth_last,
-                    &hole_id,
-                );
+            acc.add(r);
+            if acc.acc_len >= composite_length_m {
+                acc.flush(&hole_id, &mut out);
             }
         }
-        flush(
-            &mut out,
-            &mut acc_len,
-            &mut acc_x,
-            &mut acc_y,
-            &mut acc_z,
-            &mut acc_g,
-            &mut acc_sg,
-            &mut acc_sg_w,
-            &mut from_start,
-            &mut depth_start,
-            &mut to_last,
-            &mut depth_last,
-            &hole_id,
-        );
+        acc.flush(&hole_id, &mut out);
     }
     out
 }
@@ -1217,12 +1275,12 @@ pub async fn run_block_grade_model(
 
         let mut grade_value = None;
         if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
-            if let Some(v) = lookup_numeric_case_insensitive(attrs, &element_field) {
+            if let Some(v) = lookup_numeric_ci(attrs, &element_field) {
                 grade_value = Some(v);
             }
         }
         if grade_value.is_none() {
-            grade_value = lookup_numeric_case_insensitive(obj, &element_field);
+            grade_value = lookup_numeric_ci(obj, &element_field);
         }
         if let Some(value) = grade_value {
             let hole_id = obj
@@ -1241,10 +1299,10 @@ pub async fn run_block_grade_model(
                 if let Some(sg_field) = params.sg_field.as_ref() {
                     let mut sg = None;
                     if let Some(attrs) = obj.get("attributes").and_then(|v| v.as_object()) {
-                        sg = lookup_numeric_case_insensitive(attrs, sg_field);
+                        sg = lookup_numeric_ci(attrs, sg_field);
                     }
                     if sg.is_none() {
-                        sg = lookup_numeric_case_insensitive(obj, sg_field);
+                        sg = lookup_numeric_ci(obj, sg_field);
                     }
                     sg.filter(|v| v.is_finite() && *v > 0.1 && *v < 12.0)
                 } else {
@@ -1320,6 +1378,14 @@ pub async fn run_block_grade_model(
         }
     }
 
+    // Build spatial indices for fast estimation.
+    let grade_index = GradeIndex::build(&samples, &params);
+    let sg_index = if !sg_samples.is_empty() {
+        Some(GradeIndex::build(&sg_samples, &params))
+    } else {
+        None
+    };
+
     if params.clip_mode.eq_ignore_ascii_case("topography") && best_terrain.is_none() {
         return Err(NodeError::InvalidConfig(
             "clip_mode=topography requires a wired terrain/surface_grid input".into(),
@@ -1357,8 +1423,6 @@ pub async fn run_block_grade_model(
         total = grid.0.saturating_mul(grid.1).saturating_mul(grid.2);
     }
 
-    let mut blocks: Vec<BlockCell> = Vec::new();
-    blocks.reserve(total.min(params.max_blocks));
     let domain_poly = if params.domain_mode.eq_ignore_ascii_case("convex_hull")
         || params.domain_mode.eq_ignore_ascii_case("buffered_hull")
     {
@@ -1395,103 +1459,93 @@ pub async fn run_block_grade_model(
 
     let block_diag_m = (dx * dx + dy * dy + dz * dz).sqrt();
 
-    for iz in 0..grid.2 {
-        let z = extent.zmin + (iz as f64 + 0.5) * dz;
-        for iy in 0..grid.1 {
-            let y = extent.ymin + (iy as f64 + 0.5) * dy;
-            for ix in 0..grid.0 {
-                let x = extent.xmin + (ix as f64 + 0.5) * dx;
-                if let Some(poly) = domain_poly.as_ref() {
-                    let inside = point_in_polygon_xy(x, y, poly);
-                    if params.domain_mode.eq_ignore_ascii_case("convex_hull") && !inside {
-                        continue;
-                    }
-                    if params.domain_mode.eq_ignore_ascii_case("buffered_hull") && !inside {
-                        let d_edge = min_distance_to_polygon_edges_xy(x, y, poly);
-                        if d_edge > params.hull_buffer_m {
-                            continue;
-                        }
-                    }
-                    if params.domain_mode.eq_ignore_ascii_case("input_domain_mask") && !inside {
-                        continue;
-                    }
-                }
-                if params.clip_mode.eq_ignore_ascii_case("topography") {
-                    if let Some(g) = best_terrain.as_ref() {
-                        if let Some(top_z) = super::runtime::bilinear_from_grid(
-                            g.nx,
-                            g.ny,
-                            g.xmin,
-                            g.xmax,
-                            g.ymin,
-                            g.ymax,
-                            &g.values,
-                            x,
-                            y,
-                        ) {
-                            if z + 0.5 * dz > top_z {
-                                continue;
-                            }
-                        } else {
-                            // Strict clip: if terrain cannot be sampled at XY, do not keep the block.
-                            continue;
-                        }
-                    }
-                }
-                if params
-                    .domain_constraint_mode
-                    .eq_ignore_ascii_case("mesh_containment")
-                {
-                    if let Some(mesh) = input_domain_mesh.as_ref() {
-                        if !point_inside_mesh_vertical(x, y, z, mesh) {
-                            continue;
-                        }
-                    }
-                }
+    // Build the mesh index once if needed, before parallel block estimation.
+    let mesh_index: Option<TriangleMeshIndex> = input_domain_mesh.map(TriangleMeshIndex::build);
 
-                let Some((mut grade, support)) = estimate_value_with_support(&samples, x, y, z, &params) else {
-                    continue;
-                };
-                if let Some(gmin) = params.grade_min {
-                    grade = grade.max(gmin);
+    // Generate all block centre coordinates up front so we can par_iter over them.
+    let block_coords: Vec<(usize, usize, usize)> = (0..grid.2)
+        .flat_map(|iz| {
+            (0..grid.1).flat_map(move |iy| (0..grid.0).map(move |ix| (ix, iy, iz)))
+        })
+        .collect();
+
+    let blocks: Vec<BlockCell> = block_coords
+        .into_par_iter()
+        .filter_map(|(ix, iy, iz)| {
+            let x = extent.xmin + (ix as f64 + 0.5) * dx;
+            let y = extent.ymin + (iy as f64 + 0.5) * dy;
+            let z = extent.zmin + (iz as f64 + 0.5) * dz;
+
+            // Domain polygon filter.
+            if let Some(poly) = domain_poly.as_ref() {
+                let inside = point_in_polygon_xy(x, y, poly);
+                if params.domain_mode.eq_ignore_ascii_case("convex_hull") && !inside {
+                    return None;
                 }
-                if let Some(gmax) = params.grade_max {
-                    grade = grade.min(gmax);
+                if params.domain_mode.eq_ignore_ascii_case("buffered_hull") && !inside {
+                    let d_edge = min_distance_to_polygon_edges_xy(x, y, poly);
+                    if d_edge > params.hull_buffer_m {
+                        return None;
+                    }
                 }
-                if !grade.is_finite() {
-                    continue;
+                if params.domain_mode.eq_ignore_ascii_case("input_domain_mask") && !inside {
+                    return None;
                 }
-                let sg_here = if params.sg_mode.eq_ignore_ascii_case("field") && !sg_samples.is_empty() {
-                    estimate_value_with_support(&sg_samples, x, y, z, &params)
-                        .map(|(v, _)| v.clamp(0.2, 8.0))
-                        .unwrap_or(params.sg_constant)
-                } else {
-                    params.sg_constant
-                };
-                let volume_m3 = dx * dy * dz;
-                let tonnage_t = volume_m3 * sg_here;
-                let contained_unscaled = tonnage_t * grade;
-                let confidence_class = classify_confidence(support, block_diag_m);
-                blocks.push(BlockCell {
-                    x,
-                    y,
-                    z,
-                    dx,
-                    dy,
-                    dz,
-                    grade,
-                    sg: sg_here,
-                    tonnage_t,
-                    contained_unscaled,
-                    above_cutoff: grade >= params.cutoff_grade,
-                    n_samples_used: support.n_used,
-                    nearest_sample_distance_m: support.nearest_m,
-                    mean_sample_distance_m: support.mean_m,
-                    confidence_class,
-                });
             }
-        }
-    }
+
+            // Topography clip.
+            if params.clip_mode.eq_ignore_ascii_case("topography") {
+                if let Some(g) = best_terrain.as_ref() {
+                    match super::runtime::bilinear_from_grid(
+                        g.nx, g.ny, g.xmin, g.xmax, g.ymin, g.ymax, &g.values, x, y,
+                    ) {
+                        Some(top_z) if z + 0.5 * dz <= top_z => {}
+                        _ => return None,
+                    }
+                }
+            }
+
+            // Mesh containment filter.
+            if params.domain_constraint_mode.eq_ignore_ascii_case("mesh_containment") {
+                if let Some(idx) = mesh_index.as_ref() {
+                    if !idx.point_inside_vertical(x, y, z) {
+                        return None;
+                    }
+                }
+            }
+
+            // Grade estimation.
+            let (mut grade, support) = grade_index.query(x, y, z, &params)?;
+            if let Some(gmin) = params.grade_min { grade = grade.max(gmin); }
+            if let Some(gmax) = params.grade_max { grade = grade.min(gmax); }
+            if !grade.is_finite() { return None; }
+
+            let sg_here = if params.sg_mode.eq_ignore_ascii_case("field") {
+                sg_index
+                    .as_ref()
+                    .and_then(|idx| idx.query(x, y, z, &params))
+                    .map(|(v, _)| v.clamp(0.2, 8.0))
+                    .unwrap_or(params.sg_constant)
+            } else {
+                params.sg_constant
+            };
+
+            let volume_m3         = dx * dy * dz;
+            let tonnage_t         = volume_m3 * sg_here;
+            let contained_unscaled = tonnage_t * grade;
+            let confidence_class  = classify_confidence(support, block_diag_m);
+
+            Some(BlockCell {
+                x, y, z, dx, dy, dz, grade, sg: sg_here,
+                tonnage_t, contained_unscaled,
+                above_cutoff: grade >= params.cutoff_grade,
+                n_samples_used: support.n_used,
+                nearest_sample_distance_m: support.nearest_m,
+                mean_sample_distance_m: support.mean_m,
+                confidence_class,
+            })
+        })
+        .collect();
 
     if blocks.is_empty() {
         return Err(NodeError::InvalidConfig(
@@ -1535,10 +1589,10 @@ pub async fn run_block_grade_model(
         sum_n_samples += b.n_samples_used as f64;
         sum_nearest_m += b.nearest_sample_distance_m;
         sum_mean_dist_m += b.mean_sample_distance_m;
-        match b.confidence_class.as_str() {
-            "high" => conf_high += 1,
-            "medium" => conf_medium += 1,
-            _ => conf_low += 1,
+        match b.confidence_class {
+            ConfidenceClass::High   => conf_high += 1,
+            ConfidenceClass::Medium => conf_medium += 1,
+            ConfidenceClass::Low    => conf_low += 1,
         }
     }
     grade_values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));

@@ -626,6 +626,7 @@ export function NodeInspector({
   const [rtcMeasure, setRtcMeasure] = useState<string>(
     () => (typeof initialUi.measure === "string" ? initialUi.measure : "")
   );
+  const [rtcMeasureOptions, setRtcMeasureOptions] = useState<string[]>([]);
   const [rtcMethod, setRtcMethod] = useState<string>(
     () => (typeof initialUi.method === "string" ? initialUi.method : "idw")
   );
@@ -1100,6 +1101,35 @@ export function NodeInspector({
       cancelled = true;
     };
   }, [isHeatmapNode, nodeArtifacts]);
+
+  // Populate measure dropdown for heatmap_raster_tile_cache from its manifest.
+  useEffect(() => {
+    if (!isHeatmapRasterTileCacheNode) {
+      setRtcMeasureOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const hit =
+          nodeArtifacts.find((a) => a.key.endsWith("/raster_tile_manifest.json")) ??
+          nodeArtifacts.find((a) => a.key.endsWith("raster_tile_manifest.json")) ??
+          null;
+        if (!hit) {
+          if (!cancelled) setRtcMeasureOptions([]);
+          return;
+        }
+        const r = await fetch(api(hit.url));
+        if (!r.ok) return;
+        const txt = await r.text();
+        const opts = extractHeatmapMeasureCandidatesFromJson(txt);
+        if (!cancelled) setRtcMeasureOptions(opts);
+      } catch {
+        if (!cancelled) setRtcMeasureOptions([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isHeatmapRasterTileCacheNode, nodeArtifacts]);
 
   useEffect(() => {
     if (!isTilebrokerNode) {
@@ -3855,13 +3885,26 @@ export function NodeInspector({
             <div style={mapGrid}>
               <label style={lab}>
                 <span style={labSpan}>Measure field</span>
-                <input
-                  type="text"
-                  value={rtcMeasure}
-                  onChange={(e) => setRtcMeasure(e.target.value)}
-                  placeholder="auto-select first numeric measure"
-                  style={{ ...sel, fontFamily: "inherit" }}
-                />
+                {rtcMeasureOptions.length > 0 ? (
+                  <select
+                    value={rtcMeasure}
+                    onChange={(e) => setRtcMeasure(e.target.value)}
+                    style={sel}
+                  >
+                    <option value="">Auto (first numeric measure)</option>
+                    {rtcMeasureOptions.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={rtcMeasure}
+                    onChange={(e) => setRtcMeasure(e.target.value)}
+                    placeholder="auto-select first numeric measure"
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                )}
               </label>
               <label style={lab}>
                 <span style={labSpan}>Interpolation method</span>

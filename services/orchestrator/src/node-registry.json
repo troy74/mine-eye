@@ -172,6 +172,35 @@
       "plugin_source": "core"
     },
     {
+      "kind": "magnetic_depth_model",
+      "category": "model",
+      "label": "Magnetic depth model",
+      "role": "Model · Euler deconvolution depth estimation from magnetic grid",
+      "menu": {
+        "enabled": true,
+        "order": 33
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "mag_grid",
+            "label": "Magnetic grid",
+            "semantic": "table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "depth_voxels",
+            "label": "Depth voxels",
+            "semantic": "point_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
       "kind": "data_model_transform",
       "category": "transform",
       "label": "Data model transform",
@@ -357,7 +386,8 @@
       "kind": "heatmap_raster_tile_cache",
       "category": "transform",
       "label": "Heatmap raster tile cache",
-      "role": "Transform · generic XY+measure points → cached heatmap raster + tile pyramid + drape contract",
+      "role": "Transform · XY+measure points → pre-computed heatmap tile pyramid (IDW/nearest, LOD-aware, 2D + 3D drape)",
+      "description": "Interpolates XY point data (IDW or nearest-neighbour) onto a raster grid using a k-d tree spatial index, renders it to a colour ramp image, then slices the result into a local XYZ tile pyramid for fast LOD-aware display in the 2D map viewer and 3D drape renderer. Base image resolution scales with max_zoom so tiles are native quality without upscaling. Tiles are encoded in parallel on the CPU thread pool and written concurrently. The style_hash covers both UI parameters and upstream data hashes so tiles are automatically invalidated when input data changes.",
       "menu": {
         "enabled": true,
         "order": 81

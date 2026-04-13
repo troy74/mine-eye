@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { ACQUISITION_EPSG_OPTIONS } from "./crsOptions";
 import { searchEpsg, type EpsgSearchHit } from "./epsgSearch";
 
@@ -106,8 +107,13 @@ export function CrsPicker({
   placeholder = "Search EPSG code or name…",
 }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuDivRef = useRef<HTMLDivElement | null>(null);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  // Menu position in viewport coordinates — updated when the menu opens so
+  // the dropdown can use position:fixed and escape any overflow:hidden ancestors.
+  const [menuRect, setMenuRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [cached, setCached] = useState<EpsgSearchHit[]>(() => loadCache());
   const [remote, setRemote] = useState<EpsgSearchHit[]>([]);
   const [searchBusy, setSearchBusy] = useState(false);
@@ -163,9 +169,10 @@ export function CrsPicker({
   useEffect(() => {
     if (!open) return;
     const onDocDown = (ev: MouseEvent) => {
-      const el = rootRef.current;
       const t = ev.target as Node | null;
-      if (!el || !t || el.contains(t)) return;
+      if (!t) return;
+      if (rootRef.current?.contains(t)) return;
+      if (menuDivRef.current?.contains(t)) return;
       setOpen(false);
       setQuery("");
     };
@@ -252,11 +259,20 @@ export function CrsPicker({
     return value ? `EPSG:${value}` : "";
   }, [cached, options, projectEpsg, value]);
 
+  const handleToggle = () => {
+    if (!open && buttonRef.current) {
+      const r = buttonRef.current.getBoundingClientRect();
+      setMenuRect({ top: r.bottom + 4, left: r.left, width: r.width });
+    }
+    setOpen((v) => !v);
+  };
+
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggle}
         style={selectedButtonStyle}
         title={selectedLabel}
       >
@@ -265,9 +281,21 @@ export function CrsPicker({
         </span>
         <span style={{ opacity: 0.7, marginLeft: 8 }}>▾</span>
       </button>
-      {open && (
+      {open && menuRect && createPortal(
         <div
-          style={menuStyle}
+          ref={menuDivRef}
+          style={{
+            position: "fixed",
+            top: menuRect.top,
+            left: menuRect.left,
+            width: menuRect.width,
+            maxHeight: 300,
+            overflow: "auto",
+            background: "#0f1419",
+            border: "1px solid #30363d",
+            borderRadius: 6,
+            zIndex: 99999,
+          }}
           onMouseDown={(e) => {
             // Prevent outside blur handlers from closing while interacting inside.
             e.stopPropagation();
@@ -353,7 +381,8 @@ export function CrsPicker({
               </button>
             ))
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -372,19 +401,6 @@ const selectedButtonStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-};
-
-const menuStyle: CSSProperties = {
-  position: "absolute",
-  top: "calc(100% + 4px)",
-  left: 0,
-  right: 0,
-  maxHeight: 300,
-  overflow: "auto",
-  background: "#0f1419",
-  border: "1px solid #30363d",
-  borderRadius: 6,
-  zIndex: 30,
 };
 
 const searchWrapStyle: CSSProperties = {

@@ -51,9 +51,16 @@ This is the core parity rule for web, iOS, and desktop clients.
 - `trajectory` (desurvey)
 - `drillhole` (merge/model)
 - `resource_model` (block grade modeling + resource summaries)
+- `magnetic_model` (airborne magnetics cleanup, gridding, derivatives)
+- `magnetic_depth` (Euler deconvolution — 3D depth/susceptibility voxels from magnetic grid)
 - `scene_contract` (scene layer composition)
 - `visualization` (viewer payload nodes)
 - `stubs` (alpha placeholders)
+
+Shared utilities in `kinds/`:
+
+- `parse_util.rs` — canonical numeric parsing and percentile helpers reused across node kinds
+- `colour.rs` — canonical colour ramp interpolation (inferno, viridis, terrain, grayscale) reused across node kinds
 
 `runtime.rs` is internal helper/runtime support. New public node entrypoints should be added to the domain module, not directly exposed from `runtime.rs`.
 
@@ -184,6 +191,12 @@ Notes:
   - `affine_xy_z` (bias + tilt)
 - `dem_fetch` now emits `confidence_grid` (`class_ids` + `scores`) for overlay
   rendering in viewers.
+- `dem_fetch` default timeout is 60 s (configurable via `node_ui.timeout_ms`).
+  Large AOIs (~55 km × 55 km) can take 30+ s from OpenTopography; the old 7 s
+  default caused silent fallback to open-meteo for every request.
+- `dem_fetch` tile cache guards against poisoned all-null entries: API error
+  responses (e.g. rate-limit JSON with no `"elevation"` key) are never cached,
+  preventing stale failures from persisting across retries.
 - `heatmap_raster_tile_cache` builds cached heatmap rasters + XYZ tile pyramids from generic XY point measures and emits both:
   - `raster_tile_manifest.json` (cache metadata + render defaults)
   - `heatmap_imagery_drape.json` (`scene3d.tilebroker_response.v1` contract for 3D drape wiring)
@@ -237,7 +250,7 @@ To keep this sustainable:
 
 - all graph truth, CRS logic, node registry, and viewer-layer contracts stay backend-owned
 - clients render from shared contracts and persist user-intent settings via API
-- avoid client-only “magic” transforms that cannot be replayed by another client
+- avoid client-only "magic" transforms that cannot be replayed by another client
 
 ## CRS and Viewer Notes
 
@@ -267,11 +280,13 @@ This ordering keeps AOI, terrain, and imagery explicit and reproducible.
 
 ## Recommended Magnetic Pipeline (Current)
 
-For airborne magnetic workflows with large tabular inputs:
+For airborne magnetic workflows, including 3D depth inversion:
 
 1. `observation_ingest` (pointer-first ingest of large source table + schema/audit)
 2. `magnetic_model` (cleanup, despike/smoothing, interpolation, derivatives)
-3. `plan_view_2d` for 2D review (or `threejs_display_node` for 3D context)
+3. `magnetic_depth_model` (Euler deconvolution — derives 3D source depth voxels from mag grid)
+4. `plan_view_2d` for 2D review
+5. `threejs_display_node` for 3D context — wires both terrain and depth voxels into a single draped scene
 
 Notes:
 - `magnetic_model` emits both full and lightweight `.preview` artifacts (for responsive viewer behavior).
@@ -281,6 +296,23 @@ Notes:
   - `fvd`
   - `grad_mag`
   - `tilt`
+- `magnetic_depth_model` outputs `block_grade_model_voxels.v1` and renders immediately
+  in the 3D viewer via the existing block voxels renderer (no new renderer needed).
+- Voxel size scales with estimated depth: `max(depth_m × voxel_scale, resolution_m)` so
+  deeper (more uncertain) sources are represented with proportionally larger blocks.
+- `structural_index_mode` config accepts `"multi"` (tries N=0,1,2,3 — contact/dyke/cylinder/sphere,
+  picks best fit) or `"fixed"` with `structural_index: N` for a single-pass solve.
+
+## 3D Viewer Performance Notes
+
+The Three.js viewer (`Map3DThreePanel.tsx`) has been optimized to avoid unnecessary GPU work:
+
+- **Canvas key stability**: the R3F `<Canvas>` is keyed only on `viewerNodeId`, not on camera reset tokens. Previously, every data reload destroyed and recreated the entire WebGL context (all GPU textures, geometries).
+- **Drape texture persistence** (`DrapeTextureCache`): a module-level 20-entry LRU caches `THREE.Texture` objects across Canvas mounts/unmounts. Tab switches and camera resets no longer re-fetch ESRI imagery tiles from the network.
+- **Imperative camera reset** (`CameraAutoFit`): uses `useThree()` to reposition the camera without remounting the Canvas. Connects the camera reset token to a `useEffect` that fires only when the token changes.
+- **Drape transparency** (`depthWrite={false}`): the imagery drape material does not write to the depth buffer. This allows semi-transparent drape to reveal underground voxels (e.g. from `magnetic_depth_model`) without depth-culling geometry behind the terrain surface.
+- **LRU artifact text cache** (`LruTextCache`): bounded 200-entry Map-based LRU for immutable artifact JSON text, replacing an unbounded Map.
+- **Shared palette module** (`apps/web/src/palettes.ts`): single source of truth for named colour ramps (mineeye, inferno, viridis, terrain, grayscale). Used by both 2D and 3D viewers and eliminates duplicated interpolation logic.
 
 ## Current Scope
 
@@ -306,7 +338,7 @@ Remaining roadmap items:
 - optional envelope encryption for sensitive artifact/config classes
 - AI budget/credit policy service (org/suballocation controls, metering, and guardrails)
 
-See [ARCHITECTURE.md](/Users/troytravlos/mine-eye/ARCHITECTURE.md) for proposed component boundaries and service-level responsibilities.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for proposed component boundaries and service-level responsibilities.
 
 ## Useful Commands
 
@@ -318,7 +350,7 @@ cd apps/web && npm run build
 ## Engineering Playbooks
 
 - Plugin/analytic delivery guide:
-  [docs/plugin-analytic-implementation-guide.md](/Users/troytravlos/mine-eye/docs/plugin-analytic-implementation-guide.md)
+  [docs/plugin-analytic-implementation-guide.md](docs/plugin-analytic-implementation-guide.md)
 
 ## License
 

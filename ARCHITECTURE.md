@@ -51,31 +51,101 @@ Responsibilities:
 - node execution semantics and envelope behavior
 - shared contracts that every client depends on indirectly via API
 
-Node implementation structure (current):
+### 3.1 Node Implementation Structure
 
-- `crates/mine-eye-nodes/src/kinds/mod.rs` is the taxonomy entrypoint.
-- Domain modules own public node execution APIs:
-  - `acquisition`
-  - `data_model`
-  - `spatial`
-  - `surface`
-  - `imagery_raster`
-  - `trajectory`
-  - `drillhole`
-  - `resource_model`
-  - `scene_contract`
-  - `visualization`
-  - `stubs`
-- `crates/mine-eye-nodes/src/kinds/runtime.rs` is internal helper/runtime logic and is not a domain API surface.
+`crates/mine-eye-nodes/src/kinds/mod.rs` is the taxonomy entrypoint.
+
+Domain modules own public node execution APIs:
+
+| Module | Responsibility |
+|---|---|
+| `acquisition` | Ingest primitives (collar, survey, assay, observation, magnetic) |
+| `data_model` | Table/dataset transforms |
+| `spatial` | AOI contracts and CRS helpers |
+| `surface` | Heatmap, iso, terrain, DEM, surface interpolation |
+| `imagery_raster` | Imagery provider and tilebroker contracts |
+| `trajectory` | Desurvey |
+| `drillhole` | Merge and model |
+| `resource_model` | Block grade modeling + resource summaries (k-d tree IDW, rayon parallel) |
+| `magnetic_model` | Airborne magnetics cleanup, gridding, derivatives |
+| `magnetic_depth` | Euler deconvolution: 3D source depth/susceptibility voxels from a magnetic grid |
+| `scene_contract` | Scene layer composition |
+| `visualization` | Viewer payload nodes |
+| `stubs` | Alpha/placeholder node kinds |
+
+`crates/mine-eye-nodes/src/kinds/runtime.rs` is internal helper/runtime logic and is not a domain API surface.
 
 Rule:
 
 - New node behavior should be implemented in the relevant domain module, not by adding new public `run_*` entrypoints in `runtime.rs`.
 
+### 3.2 Shared Utility Modules
+
+To eliminate cross-module duplication, two canonical utility modules live in `kinds/`:
+
+- **`parse_util.rs`**: `parse_numeric_value()` (accepts Number or decimal string with comma/period),
+  `lookup_numeric_ci()` (case-insensitive key lookup), `percentile_value()` (Nth percentile on a copy).
+  Used by `resource_model`, `magnetic_depth`, `heatmap_raster_tile_cache`, and others.
+
+- **`colour.rs`**: `interpolate_palette(name, t)` — named colour ramps (inferno, viridis, terrain,
+  grayscale, default). Backend ramp counterpart to `apps/web/src/palettes.ts`.
+
+Design constraint: ramp definitions in `colour.rs` and `palettes.ts` must stay in sync.
+Any new ramp added on one side should be added to the other.
+
+### 3.3 `resource_model` Architecture
+
+The block grade model node (`resource_model.rs`) uses:
+
+- **`GradeIndex`** — 3D k-d tree (kiddo `KdTree<f64, 3>`) with anisotropic coordinate normalisation
+  for O(k log N) IDW search instead of O(N) linear scan.
+- **`TriangleMeshIndex`** — 2D uniform cell grid over triangle XY bounding boxes for O(cells)
+  mesh containment testing instead of O(T) per block.
+- **`ConfidenceClass` enum** — replaces heap-allocated `String` per block; serde `lowercase` for
+  JSON compatibility.
+- **`CompositeAccumulator`** — struct replacing the previous 11-parameter flush closure.
+- **Rayon parallelism** — `block_coords.into_par_iter()` over the estimated block grid.
+- **Variogram unbiased sampling** — strides on the overall pair-sequence enumeration order (not on
+  j-i gap) to avoid biasing toward large-separation pairs.
+
+### 3.4 `magnetic_depth` Architecture (Euler Deconvolution)
+
+The magnetic depth model node implements Reid et al. (1990) sliding-window Euler deconvolution.
+
+Algorithm:
+
+1. Parse `magnetic_grid.json` from the upstream `magnetic_model` output.
+2. Compute spatial derivatives: ∂M/∂x, ∂M/∂y via central differences;
+   ∂M/∂z approximated as `−FVD × flight_height × 0.5` (first vertical derivative from the second
+   vertical derivative available in the magnetic grid). Falls back to Laplace estimation when FVD
+   is absent.
+3. For each sliding window: build the 4-unknown normal equations `[x₀, y₀, h, B]` with Tikhonov
+   regularisation (λ = 1e-6 × max diagonal), solve via `gauss4()` (partial-pivot Gaussian elimination).
+4. **Multi-N mode** (`structural_index_mode: "multi"`): tries structural indices N ∈ {0, 1, 2, 3}
+   (contact plane, thin dyke, pipe/cylinder, sphere) and selects the best fit by normalised RMS residual.
+   **Single-pass mode** (`structural_index_mode: "fixed"`, `structural_index: N`): solves for one
+   user-specified N only.
+5. Filter solutions by depth bounds, offset factor, and minimum confidence threshold.
+6. Output schema: `block_grade_model_voxels.v1` with `display_pointer: "scene3d.block_voxels"`.
+   Renders immediately in the existing 3D viewer block voxels renderer.
+
+Key output attributes per voxel:
+
+- `susceptibility_proxy` — `mean_anomaly_nt × depth_m^(N+1)`, normalised to p95 across all solutions
+- `depth_m` — estimated source depth below flight level
+- `structural_index` — best-fit N (0–3)
+- `confidence` — `1 / (1 + norm_residual × 2)`
+- `anomaly_nt` — mean |M| in the solution window
+
+Voxel sizing: `max(depth_m × voxel_scale, resolution_m)` — deeper (more positionally uncertain)
+sources are represented with proportionally larger blocks.
+
+Execution: parallel rayon `into_par_iter()` over window centre grid positions.
+
 Design constraints:
 
-- avoid “web-only” contract interpretation
-- promote node registry and viewer manifest contracts to first-class backend outputs
+- avoid FFT dependency; the ∂M/∂z approximation is noted as exploratory-grade
+- keep output schema consistent with `block_grade_model_voxels.v1` so no new renderer is needed
 
 ## 4. Data and Persistence Layer
 
@@ -101,6 +171,21 @@ Data-layer principles:
 - graph revision history is append-oriented and backend-owned
 - artifacts are immutable records keyed by content/lineage semantics
 - UI state needed for deterministic behavior is persisted in node/workspace config
+
+### 4.1 Tile Cache
+
+`dem_fetch` and `heatmap_raster_tile_cache` use a shared filesystem tile cache
+(`data/tile-cache/`) keyed by content/provider/bbox hash.
+
+Cache integrity rules:
+
+- **Never cache error responses.** If an API returns an error payload (e.g. rate-limit JSON with no
+  `"elevation"` key), the empty batch must not be written to cache. An all-null batch stored with a
+  30-day TTL would poison every subsequent run for that bbox until manual eviction.
+- Only cache batches that contain at least one real data value.
+- OpenTopography AAI grid text is cached on successful parse only (not on HTTP/parse failure).
+- DEM fetch default timeout is 60 s (`node_ui.timeout_ms`). Large AOIs from OpenTopography can take
+  30+ s; the old 7 s default caused silent fallback for every large-area request.
 
 ## 5. Application Services Layer
 
@@ -149,7 +234,7 @@ Efficiency constraints:
 - push expensive inference/provider logic into middleware and emit compact render-ready contracts
 - make cache keys content+lineage based (never timestamp-only)
 - keep UI overrides scoped to explicitly permitted `ui_capabilities` in contracts
-- avoid duplicate “guessing” logic across web/iOS/desktop
+- avoid duplicate "guessing" logic across web/iOS/desktop
 
 ### 5.4 AI Assistant Architecture (Current)
 
@@ -222,8 +307,26 @@ Future clients:
 Presentation-layer rules:
 
 - no hidden client-only transforms for core business logic
-- no client-owned “source of truth”
+- no client-owned "source of truth"
 - all clients consume same graph/manifest/CRS contracts
+
+### 8.1 Shared Palette Module (`apps/web/src/palettes.ts`)
+
+Single source of truth for colour ramp definitions in the web client. Exports:
+
+- `interpolatePalette(name, t)` → `[r, g, b]`
+- `interpolatePaletteRgba(name, t, alpha)` → CSS `rgba(...)`
+- `interpolatePaletteHex(name, t)` → `#rrggbb`
+- `resolvePaletteName(name)` → normalized `PaletteName`
+
+Named ramps: `mineeye`, `inferno`, `viridis`, `terrain`, `grayscale`.
+Both the 2D heatmap (`Map2DPanel`) and 3D viewer (`Map3DThreePanel`) import from this module.
+
+### 8.2 LRU Artifact Text Cache (`LruTextCache`)
+
+Immutable artifact JSON text is cached in a bounded 200-entry Map-based LRU (`LruTextCache` class
+inside `Map3DThreePanel.tsx`). Evicts the oldest entry on overflow. Replaces the previous unbounded
+`Map` that grew without limit across scene loads.
 
 ## 9. Viewer Architecture
 
@@ -238,7 +341,7 @@ Current viewer node kinds:
 
 A viewer renders only connected upstream artifacts by edge semantics.
 
-### 7.1 Viewer Manifest as Stable Broker Contract
+### 9.1 Viewer Manifest as Stable Broker Contract
 
 Manifest produced by orchestrator must contain sufficient layer metadata so each client can render consistently:
 
@@ -248,6 +351,42 @@ Manifest produced by orchestrator must contain sufficient layer metadata so each
 - renderer-neutral layer intent
 
 This is the anti-drift mechanism for web/iOS/desktop parity.
+
+### 9.2 Three.js Viewer Performance Architecture
+
+The Three.js viewer (`Map3DThreePanel.tsx`) has three interlocking optimizations to prevent
+unnecessary GPU resource churn:
+
+**Canvas key stability**
+
+The R3F `<Canvas>` is keyed only on `viewerNodeId` (the node identity), not on camera reset tokens.
+Previously, `key={viewerNodeId + ":" + cameraResetToken}` caused React to destroy and recreate the
+entire WebGL context — and all GPU textures — on every data load. Now the Canvas lifecycle is
+decoupled from camera state.
+
+**`DrapeTextureCache` (module-level, 20-entry LRU)**
+
+```
+DrapeTextureCache: url → THREE.Texture (GPU-resident)
+  ├── persists across Canvas mount/unmount (tab switches)
+  ├── persists across camera resets
+  └── evicts LRU entry on overflow; eviction disposes GPU texture
+```
+
+Only a genuinely different imagery URL triggers a new network fetch and texture upload.
+
+**`CameraAutoFit` component**
+
+Imperative camera reset using `useThree()`. The component watches a `resetToken` prop and fires a
+`useEffect` to reposition `camera` when the token changes — without touching the Canvas key and
+without destroying any GPU state.
+
+**Drape depth buffer** (`depthWrite={false}`)
+
+The imagery drape `MeshBasicMaterial` does not write to the depth buffer. This is required for
+correct semi-transparent rendering of the drape over underground geometry (e.g. block voxels from
+`magnetic_depth_model`). With the default `depthWrite: true`, underground geometry fails the depth
+test even at partial drape opacity and is discarded entirely.
 
 ## 10. CRS Architecture
 
@@ -364,6 +503,8 @@ Near-term evolution priorities:
 - continue registry-driven node metadata and backend-owned viewer contracts
 - keep `kinds` domain modules small and focused; avoid re-accumulating a single monolithic node implementation file
 - continue hardening the Three.js path through scene contracts while preserving legacy Cesium compatibility where required
+- expand geophysics node family (gravity, EM, IP) following the `magnetic_depth` pattern:
+  output `block_grade_model_voxels.v1` to reuse the existing block renderer without new viewer code
 
 ## 16. Non-Goals (Current Phase)
 

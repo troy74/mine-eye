@@ -26,6 +26,8 @@ import {
   resolveRasterOverlaySource,
   type RasterOverlayContract,
 } from "./rasterOverlay";
+import { extractBboxAndEpsg, toWgs84Bbox } from "./aoiBounds";
+import { interpolatePalette } from "./palettes";
 import {
   extractDisplayContractFromJson,
   epsgFromAnyJson,
@@ -130,9 +132,11 @@ function normalizeSourceData(raw: unknown): SourceData[] {
             .filter((xy): xy is [number, number] => xy !== null);
           if (coords.length < 2) return null;
           const level = typeof ll.level === "number" ? ll.level : undefined;
-          return { coords, level };
+          // Emit `level` only when it is a number so the object matches
+          // GeoLineString's optional field exactly (absent vs. undefined).
+          return level !== undefined ? { coords, level } : { coords };
         })
-        .filter((ln): ln is GeoLineString => ln !== null);
+        .filter((ln): ln is NonNullable<typeof ln> => ln !== null) as GeoLineString[];
 
       const measureNames = Array.isArray(o.measureNames)
         ? o.measureNames.filter((m): m is string => typeof m === "string")
@@ -166,7 +170,7 @@ function normalizeSourceData(raw: unknown): SourceData[] {
         surfaceGrid,
       };
     })
-    .filter((s): s is SourceData => s !== null);
+    .filter((s): s is NonNullable<typeof s> => s !== null) as SourceData[];
 }
 
 function parseLayerStackContract(v: unknown): LayerStackContract | null {
@@ -399,7 +403,14 @@ function defaultLayerForSource(s: SourceData): SourceLayerConfig {
 
 function valueMinMax(values: number[]): { min: number; max: number } | null {
   if (values.length === 0) return null;
-  return { min: Math.min(...values), max: Math.max(...values) };
+  let min = values[0];
+  let max = values[0];
+  for (let i = 1; i < values.length; i++) {
+    const v = values[i];
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return { min, max };
 }
 
 function norm(v: number, min: number, max: number): number {
@@ -419,75 +430,18 @@ function categoricalColor(value: number, palette: string): string {
   const bucket = Math.round(value * 1000) / 1000;
   const x = Math.abs(Math.floor(bucket * 104729));
   const t = (x % 997) / 996;
-  const { r, g, b } = paletteRgb(palette, t);
+  const [r, g, b] = interpolatePalette(palette, t);
   return `rgb(${r},${g},${b})`;
 }
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  const s = hex.replace("#", "");
-  const n = s.length === 3 ? s.split("").map((c) => `${c}${c}`).join("") : s;
-  const v = parseInt(n, 16);
-  if (!Number.isFinite(v)) return { r: 56, g: 189, b: 248 };
-  return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
-}
-
-function lerpRgb(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }, t: number) {
-  return {
-    r: Math.round(a.r + (b.r - a.r) * t),
-    g: Math.round(a.g + (b.g - a.g) * t),
-    b: Math.round(a.b + (b.b - a.b) * t),
-  };
-}
-
-function paletteStops(palette: string): Array<{ t: number; c: string }> {
-  switch (palette.toLowerCase()) {
-    case "inferno":
-      return [
-        { t: 0.0, c: "#000004" },
-        { t: 0.2, c: "#2b0a5a" },
-        { t: 0.45, c: "#781c6d" },
-        { t: 0.7, c: "#d13a2f" },
-        { t: 1.0, c: "#ff3b2f" },
-      ];
-    case "viridis":
-      return [
-        { t: 0.0, c: "#440154" },
-        { t: 0.25, c: "#3b528b" },
-        { t: 0.5, c: "#21908c" },
-        { t: 0.75, c: "#5dc863" },
-        { t: 1.0, c: "#fde725" },
-      ];
-    case "terrain":
-      return [
-        { t: 0.0, c: "#2b83ba" },
-        { t: 0.35, c: "#abdda4" },
-        { t: 0.6, c: "#66bd63" },
-        { t: 0.8, c: "#fdae61" },
-        { t: 1.0, c: "#d7191c" },
-      ];
-    default:
-      return [
-        { t: 0.0, c: "#2c7bb6" },
-        { t: 0.25, c: "#00a6ca" },
-        { t: 0.5, c: "#00cc6a" },
-        { t: 0.75, c: "#f9d057" },
-        { t: 1.0, c: "#d7191c" },
-      ];
-  }
-}
-
-function paletteRgb(palette: string, tRaw: number): { r: number; g: number; b: number } {
-  const t = Math.max(0, Math.min(1, tRaw));
-  const stops = paletteStops(palette);
-  for (let i = 1; i < stops.length; i++) {
-    const a = stops[i - 1];
-    const b = stops[i];
-    if (t <= b.t) {
-      const tt = (t - a.t) / Math.max(1e-9, b.t - a.t);
-      return lerpRgb(hexToRgb(a.c), hexToRgb(b.c), tt);
-    }
-  }
-  return hexToRgb(stops[stops.length - 1].c);
+/** Build a CSS linear-gradient string by sampling the palette at a few stops. */
+function paletteToCssGradient(palette: string): string {
+  const pts = [0, 0.25, 0.5, 0.75, 1];
+  const colors = pts.map((t) => {
+    const [r, g, b] = interpolatePalette(palette, t);
+    return `rgb(${r},${g},${b})`;
+  });
+  return `linear-gradient(to right, ${colors.join(", ")})`;
 }
 
 function fitMapToBounds(
@@ -646,6 +600,69 @@ export function Map2DPanel({
     };
   }, [artifacts, graphId, viewerNodeId]);
 
+  // ── Pre-zoom: fit to upstream bounds as soon as manifest artifacts arrive,
+  // before the slower full loading loop completes.  Uses the browser's own
+  // fetch cache so repeated visits are instant.  Prevents the "world view on
+  // open" UX problem when there are no point features.
+  useEffect(() => {
+    if (!manifestArtifacts.length || !graphId || !viewerNodeId) return;
+    if (userMovedMapRef.current) return;
+    const map = mapRef.current;
+    if (!map) return;
+    const viewCtx = `${graphId}:${viewerNodeId}`;
+    if (autoFitContextRef.current === viewCtx) return; // already fit this context
+
+    let cancelled = false;
+    void (async () => {
+      for (const art of manifestArtifacts) {
+        if (cancelled || userMovedMapRef.current) return;
+        try {
+          // Allow browser cache — manifests are immutable by content-hash, so
+          // subsequent renders are instant without any network round-trip.
+          const r = await fetch(api(art.url), { cache: "default" });
+          if (!r.ok || cancelled) continue;
+          const text = await r.text();
+          let raw: unknown;
+          try { raw = JSON.parse(text) as unknown; } catch { continue; }
+
+          // 1. Raster tile-cache contracts carry precise UTM bounds + CRS.
+          const contract = parseRasterOverlayContract(raw);
+          if (contract?.bounds) {
+            const bounds = await rasterBoundsToLatLng(contract);
+            if (bounds && !cancelled && !userMovedMapRef.current) {
+              fitMapToBounds(
+                map,
+                L.latLngBounds([[bounds.south, bounds.west], [bounds.north, bounds.east]]),
+                { padRatio: 0.15 }
+              );
+              autoFitContextRef.current = viewCtx;
+              return;
+            }
+          }
+
+          // 2. Generic bbox extraction — works for AOI nodes, project bounds, etc.
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            const extracted = extractBboxAndEpsg(raw as Record<string, unknown>);
+            if (extracted) {
+              const wgs84 = await toWgs84Bbox(extracted.bbox, extracted.epsg);
+              if (wgs84 && !cancelled && !userMovedMapRef.current) {
+                const [west, south, east, north] = wgs84;
+                fitMapToBounds(
+                  map,
+                  L.latLngBounds([[south, west], [north, east]]),
+                  { padRatio: 0.15 }
+                );
+                autoFitContextRef.current = viewCtx;
+                return;
+              }
+            }
+          }
+        } catch { /* try next artifact */ }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [manifestArtifacts, graphId, viewerNodeId]);
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = L.map(containerRef.current, {
@@ -733,6 +750,7 @@ export function Map2DPanel({
           tileUrlTemplate: api(source.tileUrlTemplate),
           tileMinZoom: source.tileMinZoom,
           tileMaxZoom: source.tileMaxZoom,
+          tileSize: source.tileSize,
           opacity: baseOpacity,
           pane: "mineeye-raster-base",
         });
@@ -915,11 +933,15 @@ export function Map2DPanel({
       return;
     }
     if (inputLinks.length === 0) {
-      setStatus(
-        sourceData.length > 0
-          ? "No compatible inputs wired now; showing last loaded state."
-          : "No compatible inputs wired into this 2D viewer."
-      );
+      // No connections — clear any stale data so the panel doesn't show
+      // artifacts from a previously-wired (now removed) node.
+      setSourceData([]);
+      setImageryContract(null);
+      setLayerStackContract(null);
+      // Reset base visibility so next connection starts shown rather than
+      // hidden (avoids "invisible on load" if user had previously toggled off).
+      setBaseVisible(true);
+      setStatus("No compatible inputs wired into this 2D viewer.");
       return;
     }
 
@@ -965,15 +987,32 @@ export function Map2DPanel({
       let total = 0;
       const notes: string[] = [];
 
-      for (const art of arts) {
+      // Fix #7: fetch all artifacts concurrently — overlaps network latency
+      // across all upstream nodes instead of serialising them.
+      // Fix #4: use cache:"default" — artifact URLs are content-addressed so
+      // same content_hash always returns the same bytes; subsequent renders are
+      // near-instant from the browser cache without needing to hit the network.
+      const fetchResults = await Promise.allSettled(
+        arts.map((art) =>
+          fetch(api(art.url), { cache: "default" })
+            .then(async (r) => ({ art, r, text: r.ok ? await r.text() : null }))
+        )
+      );
+      if (token !== loadTokenRef.current || !mountedRef.current) return;
+
+      for (const settled of fetchResults) {
         if (token !== loadTokenRef.current || !mountedRef.current) return;
-        const r = await fetch(api(art.url), { cache: "no-store" });
-        if (!r.ok) {
+        if (settled.status === "rejected") {
+          notes.push(`fetch error: ${String(settled.reason)}`);
+          continue;
+        }
+        const { art, r, text } = settled.value;
+        if (!r.ok || text === null) {
           notes.push(`${art.key.split("/").pop()}: HTTP ${r.status}`);
           continue;
         }
-        const text = await r.text();
         let parsedRoot: Record<string, unknown> | null = null;
+        let isPureRasterContract = false;
         try {
           const raw = JSON.parse(text) as unknown;
           if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -987,6 +1026,13 @@ export function Map2DPanel({
           ) {
             foundImageryContract = maybeImagery;
           }
+          // Tile-cache manifests are purely raster contracts — the tiles handle
+          // all rendering.  Don't also extract a surfaceGrid / point source from
+          // them: that would produce a duplicate pixelated canvas layer and cause
+          // the large `values[]` array to be loaded into memory for no benefit.
+          if (maybeImagery?.schema_id === "raster.tile_cache.v1") {
+            isPureRasterContract = true;
+          }
           const maybeLayerStack = parseLayerStackContract(raw);
           if (!foundLayerStackContract && maybeLayerStack) {
             foundLayerStackContract = maybeLayerStack;
@@ -994,6 +1040,7 @@ export function Map2DPanel({
         } catch {
           // ignore parse errors
         }
+        if (isPureRasterContract) continue;
         const manifestMeta = manifestByArtifact.get(`${art.key}:${art.content_hash}`);
         const mPres =
           manifestMeta?.presentation &&
@@ -1058,10 +1105,45 @@ export function Map2DPanel({
         );
         const heatmapHint = manifestHeatmapHint ?? extractHeatmapConfigFromJson(text);
         const displayContract = manifestDisplayContract ?? extractDisplayContractFromJson(text);
-        const surfaceGrid = extractHeatSurfaceGridFromJson(text);
+        const rawSurfaceGrid = extractHeatSurfaceGridFromJson(text);
         const lines = extractLineFeaturesFromGeoJson(text);
-        if (basic.length === 0 && measured.length === 0 && lines.length === 0 && !surfaceGrid) {
+        if (basic.length === 0 && measured.length === 0 && lines.length === 0 && !rawSurfaceGrid) {
           continue;
+        }
+        // Reproject surfaceGrid bounds to WGS84 if the source CRS is projected.
+        let surfaceGrid = rawSurfaceGrid;
+        if (rawSurfaceGrid && rawSurfaceGrid.sourceEpsg && rawSurfaceGrid.sourceEpsg !== 4326) {
+          const sw = await lonLatFromProjectedAsync(
+            rawSurfaceGrid.sourceEpsg,
+            rawSurfaceGrid.xmin,
+            rawSurfaceGrid.ymin
+          );
+          const ne = await lonLatFromProjectedAsync(
+            rawSurfaceGrid.sourceEpsg,
+            rawSurfaceGrid.xmax,
+            rawSurfaceGrid.ymax
+          );
+          if (sw && ne) {
+            surfaceGrid = {
+              ...rawSurfaceGrid,
+              lngMin: sw[0],
+              latMin: sw[1],
+              lngMax: ne[0],
+              latMax: ne[1],
+            };
+          } else {
+            // Can't reproject — skip to avoid wrong-place rendering.
+            surfaceGrid = null;
+          }
+        } else if (rawSurfaceGrid) {
+          // Assume WGS84; store as display bounds directly.
+          surfaceGrid = {
+            ...rawSurfaceGrid,
+            lngMin: rawSurfaceGrid.xmin,
+            latMin: rawSurfaceGrid.ymin,
+            lngMax: rawSurfaceGrid.xmax,
+            latMax: rawSurfaceGrid.ymax,
+          };
         }
 
         const mByXY = new Map<string, Record<string, number>>();
@@ -1119,22 +1201,21 @@ export function Map2DPanel({
       setLayerStackContract(foundLayerStackContract);
       setSourceData(all);
       if (all.length === 0) {
-        const imageryBounds = await rasterBoundsToLatLng(foundImageryContract);
-        if (imageryBounds && (!userMovedMapRef.current || ctxChanged)) {
-          fitMapToBounds(
-            map,
-            L.latLngBounds([
-              [imageryBounds.south, imageryBounds.west],
-              [imageryBounds.north, imageryBounds.east],
-            ]),
-            {
-              padRatio: 0.12,
-              maxZoom:
-                typeof foundImageryContract?.tile_max_zoom === "number"
-                  ? foundImageryContract.tile_max_zoom
-                  : undefined,
-            }
-          );
+        // Only zoom here if the pre-zoom effect hasn't already done it (avoids
+        // a double-zoom jarring the user when the manifest is cached).
+        if (autoFitContextRef.current !== viewCtx) {
+          const imageryBounds = await rasterBoundsToLatLng(foundImageryContract);
+          if (imageryBounds && (!userMovedMapRef.current || ctxChanged)) {
+            fitMapToBounds(
+              map,
+              L.latLngBounds([
+                [imageryBounds.south, imageryBounds.west],
+                [imageryBounds.north, imageryBounds.east],
+              ]),
+              { padRatio: 0.12 }
+            );
+            autoFitContextRef.current = viewCtx;
+          }
         }
         const imgNote = foundImageryContract?.provider_label
           ? `${foundImageryContract.provider_label} contract loaded.`
@@ -1152,6 +1233,19 @@ export function Map2DPanel({
       setStatus(`${total} point(s) from ${all.length} input artifact(s).${imgNote}${lsNote}${notes.length ? ` ${notes.join(" · ")}` : ""}`);
       if (fit.length && (!userMovedMapRef.current || ctxChanged)) {
         fitMapToBounds(map, L.latLngBounds(fit), { padRatio: 0.25 });
+      } else if (!fit.length && foundImageryContract && (!userMovedMapRef.current || ctxChanged)) {
+        // No point data to fit to (e.g. only raster tile cache connected) — fit to tile bounds.
+        const imageryBounds = await rasterBoundsToLatLng(foundImageryContract);
+        if (imageryBounds) {
+          fitMapToBounds(
+            map,
+            L.latLngBounds([
+              [imageryBounds.south, imageryBounds.west],
+              [imageryBounds.north, imageryBounds.east],
+            ]),
+            { padRatio: 0.12 }
+          );
+        }
       }
     })().catch((e) => {
       if (token === loadTokenRef.current && mountedRef.current) {
@@ -1397,7 +1491,7 @@ export function Map2DPanel({
                     continue;
                   }
                   const t = norm(tv, mm.min, mm.max);
-                  const { r, g: gg, b } = paletteRgb(palette, t);
+                  const [r, gg, b] = interpolatePalette(palette, t);
                   img.data[idx] = r;
                   img.data[idx + 1] = gg;
                   img.data[idx + 2] = b;
@@ -1405,9 +1499,14 @@ export function Map2DPanel({
                 }
               }
               ctx.putImageData(img, 0, 0);
+              // Use reprojected WGS84 bounds (set during async loading phase).
+              const south = g.latMin ?? g.ymin;
+              const west = g.lngMin ?? g.xmin;
+              const north = g.latMax ?? g.ymax;
+              const east = g.lngMax ?? g.xmax;
               createBoundedImageLayer(
                 canvas.toDataURL("image/png"),
-                { south: g.ymin, west: g.xmin, north: g.ymax, east: g.xmax },
+                { south, west, north, east },
                 {
                   opacity: layer.heatmap.opacity * layer.opacity,
                   pane: "mineeye-raster-analytic",
@@ -1415,7 +1514,10 @@ export function Map2DPanel({
               ).addTo(analyticGroup);
             }
           }
-        } else {
+        } else if (!lockedRenderer) {
+          // Only fall back to IDW for non-locked-renderer sources.
+          // For locked renderer (pre-computed tile cache), the tiles render
+          // via imageryContract and IDW would be redundant / wrong.
           const samples = src.points
             .map((p) => {
               const v = p.measures[layer.heatmap.measure];
@@ -1469,7 +1571,7 @@ export function Map2DPanel({
                         continue;
                       }
                       const t = norm(iv, mm.min, mm.max);
-                      const { r, g, b } = paletteRgb(palette, t);
+                      const [r, g, b] = interpolatePalette(palette, t);
                       const idx = (yi * n + xi) * 4;
                       img.data[idx] = r;
                       img.data[idx + 1] = g;
@@ -1544,7 +1646,7 @@ export function Map2DPanel({
           colorValue !== null &&
           Number.isFinite(colorValue)
             ? (() => {
-                const { r, g, b } = paletteRgb(
+                const [r, g, b] = interpolatePalette(
                   layer.points.colorPalette || "turbo",
                   norm(colorValue, cmm.min, cmm.max)
                 );
@@ -1673,9 +1775,7 @@ export function Map2DPanel({
                 height: 10,
                 borderRadius: 999,
                 border: "1px solid #30363d",
-                background: `linear-gradient(to right, ${paletteStops(legend.palette)
-                  .map((s) => s.c)
-                  .join(", ")})`,
+                background: paletteToCssGradient(legend.palette),
               }}
             />
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>

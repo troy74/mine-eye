@@ -11,6 +11,7 @@ use crate::kinds::{
     run_dem_fetch, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_data_model_transform,
     run_heatmap_raster_tile_cache,
+    run_magnetic_depth_model,
     run_magnetic_model,
     run_block_grade_model,
     run_plot_chart,
@@ -82,6 +83,7 @@ impl RegistryExecutor {
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
         inner.insert("magnetic_model".into(), Arc::new(MagneticModelExecutor));
+        inner.insert("magnetic_depth_model".into(), Arc::new(MagneticDepthModelExecutor));
         inner.insert("observation_ingest".into(), Arc::new(ObservationIngestExecutor));
         inner.insert("data_model_transform".into(), Arc::new(DataModelTransformExecutor));
         inner.insert("assay_heatmap".into(), Arc::new(AssayHeatmapExecutor));
@@ -176,6 +178,19 @@ impl NodeExecutor for MagneticModelExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_magnetic_model(ctx, job).await
+    }
+}
+
+struct MagneticDepthModelExecutor;
+
+#[async_trait]
+impl NodeExecutor for MagneticDepthModelExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_magnetic_depth_model(ctx, job).await
     }
 }
 

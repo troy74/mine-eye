@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Text, TrackballControls } from "@react-three/drei";
 import * as THREE from "three";
 import {
@@ -18,6 +18,7 @@ import {
   type RasterOverlayContract,
 } from "./rasterOverlay";
 import { lonLatFromProjectedAsync } from "./spatialReproject";
+import { interpolatePaletteHex } from "./palettes";
 
 type Props = {
   graphId: string | null;
@@ -395,8 +396,105 @@ type ContourPolyline = {
   closed: boolean;
 };
 
-const immutableArtifactTextCache = new Map<string, string>();
+// Bounded LRU cache for immutable (content-addressed) artifact text.
+// Content-addressed URLs never change so we can keep them in memory
+// indefinitely — but we cap at MAX_IMMUTABLE_CACHE entries to avoid
+// unbounded memory growth on large scenes with many artifacts.
+const MAX_IMMUTABLE_CACHE = 200;
+class LruTextCache {
+  private readonly map = new Map<string, string>();
+  get(key: string): string | undefined {
+    const v = this.map.get(key);
+    if (v !== undefined) {
+      // Refresh insertion order (LRU).
+      this.map.delete(key);
+      this.map.set(key, v);
+    }
+    return v;
+  }
+  set(key: string, value: string): void {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, value);
+    if (this.map.size > MAX_IMMUTABLE_CACHE) {
+      // Evict the oldest entry (first in insertion order).
+      this.map.delete(this.map.keys().next().value!);
+    }
+  }
+}
+const immutableArtifactTextCache = new LruTextCache();
 const immutableArtifactTextInflight = new Map<string, Promise<string>>();
+
+// ── Drape texture cache ──────────────────────────────────────────────────────
+//
+// THREE.Texture objects are expensive to create: each one involves a full
+// GPU upload.  When the Canvas remounts (e.g. on first load) or when the
+// imagery URL is unchanged between renders, we should reuse the existing
+// GPU texture rather than re-fetching the imagery tile from the network.
+//
+// This module-level cache persists across Canvas mounts/unmounts for the
+// lifetime of the page.  Entries are only evicted when a new URL displaces
+// the oldest entry (LRU, max 20 textures ≈ a handful of providers).
+const MAX_DRAPE_TEXTURES = 20;
+class DrapeTextureCache {
+  private readonly map = new Map<string, THREE.Texture>();
+  get(url: string): THREE.Texture | undefined {
+    const t = this.map.get(url);
+    if (t !== undefined) {
+      this.map.delete(url);
+      this.map.set(url, t);
+    }
+    return t;
+  }
+  set(url: string, tex: THREE.Texture): void {
+    if (this.map.has(url)) this.map.delete(url);
+    this.map.set(url, tex);
+    if (this.map.size > MAX_DRAPE_TEXTURES) {
+      const oldest = this.map.keys().next().value!;
+      const evicted = this.map.get(oldest)!;
+      this.map.delete(oldest);
+      evicted.dispose();
+    }
+  }
+  /** Mark a texture as still in use (called when the component mounts with a
+   *  cached URL so the LRU entry is refreshed). */
+  touch(url: string): void {
+    const t = this.map.get(url);
+    if (t) { this.map.delete(url); this.map.set(url, t); }
+  }
+}
+const drapeTextureCache = new DrapeTextureCache();
+
+// ── Imperative camera reset ──────────────────────────────────────────────────
+//
+// Previously the <Canvas> was given key={viewerNodeId + ":" + cameraResetToken}.
+// Changing the key causes React to unmount and remount the entire Canvas,
+// destroying the WebGL context and all GPU resources (textures, geometries).
+// That forced the drape imagery to be re-fetched from the network on every
+// scene load.
+//
+// We now keep the Canvas alive (key=viewerNodeId only) and reset the camera
+// imperatively from within the scene via this child component.
+function CameraAutoFit({
+  resetToken,
+  sceneScale,
+}: {
+  resetToken: number;
+  sceneScale: number;
+}) {
+  const { camera, invalidate } = useThree();
+  const lastToken = useRef(-1);
+  useEffect(() => {
+    if (lastToken.current === resetToken) return;
+    lastToken.current = resetToken;
+    camera.position.set(sceneScale * 0.85, sceneScale * 1.15, sceneScale * 1.05);
+    camera.lookAt(0, 0, 0);
+    camera.near = 0.01;
+    camera.far = Math.max(5000, sceneScale * 500);
+    camera.updateProjectionMatrix();
+    invalidate();
+  }, [camera, invalidate, resetToken, sceneScale]);
+  return null;
+}
 
 function defaultLayerStyleForId(layerId: string): LayerVizStyle {
   const isContourLayer = layerId === "contours" || layerId.startsWith("contours__");
@@ -667,7 +765,9 @@ async function fetchArtifactTextCached(url: string): Promise<string> {
     immutableArtifactTextInflight.set(immutableKey, request);
     return request;
   }
-  const r = await fetch(resolved, { cache: "no-store" });
+  // Non-content-addressed URL: use "default" so the browser can revalidate
+  // via ETag/Last-Modified rather than bypassing the cache entirely.
+  const r = await fetch(resolved, { cache: "default" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.text();
 }
@@ -1439,12 +1539,11 @@ function paletteColor(value: number | null, lo: number, hi: number, palette: Sce
     const b = Math.round(255 * (1 - t));
     return `rgb(${r},40,${b})`;
   }
-  const stops =
-    palette === "viridis"
-      ? [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 97], [253, 231, 36]]
-      : palette === "inferno"
-        ? [[0, 0, 4], [51, 16, 88], [136, 34, 106], [203, 71, 119], [248, 149, 64], [252, 255, 164]]
-        : [[48, 18, 59], [50, 21, 110], [32, 73, 156], [18, 120, 142], [59, 173, 112], [171, 220, 50], [253, 231, 37]];
+  if (palette === "inferno" || palette === "viridis") {
+    return interpolatePaletteHex(palette, t);
+  }
+  // turbo — inline stops (not in shared palettes.ts)
+  const stops = [[48, 18, 59], [50, 21, 110], [32, 73, 156], [18, 120, 142], [59, 173, 112], [171, 220, 50], [253, 231, 37]];
   const s = t * (stops.length - 1);
   const i = Math.floor(s);
   const j = Math.min(stops.length - 1, i + 1);
@@ -2156,20 +2255,31 @@ function EsriDrape({
       .filter((u, i, arr) => u.length > 0 && arr.indexOf(u) === i);
     if (candidates.length === 0) {
       setTexture((prev) => {
-        prev?.dispose();
+        // Don't dispose if it's in the module cache — another mount may reuse it.
         return null;
       });
       return;
     }
+
+    // Fast path: first candidate is already in the module-level texture cache.
+    // This avoids a network round-trip on Canvas remounts when the URL hasn't
+    // changed (e.g. initial load, camera reset, tab switch).
+    for (const candidate of candidates) {
+      const cached = drapeTextureCache.get(candidate);
+      if (cached) {
+        drapeTextureCache.touch(candidate);
+        setTexture(cached);
+        onLoadSuccessRef.current?.(candidate);
+        return;
+      }
+    }
+
     let cancelled = false;
 
     const tryLoad = (idx: number) => {
       if (cancelled) return;
       if (idx >= candidates.length) {
-        setTexture((prev) => {
-          prev?.dispose();
-          return null;
-        });
+        setTexture(() => null);
         onLoadFailureRef.current?.(candidates);
         return;
       }
@@ -2183,10 +2293,10 @@ function EsriDrape({
             return;
           }
           tex.colorSpace = THREE.SRGBColorSpace;
-          setTexture((prev) => {
-            prev?.dispose();
-            return tex;
-          });
+          // Store in module cache before setting state so that any concurrent
+          // mount can find it immediately.
+          drapeTextureCache.set(candidates[idx], tex);
+          setTexture(tex);
           onLoadSuccessRef.current?.(candidates[idx]);
         },
         undefined,
@@ -2198,36 +2308,36 @@ function EsriDrape({
     tryLoad(0);
     return () => {
       cancelled = true;
-      setTexture((prev) => {
-        prev?.dispose();
-        return null;
-      });
+      // Don't dispose the texture on cleanup — it lives in drapeTextureCache
+      // and may be reused by the next mount.  The cache eviction logic handles
+      // GPU memory lifecycle.
+      setTexture(null);
     };
   }, [urls]);
 
   if (!texture) return null;
+  // depthWrite must be false so that partial-opacity drape doesn't write solid
+  // depth values — otherwise geometry behind the terrain (e.g. underground
+  // voxels) fails the depth test and disappears instead of showing through.
+  const clampedOpacity = Math.max(0, Math.min(1, opacity));
+  const material = (
+    <meshBasicMaterial
+      map={texture}
+      transparent
+      opacity={clampedOpacity}
+      depthWrite={false}
+      side={THREE.DoubleSide}
+    />
+  );
+
   if (geometry) {
-    return (
-      <mesh geometry={geometry}>
-        <meshBasicMaterial
-          map={texture}
-          transparent
-          opacity={Math.max(0, Math.min(1, opacity))}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-    );
+    return <mesh geometry={geometry}>{material}</mesh>;
   }
   if (width <= 0 || depth <= 0) return null;
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, y, 0]}>
       <planeGeometry args={[width, depth]} />
-      <meshBasicMaterial
-        map={texture}
-        transparent
-        opacity={Math.max(0, Math.min(1, opacity))}
-        side={THREE.DoubleSide}
-      />
+      {material}
     </mesh>
   );
 }
@@ -3769,7 +3879,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
           {active ? (
             <Canvas
-              key={`${viewerNodeId ?? "none"}:${cameraResetToken}`}
+              key={`${viewerNodeId ?? "none"}`}
               camera={{
                 position: [sceneScale * 0.85, sceneScale * 1.15, sceneScale * 1.05],
                 fov: 50,
@@ -3778,6 +3888,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               }}
               gl={{ logarithmicDepthBuffer: true }}
             >
+              {/* Imperative camera reset — avoids remounting the Canvas (and
+                  destroying all GPU resources) just to reposition the camera. */}
+              <CameraAutoFit resetToken={cameraResetToken} sceneScale={sceneScale} />
               <color attach="background" args={[bgPalette.sky]} />
               {ui.fogEnabled && <fog attach="fog" args={[bgPalette.fog, sceneScale * 2, sceneScale * 40]} />}
               <ambientLight intensity={ui.ambientIntensity} />

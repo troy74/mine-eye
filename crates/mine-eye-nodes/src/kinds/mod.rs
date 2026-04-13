@@ -3,6 +3,9 @@
 //! This module exposes grouped node execution entry points by domain while
 //! preserving the existing public `run_*` API for compatibility.
 
+pub(crate) mod colour;
+pub(crate) mod parse_util;
+
 pub mod acquisition;
 pub mod observation_ingest;
 pub mod chart_plot;
@@ -11,6 +14,7 @@ pub mod data_model;
 pub mod drillhole;
 pub mod imagery_raster;
 pub mod heatmap_raster_tile_cache;
+pub mod magnetic_depth;
 pub mod magnetic_model;
 pub mod markdown_viewer;
 pub mod resource_model;
@@ -32,6 +36,7 @@ pub use data_model::run_data_model_transform;
 pub use drillhole::{run_drillhole_merge, run_drillhole_model};
 pub use imagery_raster::{run_imagery_provider, run_tilebroker};
 pub use heatmap_raster_tile_cache::run_heatmap_raster_tile_cache;
+pub use magnetic_depth::run_magnetic_depth_model;
 pub use magnetic_model::run_magnetic_model;
 pub use markdown_viewer::run_md_viewer;
 pub use resource_model::run_block_grade_model;

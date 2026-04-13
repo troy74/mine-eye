@@ -148,10 +148,18 @@ export type DisplayContractHint = {
 export type HeatSurfaceGrid = {
   nx: number;
   ny: number;
+  /** Bounds in source CRS (may be projected). Use lngMin/latMin etc. for display. */
   xmin: number;
   xmax: number;
   ymin: number;
   ymax: number;
+  /** Source CRS EPSG code (undefined = assume WGS84). */
+  sourceEpsg?: number;
+  /** WGS84 display bounds — set by the async loading phase after reprojection. */
+  lngMin?: number;
+  lngMax?: number;
+  latMin?: number;
+  latMax?: number;
   values: Array<number | null>;
 };
 
@@ -351,15 +359,23 @@ export function extractHeatSurfaceGridFromJson(text: string): HeatSurfaceGrid | 
   }
   if (!root || typeof root !== "object" || Array.isArray(root)) return null;
   const obj = root as Record<string, unknown>;
-  const g = obj.surface_grid;
+  // Support both legacy "surface_grid" key and the raster tile cache "grid" key.
+  const g = obj.surface_grid ?? obj.grid;
   if (!g || typeof g !== "object" || Array.isArray(g)) return null;
   const gg = g as Record<string, unknown>;
   const nx = typeof gg.nx === "number" ? Math.trunc(gg.nx) : 0;
   const ny = typeof gg.ny === "number" ? Math.trunc(gg.ny) : 0;
-  const xmin = num(gg.xmin);
-  const xmax = num(gg.xmax);
-  const ymin = num(gg.ymin);
-  const ymax = num(gg.ymax);
+  // Bounds may be inline in the grid object (legacy) or at the top level (raster tile cache).
+  const boundsObj =
+    gg.xmin != null
+      ? gg
+      : obj.bounds && typeof obj.bounds === "object" && !Array.isArray(obj.bounds)
+        ? (obj.bounds as Record<string, unknown>)
+        : null;
+  const xmin = boundsObj ? num(boundsObj.xmin) : null;
+  const xmax = boundsObj ? num(boundsObj.xmax) : null;
+  const ymin = boundsObj ? num(boundsObj.ymin) : null;
+  const ymax = boundsObj ? num(boundsObj.ymax) : null;
   const valuesRaw = gg.values;
   if (
     nx <= 1 ||
@@ -372,12 +388,20 @@ export function extractHeatSurfaceGridFromJson(text: string): HeatSurfaceGrid | 
   ) {
     return null;
   }
+  // Extract source CRS for downstream reprojection.
+  const sourceEpsg: number | undefined =
+    obj.source_crs &&
+    typeof obj.source_crs === "object" &&
+    !Array.isArray(obj.source_crs) &&
+    typeof (obj.source_crs as Record<string, unknown>).epsg === "number"
+      ? ((obj.source_crs as Record<string, unknown>).epsg as number)
+      : undefined;
   const values: Array<number | null> = valuesRaw.map((v) => {
     const n = num(v);
     return n === null ? null : n;
   });
   if (values.length !== nx * ny) return null;
-  return { nx, ny, xmin, xmax, ymin, ymax, values };
+  return { nx, ny, xmin, xmax, ymin, ymax, sourceEpsg, values };
 }
 
 export function extractHeatmapMeasureCandidatesFromJson(text: string): string[] {

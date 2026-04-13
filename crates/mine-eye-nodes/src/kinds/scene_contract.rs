@@ -34,6 +34,23 @@ pub async fn run_scene3d_layer_stack(
         } else {
             "mesh"
         };
+        // Emit a diagnostic when a layer's kind could not be classified from
+        // the artifact schema_id or display_pointer and fell back to the
+        // generic "mesh" renderer.  This surfaces wiring mistakes early
+        // (e.g. a block-model artifact wired without the correct schema_id)
+        // rather than silently rendering as an untextured mesh.
+        let kind_warning: Option<String> = if kind == "mesh"
+            && !display_pointer.contains("mesh")
+            && !schema_id.is_empty()
+        {
+            Some(format!(
+                "Layer {} defaulted to kind=mesh: schema_id={:?}, display_pointer={:?}. \
+                 Check that the upstream node emits a recognised schema_id.",
+                ar.key, schema_id, display_pointer
+            ))
+        } else {
+            None
+        };
         let ui_caps = match kind {
             "imagery_drape" => serde_json::json!(["visible", "opacity", "provider"]),
             "terrain" => serde_json::json!(["visible", "opacity"]),
@@ -43,7 +60,7 @@ pub async fn run_scene3d_layer_stack(
             "assay_points" => serde_json::json!(["visible", "opacity", "palette", "size_scale", "measure"]),
             _ => serde_json::json!(["visible", "opacity"]),
         };
-        layers.push(serde_json::json!({
+        let mut layer = serde_json::json!({
             "layer_id": format!("layer_{}", layers.len() + 1),
             "kind": kind,
             "source_artifact_ref": {
@@ -56,7 +73,11 @@ pub async fn run_scene3d_layer_stack(
             "ui_capabilities": ui_caps,
             "priority": priority,
             "visibility_default": true
-        }));
+        });
+        if let Some(w) = kind_warning {
+            layer["warning"] = serde_json::Value::String(w);
+        }
+        layers.push(layer);
         priority += 10;
     }
 
