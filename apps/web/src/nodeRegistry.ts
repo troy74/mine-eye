@@ -90,6 +90,10 @@ export type AddNodePreset = {
   frameworkGroup: string;
   submenu: string;
   pluginSource: string;
+  isGroup?: boolean;
+  icon?: string;
+  accent?: string;
+  params?: Record<string, unknown>;
   policy?: Record<string, string>;
 };
 

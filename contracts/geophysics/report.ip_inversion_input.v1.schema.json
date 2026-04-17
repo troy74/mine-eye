@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report.ip_inversion_input.v1",
+  "title": "Induced Polarization Inversion Input Report",
+  "type": "object",
+  "required": ["schema_id", "type", "summary"],
+  "properties": {
+    "schema_id": { "const": "report.ip_inversion_input.v1" },
+    "type": { "const": "ip_inversion_input_report" },
+    "summary": { "type": "object" },
+    "parameters": { "type": "object" },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

@@ -18,6 +18,12 @@ import {
   lockLabel,
   resolveNodeInspectorCapabilities,
 } from "./nodeInspectorActions";
+import {
+  GROUP_TEMPLATES,
+  cloneGroupDefinition,
+  groupDefinitionFromNode,
+  groupTemplateIdFromNode,
+} from "./nodeGroup";
 
 const OUTPUT_CRS_OPTIONS: { value: string; label: string }[] = [
   { value: "project", label: "Project CRS (default)" },
@@ -100,13 +106,17 @@ export function NodeInspector({
   const isIpSurveyIngestNode = kind === "ip_survey_ingest";
   const isIpCorridorModelNode = kind === "ip_corridor_model";
   const isIpInversionMeshNode = kind === "ip_inversion_mesh";
+  const isIpInversionInputNode = kind === "ip_inversion_input";
+  const isIpInvertNode = kind === "ip_invert";
   const isIpInversionPreviewNode = kind === "ip_inversion_preview";
+  const isIpSectionSliceNode = kind === "ip_section_slice";
   const isHeatmapRasterTileCacheNode = kind === "heatmap_raster_tile_cache";
   const isArtifactIngestNode = kind === "observation_ingest";
   const isMdViewerNode = kind === "md_viewer";
   const isPlotChartNode = kind === "plot_chart";
+  const isNodeGroupNode = kind === "node_group";
   const hasConfigTab =
-    isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isIpCorridorModelNode || isIpInversionMeshNode || isIpInversionPreviewNode || isHeatmapRasterTileCacheNode || isMdViewerNode || isPlotChartNode;
+    isNodeGroupNode || isHeatmapNode || isDataModelTransformNode || isTerrainAdjustNode || isDemFetchNode || isIsoExtractNode || isTilebrokerNode || isAoiNode || isBlockGradeModelNode || isMagneticMapperNode || isIpCorridorModelNode || isIpInversionMeshNode || isIpInversionInputNode || isIpInvertNode || isIpSectionSliceNode || isHeatmapRasterTileCacheNode || isMdViewerNode || isPlotChartNode;
   const hasMappingTab = csvCapable;
   const hasCrsTab = csvCapable;
 
@@ -666,6 +676,27 @@ export function NodeInspector({
   const [ipPreviewConductivityBias, setIpPreviewConductivityBias] = useState<string>(
     () => (typeof initialUi.conductivity_bias === "number" ? String(initialUi.conductivity_bias) : "0.35")
   );
+  const [ipInvertSmoothingLambda, setIpInvertSmoothingLambda] = useState<string>(
+    () => (typeof initialUi.smoothing_lambda === "number" ? String(initialUi.smoothing_lambda) : "0.85")
+  );
+  const [ipInvertDepthWeight, setIpInvertDepthWeight] = useState<string>(
+    () => (typeof initialUi.depth_weight === "number" ? String(initialUi.depth_weight) : "0.2")
+  );
+  const [ipInvertMaxIterations, setIpInvertMaxIterations] = useState<string>(
+    () => (typeof initialUi.max_iterations === "number" ? String(initialUi.max_iterations) : "6")
+  );
+  const [ipSectionNx, setIpSectionNx] = useState<string>(
+    () => (typeof initialUi.nx === "number" ? String(initialUi.nx) : "96")
+  );
+  const [ipSectionNz, setIpSectionNz] = useState<string>(
+    () => (typeof initialUi.nz === "number" ? String(initialUi.nz) : "56")
+  );
+  const [ipSectionLateralMarginM, setIpSectionLateralMarginM] = useState<string>(
+    () => (typeof initialUi.lateral_margin_m === "number" ? String(initialUi.lateral_margin_m) : "10")
+  );
+  const [ipSectionVerticalMarginM, setIpSectionVerticalMarginM] = useState<string>(
+    () => (typeof initialUi.vertical_margin_m === "number" ? String(initialUi.vertical_margin_m) : "10")
+  );
   const [rtcMeasure, setRtcMeasure] = useState<string>(
     () => (typeof initialUi.measure === "string" ? initialUi.measure : "")
   );
@@ -734,6 +765,13 @@ export function NodeInspector({
   const [chartObjective, setChartObjective] = useState<string>(
     () => (typeof initialUi.user_objective === "string" ? initialUi.user_objective : "")
   );
+  const [groupTemplateId, setGroupTemplateId] = useState<string>(
+    () => groupTemplateIdFromNode(node)
+  );
+  const [groupDefinition, setGroupDefinition] = useState(() => {
+    const existing = groupDefinitionFromNode(node);
+    return existing ? cloneGroupDefinition(existing) : null;
+  });
   const [chartMaxContextRows, setChartMaxContextRows] = useState<string>(
     () => (typeof initialUi.max_context_rows === "number" ? String(initialUi.max_context_rows) : "8")
   );
@@ -1024,6 +1062,9 @@ export function NodeInspector({
     setChartObjective(typeof u.user_objective === "string" ? u.user_objective : "");
     setChartMaxContextRows(typeof u.max_context_rows === "number" ? String(u.max_context_rows) : "8");
     setChartMaxRenderRows(typeof u.max_render_rows === "number" ? String(u.max_render_rows) : "3000");
+    setGroupTemplateId(groupTemplateIdFromNode(node));
+    const nextGroupDefinition = groupDefinitionFromNode(node);
+    setGroupDefinition(nextGroupDefinition ? cloneGroupDefinition(nextGroupDefinition) : null);
     setCsvArtifactKey(typeof u.csv_artifact_key === "string" ? u.csv_artifact_key : "");
     setCsvArtifactHash(typeof u.csv_artifact_hash === "string" ? u.csv_artifact_hash : "");
     setCsvDelimiter(typeof u.csv_delimiter === "string" ? u.csv_delimiter : ",");
@@ -1624,11 +1665,23 @@ export function NodeInspector({
       ui.lateral_padding_m = Math.max(0, n(ipMeshLateralPaddingM, 40));
       ui.depth_padding_m = Math.max(5, n(ipMeshDepthPaddingM, 80));
       ui.max_cells = Math.max(1000, Math.trunc(n(ipMeshMaxCells, 18000)));
-    } else if (isIpInversionPreviewNode) {
+    } else if (isIpInversionInputNode) {
       ui.influence_radius_m = Math.max(10, n(ipPreviewInfluenceRadiusM, 90));
       ui.idw_power = Math.max(0.5, Math.min(8, n(ipPreviewIdwPower, 2)));
       ui.min_support = Math.max(1, Math.trunc(n(ipPreviewMinSupport, 2)));
       ui.conductivity_bias = Math.max(0, Math.min(1, n(ipPreviewConductivityBias, 0.35)));
+    } else if (isIpInvertNode) {
+      ui.smoothing_lambda = Math.max(0, Math.min(10, n(ipInvertSmoothingLambda, 0.85)));
+      ui.depth_weight = Math.max(0, Math.min(4, n(ipInvertDepthWeight, 0.2)));
+      ui.max_iterations = Math.max(1, Math.min(32, Math.trunc(n(ipInvertMaxIterations, 6))));
+    } else if (isNodeGroupNode) {
+      ui.group_template_id = groupTemplateId.trim() || undefined;
+      ui.group_definition = groupDefinition ?? undefined;
+    } else if (isIpSectionSliceNode) {
+      ui.nx = Math.max(16, Math.min(512, Math.trunc(n(ipSectionNx, 96))));
+      ui.nz = Math.max(16, Math.min(512, Math.trunc(n(ipSectionNz, 56))));
+      ui.lateral_margin_m = Math.max(0, n(ipSectionLateralMarginM, 10));
+      ui.vertical_margin_m = Math.max(0, n(ipSectionVerticalMarginM, 10));
     } else if (isHeatmapRasterTileCacheNode) {
       ui.measure = rtcMeasure.trim() || undefined;
       ui.method = rtcMethod === "nearest" ? "nearest" : "idw";
@@ -1826,6 +1879,11 @@ export function NodeInspector({
     ipPreviewIdwPower,
     ipPreviewMinSupport,
     ipPreviewConductivityBias,
+    isIpSectionSliceNode,
+    ipSectionNx,
+    ipSectionNz,
+    ipSectionLateralMarginM,
+    ipSectionVerticalMarginM,
     isHeatmapRasterTileCacheNode,
     rtcMeasure,
     rtcMethod,
@@ -1851,6 +1909,9 @@ export function NodeInspector({
     chartMaxContextRows,
     chartMaxRenderRows,
     chartTemplates,
+    isNodeGroupNode,
+    groupTemplateId,
+    groupDefinition,
     isMdViewerNode,
     mdTitle,
     mdLlmEnabled,
@@ -1954,6 +2015,7 @@ export function NodeInspector({
           csv_artifact_key: csvArtifactKey,
           csv_filename: csvName || undefined,
           csv_delimiter: csvDelimiter || ",",
+          mapping: { ...mapping },
         };
       }
       const res = await runGraph(graphId, {
@@ -2066,8 +2128,16 @@ export function NodeInspector({
                     ? "IP corridor"
                   : isIpInversionMeshNode
                     ? "IP mesh"
+                  : isIpInversionInputNode
+                    ? "IP inversion"
+                  : isIpInvertNode
+                    ? "IP invert"
+                  : isNodeGroupNode
+                    ? "Group"
                   : isIpInversionPreviewNode
                     ? "IP preview"
+                  : isIpSectionSliceNode
+                    ? "IP section"
                   : isHeatmapRasterTileCacheNode
                     ? "Heatmap tiles"
                   : isMdViewerNode
@@ -2075,7 +2145,7 @@ export function NodeInspector({
                     : isPlotChartNode
                       ? "Chart"
               : "Config",
-    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMagneticMapperNode, isIpCorridorModelNode, isIpInversionMeshNode, isIpInversionPreviewNode, isHeatmapRasterTileCacheNode, isMdViewerNode, isPlotChartNode]
+    [isDataModelTransformNode, isDemFetchNode, isHeatmapNode, isIsoExtractNode, isTerrainAdjustNode, isTilebrokerNode, isAoiNode, isBlockGradeModelNode, isMagneticMapperNode, isIpCorridorModelNode, isIpInversionMeshNode, isIpInversionInputNode, isIpInvertNode, isNodeGroupNode, isIpInversionPreviewNode, isIpSectionSliceNode, isHeatmapRasterTileCacheNode, isMdViewerNode, isPlotChartNode]
   );
 
   const tabs = useMemo(() => {
@@ -2569,6 +2639,38 @@ export function NodeInspector({
                     {selectCol("hole_id", "Hole id")}
                     {selectCol("from_m", "From depth (m)")}
                     {selectCol("to_m", "To depth (m)")}
+                  </div>
+                )}
+                {kind === "ip_survey_ingest" && (
+                  <div style={mapGrid}>
+                    {selectCol("measurement_id", "Measurement id")}
+                    {selectCol("line_id", "Line id (optional)")}
+                    {selectCol("survey_mode", "Survey mode (optional)")}
+                    {selectCol("array_type", "Array type (optional)")}
+                    {selectCol("a_id", "A id")}
+                    {selectCol("a_x", "A X")}
+                    {selectCol("a_y", "A Y")}
+                    {selectCol("a_z", "A Z")}
+                    {selectCol("b_id", "B id")}
+                    {selectCol("b_x", "B X")}
+                    {selectCol("b_y", "B Y")}
+                    {selectCol("b_z", "B Z")}
+                    {selectCol("m_id", "M id")}
+                    {selectCol("m_x", "M X")}
+                    {selectCol("m_y", "M Y")}
+                    {selectCol("m_z", "M Z")}
+                    {selectCol("n_id", "N id")}
+                    {selectCol("n_x", "N X")}
+                    {selectCol("n_y", "N Y")}
+                    {selectCol("n_z", "N Z")}
+                    {selectCol("current_ma", "Current (mA)")}
+                    {selectCol("voltage_mv", "Voltage (mV)")}
+                    {selectCol("apparent_resistivity_ohm_m", "App. resistivity")}
+                    {selectCol("chargeability_mv_v", "Chargeability")}
+                    {selectCol("gate_start_ms", "Gate start (optional)")}
+                    {selectCol("gate_end_ms", "Gate end (optional)")}
+                    {selectCol("stack_count", "Stack count (optional)")}
+                    {selectCol("reciprocity_error_pct", "Reciprocity % (optional)")}
                   </div>
                 )}
                 {kind === "magnetic_model" && (
@@ -3931,11 +4033,10 @@ export function NodeInspector({
           </div>
         )}
 
-        {tab === "config" && isIpInversionPreviewNode && (
+        {tab === "config" && isIpInversionInputNode && (
           <div>
             <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
-              Interpolate pseudosection responses onto the preview mesh for 3D inversion-style
-              testing. Confidence is shown explicitly so low-support areas stay visible but honest.
+              Prepare the hardened modelling payload for IP preview and future Rust solvers. These parameters belong here so downstream nodes consume one explicit inversion-input contract.
             </p>
             <div style={mapGrid}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -3978,6 +4079,164 @@ export function NodeInspector({
                     inputMode="decimal"
                     value={ipPreviewConductivityBias}
                     onChange={(e) => setIpPreviewConductivityBias(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isNodeGroupNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Wrap a reusable internal workflow behind a simpler top-level node. The wrapper keeps contracts explicit on the main canvas while exposing only the internal outputs we choose.
+            </p>
+            <div style={mapGrid}>
+              <label style={lab}>
+                <span style={labSpan}>Template</span>
+                <select
+                  value={groupTemplateId}
+                  onChange={(e) => {
+                    const nextTemplateId = e.target.value;
+                    setGroupTemplateId(nextTemplateId);
+                    const template = GROUP_TEMPLATES.find((t) => t.id === nextTemplateId) ?? null;
+                    setGroupDefinition(template ? cloneGroupDefinition(template.definition) : null);
+                  }}
+                  style={sel}
+                >
+                  <option value="">Select template…</option>
+                  {GROUP_TEMPLATES.map((t) => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {(() => {
+              const def = groupDefinition;
+              if (!def) return null;
+              return (
+                <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                    <div style={{ opacity: 0.8, fontSize: 13 }}>
+                      {def.internal_nodes.length} internal nodes · {def.internal_edges.length} internal links · {def.outputs.length} exposed outputs
+                    </div>
+                    <button type="button" onClick={() => onOpenEditor?.()} style={btnGhost}>
+                      Open group editor
+                    </button>
+                  </div>
+                  <div style={preBox}>
+                    <strong>Internal nodes</strong>
+                    <div style={{ marginTop: 6 }}>
+                      {def.internal_nodes.map((n) => (
+                        <div key={n.id} style={{ opacity: 0.9 }}>{n.id} · {n.kind}</div>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={preBox}>
+                    <strong>Exposed outputs</strong>
+                    <div style={{ marginTop: 6 }}>
+                      {def.outputs.map((p) => (
+                        <div key={p.id} style={{ opacity: 0.9 }}>{p.label} · {p.semantic}</div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {tab === "config" && isIpInvertNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Run the first Rust-side inversion stage by regularizing the prepared IP input across the mesh. Higher smoothing stabilizes the model; lower smoothing preserves more local contrast.
+            </p>
+            <div style={mapGrid}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Smoothing lambda</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipInvertSmoothingLambda}
+                    onChange={(e) => setIpInvertSmoothingLambda(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Depth weight</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipInvertDepthWeight}
+                    onChange={(e) => setIpInvertDepthWeight(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Max iterations</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={ipInvertMaxIterations}
+                    onChange={(e) => setIpInvertMaxIterations(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "config" && isIpSectionSliceNode && (
+          <div>
+            <p style={{ opacity: 0.8, marginTop: 0, marginBottom: 10 }}>
+              Build a vertical coloured section plane from the IP preview or pseudosection so line-based interpretation is clearer than voxels alone.
+            </p>
+            <div style={mapGrid}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Section columns (NX)</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={ipSectionNx}
+                    onChange={(e) => setIpSectionNx(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Section rows (NZ)</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={ipSectionNz}
+                    onChange={(e) => setIpSectionNz(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <label style={lab}>
+                  <span style={labSpan}>Lateral margin (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipSectionLateralMarginM}
+                    onChange={(e) => setIpSectionLateralMarginM(e.target.value)}
+                    style={{ ...sel, fontFamily: "inherit" }}
+                  />
+                </label>
+                <label style={lab}>
+                  <span style={labSpan}>Vertical margin (m)</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={ipSectionVerticalMarginM}
+                    onChange={(e) => setIpSectionVerticalMarginM(e.target.value)}
                     style={{ ...sel, fontFamily: "inherit" }}
                   />
                 </label>

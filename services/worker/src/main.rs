@@ -112,6 +112,15 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => tracing::warn!(error = %e, "resolve_input_artifact_refs"),
                 }
+                match store
+                    .resolve_input_artifact_bindings(envelope.graph_id, envelope.node_id)
+                    .await
+                {
+                    Ok(bindings) => {
+                        envelope.input_artifact_bindings = bindings;
+                    }
+                    Err(e) => tracing::warn!(error = %e, "resolve_input_artifact_bindings"),
+                }
 
                 let result = executor.execute(&ctx, &envelope).await;
                 let _ = hb_tx.send(());

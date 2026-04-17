@@ -45,13 +45,17 @@ import {
   type InspectorTab,
 } from "./graphInspectorContext";
 import { NodeInspector } from "./NodeInspector";
+import { GroupEditorOverlay } from "./GroupEditorOverlay";
 import {
   edgeColorForApiEdge,
+  glowForSemantic,
+  GRAPH_VISUALS,
   pickHandleColorForPortWithSemantic,
 } from "./portTypes";
 import { DYNAMIC_PORT_GROUPS, dynPortInfo, incomingPortIds, outgoingPortIds } from "./nodePortLayout";
 import { isAcquisitionCsvKind } from "./pipelineSchema";
 import { nodePorts, nodeRole, nodeSpec, portSemantic } from "./nodeRegistry";
+import { groupPortsFromNode, groupVisualMeta } from "./nodeGroup";
 
 const CAT_ACCENT: Record<string, string> = {
   input: "#238636",
@@ -76,6 +80,13 @@ type PipelineData = {
   role: string;
   category: string;
   categoryAccent: string;
+  isGroup: boolean;
+  groupIcon: string | null;
+  groupBadge: string | null;
+  groupAccent: string | null;
+  focusMode: "selected" | "upstream" | "downstream" | "muted" | "normal";
+  stateBadge: string | null;
+  warningBadge: string | null;
   statusLine: string;
   hashShort: string | null;
   isRunning: boolean;
@@ -96,6 +107,8 @@ type PipelineData = {
   portOptionalsIn: Record<string, boolean>;
   portOptionalsOut: Record<string, boolean>;
 };
+
+type LineageFocusMode = "lineage" | "upstream" | "downstream";
 
 function computeExecTone(
   node: ApiNode,
@@ -289,6 +302,58 @@ const STATE_DOT: Record<string, { color: string; label: string }> = {
   error:   { color: "#f85149", label: "Error" },
 };
 
+function graphFocusSets(
+  nodes: ApiNode[],
+  edges: ApiEdge[],
+  selectedNodeId: string | null,
+  mode: LineageFocusMode
+): {
+  upstreamNodes: Set<string>;
+  downstreamNodes: Set<string>;
+  focusEdges: Set<string>;
+} {
+  const upstreamNodes = new Set<string>();
+  const downstreamNodes = new Set<string>();
+  const focusEdges = new Set<string>();
+  if (!selectedNodeId) return { upstreamNodes, downstreamNodes, focusEdges };
+
+  const reverse = new Map<string, ApiEdge[]>();
+  const forward = new Map<string, ApiEdge[]>();
+  for (const edge of edges) {
+    reverse.set(edge.to_node, [...(reverse.get(edge.to_node) ?? []), edge]);
+    forward.set(edge.from_node, [...(forward.get(edge.from_node) ?? []), edge]);
+  }
+
+  const walk = (
+    startId: string,
+    table: Map<string, ApiEdge[]>,
+    nextNode: (edge: ApiEdge) => string,
+    targetSet: Set<string>
+  ) => {
+    const queue = [startId];
+    const seen = new Set<string>([startId]);
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const edge of table.get(current) ?? []) {
+        focusEdges.add(edge.id);
+        const next = nextNode(edge);
+        if (seen.has(next)) continue;
+        seen.add(next);
+        targetSet.add(next);
+        queue.push(next);
+      }
+    }
+  };
+
+  if (mode === "lineage" || mode === "upstream") {
+    walk(selectedNodeId, reverse, (edge) => edge.from_node, upstreamNodes);
+  }
+  if (mode === "lineage" || mode === "downstream") {
+    walk(selectedNodeId, forward, (edge) => edge.to_node, downstreamNodes);
+  }
+  return { upstreamNodes, downstreamNodes, focusEdges };
+}
+
 // ── Layout constants — must match the rendered heights exactly ───────────────
 // Top bar:  7px top-pad + 20px row (buttons dominate) + 5px bot-pad = 32px
 // Port row: 17px per row with 6px section padding top + bottom
@@ -324,6 +389,19 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
   const dotCfg = data.isRunning
     ? { color: "#58a6ff", label: "Running…" }
     : STATE_DOT[data.nodeState] ?? { color: "#6e7681", label: data.nodeState };
+  const accent = data.isGroup ? (data.groupAccent ?? "#ff9e3d") : data.categoryAccent;
+  const focusOpacity =
+    data.focusMode === "muted" ? 0.42 : data.focusMode === "normal" ? 1 : 1;
+  const focusShadow =
+    data.focusMode === "selected"
+      ? `0 0 0 1px ${accent}66 inset, 0 0 18px ${accent}33`
+      : data.focusMode === "upstream"
+        ? "0 0 0 1px rgba(88,166,255,0.35) inset"
+        : data.focusMode === "downstream"
+          ? "0 0 0 1px rgba(63,185,80,0.32) inset"
+          : data.isGroup
+            ? `0 0 0 1px ${accent}35 inset`
+            : "none";
 
   function commitAlias() {
     setAliasEdit(false);
@@ -344,11 +422,17 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
         borderTop: `1px ${b.style} ${b.color}`,
         borderRight: `1px ${b.style} ${b.color}`,
         borderBottom: `1px ${b.style} ${b.color}`,
-        borderLeft: `3px solid ${data.categoryAccent}`,
+        borderLeft: `${data.isGroup ? 6 : 3}px solid ${accent}`,
         borderRadius: 10,
         minWidth: 200,
         maxWidth: 270,
         fontSize: 12,
+        boxShadow: focusShadow,
+        backgroundImage: data.isGroup
+          ? `linear-gradient(180deg, ${accent}16 0%, rgba(22,27,34,0) 42%)`
+          : undefined,
+        opacity: focusOpacity,
+        transition: "opacity 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
       }}
     >
       {/* ── Handles (absolutely positioned at pixel offsets) ─────────── */}
@@ -363,6 +447,10 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
             border: "2px solid #161b22",
             width: 11, height: 11, borderRadius: "50%",
             opacity: data.portOptionalsIn[port] ? 0.5 : 1,
+            boxShadow:
+              data.focusMode !== "muted"
+                ? `0 0 0 1px ${data.portColorsIn[port] ?? GRAPH_VISUALS.portIdle}55, 0 0 6px ${data.portColorsIn[port] ?? GRAPH_VISUALS.portIdle}33`
+                : "none",
           }}
         />
       ))}
@@ -376,6 +464,10 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
             background: data.portColorsOut[port] ?? "#484f58",
             border: "2px solid #161b22",
             width: 11, height: 11, borderRadius: "50%",
+            boxShadow:
+              data.focusMode !== "muted"
+                ? `0 0 0 1px ${data.portColorsOut[port] ?? GRAPH_VISUALS.portIdle}55, 0 0 6px ${data.portColorsOut[port] ?? GRAPH_VISUALS.portIdle}33`
+                : "none",
           }}
         />
       ))}
@@ -388,6 +480,14 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
         boxSizing: "border-box",
       }}>
         {/* Editable name */}
+        {data.isGroup && data.groupIcon ? (
+          <span
+            title={data.groupBadge ?? "Group"}
+            style={{ flexShrink: 0, color: accent, fontSize: 13, lineHeight: 1 }}
+          >
+            {data.groupIcon}
+          </span>
+        ) : null}
         {aliasEdit ? (
           <input
             autoFocus
@@ -424,6 +524,36 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
             {displayName}
           </span>
         )}
+        {data.isGroup && data.groupBadge ? (
+          <span
+            style={{
+              flexShrink: 0,
+              height: 16,
+              padding: "0 5px",
+              borderRadius: 999,
+              border: `1px solid ${accent}55`,
+              color: accent,
+              fontSize: 8.5,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
+              display: "inline-flex",
+              alignItems: "center",
+              textTransform: "uppercase",
+            }}
+          >
+            {data.groupBadge}
+          </span>
+        ) : null}
+        {data.stateBadge ? (
+          <span style={statusPill(data.nodeState === "error" ? "#f85149" : data.isRunning ? "#58a6ff" : "#a371f7")}>
+            {data.stateBadge}
+          </span>
+        ) : null}
+        {data.warningBadge ? (
+          <span style={statusPill("#d29922")}>
+            {data.warningBadge}
+          </span>
+        ) : null}
         {/* Status dot */}
         <span title={dotCfg.label} style={{
           display: "inline-block", width: 7, height: 7,
@@ -460,6 +590,16 @@ function PipelineNode({ data }: NodeProps<PipelineData>) {
             onClick={(e) => { e.stopPropagation(); ctx.openInspector(id, "config"); }}
             style={iconBtn({ accent: "#58a6ff" })}
           >⚙</button>
+          {data.isGroup && (
+            <button
+              type="button"
+              title="Open group editor"
+              onClick={(e) => { e.stopPropagation(); ctx.openNodeEditor?.(id); }}
+              style={iconBtn({ accent })}
+            >
+              ⇲
+            </button>
+          )}
           <button type="button"
             title="Open viewer / preview"
             onClick={(e) => { e.stopPropagation(); ctx.openNodeViewer(id); }}
@@ -645,6 +785,36 @@ const menuBtn: CSSProperties = {
   textOverflow: "ellipsis",
 };
 
+function sectionMenuHeader(color: string): CSSProperties {
+  return {
+    fontSize: 9.5,
+    fontWeight: 700,
+    letterSpacing: "0.07em",
+    textTransform: "uppercase",
+    color,
+    padding: "6px 8px 2px",
+    userSelect: "none",
+  };
+}
+
+function statusPill(color: string): CSSProperties {
+  return {
+    flexShrink: 0,
+    height: 16,
+    padding: "0 5px",
+    borderRadius: 999,
+    border: `1px solid ${color}55`,
+    color,
+    fontSize: 8.5,
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    display: "inline-flex",
+    alignItems: "center",
+    textTransform: "uppercase",
+    background: `${color}14`,
+  };
+}
+
 const nodeTypes = { pipeline: PipelineNode };
 
 function layoutNodes(nodes: ApiNode[], edges: ApiEdge[]): Map<string, { x: number; y: number }> {
@@ -721,12 +891,21 @@ function toFlowElements(
   graphId: string,
   nodes: ApiNode[],
   edges: ApiEdge[],
-  artifacts: ArtifactEntry[]
+  artifacts: ArtifactEntry[],
+  activeNodeId: string | null,
+  focusMode: LineageFocusMode,
+  selectedEdgeId: string | null
 ): { n: Node[]; e: Edge[] } {
   const positions = layoutNodes(nodes, edges);
   const saved = loadSavedPositions(graphId);
   const feeds = incomingFeedLabels(nodes, edges);
   const hasArtifactByNode = new Set(artifacts.map((a) => a.node_id));
+  const { upstreamNodes, downstreamNodes, focusEdges } = graphFocusSets(
+    nodes,
+    edges,
+    activeNodeId,
+    focusMode
+  );
   const n: Node[] = nodes.map((node) => {
     const auto = positions.get(node.id) ?? { x: 0, y: 0 };
     const p = saved[node.id] ?? auto;
@@ -735,7 +914,11 @@ function toFlowElements(
     const role = nodeRole(kind) ?? `Node · ${kind}`;
     const rawAlias = node.config?.params?._alias;
     const alias = typeof rawAlias === "string" && rawAlias.trim() ? rawAlias.trim() : null;
-    const incomingPorts = incomingPortIds(node.id, kind, edges);
+    const isGroup = kind === "node_group";
+    const groupMeta = isGroup ? groupVisualMeta(node) : null;
+    const groupIn = kind === "node_group" ? groupPortsFromNode(node, "in").map((p) => p.id) : null;
+    const groupOut = kind === "node_group" ? groupPortsFromNode(node, "out").map((p) => p.id) : null;
+    const incomingPorts = groupIn ?? incomingPortIds(node.id, kind, edges);
     const hasOutputArtifact = hasArtifactByNode.has(node.id);
     const hasUpstreamArtifact = edges.some(
       (e) => e.to_node === node.id && hasArtifactByNode.has(e.from_node)
@@ -754,9 +937,13 @@ function toFlowElements(
     const hashShort = node.content_hash
       ? `sha256:${node.content_hash.slice(0, 10)}…`
       : null;
-    const outgoingPorts = outgoingPortIds(node.id, kind, edges);
-    const inPortSpecs = nodePorts(kind, "in");
-    const outPortSpecs = nodePorts(kind, "out");
+    const outgoingPorts = groupOut ?? outgoingPortIds(node.id, kind, edges);
+    const inPortSpecs = kind === "node_group"
+      ? groupPortsFromNode(node, "in").map((p) => ({ id: p.id, label: p.label, semantic: p.semantic, optional: p.optional }))
+      : nodePorts(kind, "in");
+    const outPortSpecs = kind === "node_group"
+      ? groupPortsFromNode(node, "out").map((p) => ({ id: p.id, label: p.label, semantic: p.semantic, optional: p.optional }))
+      : nodePorts(kind, "out");
     const portColorsIn = Object.fromEntries(
       incomingPorts.map((p) => [
         p,
@@ -765,7 +952,9 @@ function toFlowElements(
           node.id,
           "in",
           p,
-          portSemantic(kind, "in", p)
+          kind === "node_group"
+            ? (inPortSpecs.find((s) => s.id === p)?.semantic ?? "")
+            : portSemantic(kind, "in", p)
         ),
       ])
     );
@@ -777,7 +966,9 @@ function toFlowElements(
           node.id,
           "out",
           p,
-          portSemantic(kind, "out", p)
+          kind === "node_group"
+            ? (outPortSpecs.find((s) => s.id === p)?.semantic ?? "")
+            : portSemantic(kind, "out", p)
         ),
       ])
     );
@@ -797,11 +988,11 @@ function toFlowElements(
     const portSemanticsIn = Object.fromEntries(
       incomingPorts.map((p) => {
         const dyn = dynPortInfo(kind, p);
-        return [p, portSemantic(kind, "in", p) ?? dyn?.semantic ?? ""];
+        return [p, (kind === "node_group" ? inPortSpecs.find((s) => s.id === p)?.semantic : portSemantic(kind, "in", p)) ?? dyn?.semantic ?? ""];
       })
     );
     const portSemanticsOut = Object.fromEntries(
-      outgoingPorts.map((p) => [p, portSemantic(kind, "out", p) ?? ""])
+      outgoingPorts.map((p) => [p, (kind === "node_group" ? outPortSpecs.find((s) => s.id === p)?.semantic : portSemantic(kind, "out", p)) ?? ""])
     );
     const portOptionalsIn = Object.fromEntries(
       incomingPorts.map((p) => {
@@ -817,6 +1008,32 @@ function toFlowElements(
         return [p, spec?.optional ?? false];
       })
     );
+    const focusMode: PipelineData["focusMode"] =
+      activeNodeId === null
+        ? "normal"
+        : node.id === activeNodeId
+          ? "selected"
+          : upstreamNodes.has(node.id)
+            ? "upstream"
+            : downstreamNodes.has(node.id)
+              ? "downstream"
+              : "muted";
+    const stateBadge =
+      nodeState === "error"
+        ? "ERR"
+        : isRunning
+          ? "RUN"
+          : isLocked
+            ? "LOCK"
+            : nodeState === "unset"
+              ? "SETUP"
+              : null;
+    const warningBadge =
+      nodeState === "stale"
+        ? "STALE"
+        : nodeState === "unset"
+          ? "INPUT"
+          : null;
     return {
       id: node.id,
       type: "pipeline",
@@ -828,6 +1045,13 @@ function toFlowElements(
         role,
         category: cat,
         categoryAccent,
+        isGroup,
+        groupIcon: groupMeta?.icon ?? null,
+        groupBadge: groupMeta?.badge ?? null,
+        groupAccent: groupMeta?.accent ?? null,
+        focusMode,
+        stateBadge,
+        warningBadge,
         statusLine: `Execution: ${node.execution} · cache: ${node.cache}`,
         hashShort,
         isRunning,
@@ -853,15 +1077,26 @@ function toFlowElements(
 
   const e: Edge[] = edges.map((edge) => {
     const stroke = edgeColorForApiEdge(edge);
+    const selected = selectedEdgeId === edge.id;
+    const focused = focusEdges.has(edge.id);
+    const muted = activeNodeId !== null && !focused && !selected;
     return {
       id: edge.id,
       source: edge.from_node,
       target: edge.to_node,
       sourceHandle: edge.from_port,
       targetHandle: edge.to_port,
-      label: `${edge.from_port} → ${edge.to_port} · ${edge.semantic_type.replace(/_/g, " ")}`,
-      labelStyle: { fill: stroke, fontSize: 9 },
-      style: { stroke, strokeWidth: 2 },
+      label:
+        selected || focused
+          ? `${edge.from_port} → ${edge.to_port} · ${edge.semantic_type.replace(/_/g, " ")}`
+          : "",
+      labelStyle: { fill: selected ? GRAPH_VISUALS.selected : stroke, fontSize: 9 },
+      style: {
+        stroke: muted ? GRAPH_VISUALS.mutedEdge : stroke,
+        strokeWidth: selected ? 3.5 : focused ? 3 : 2,
+        opacity: muted ? 0.42 : 0.95,
+        filter: selected || focused ? `drop-shadow(0 0 6px ${glowForSemantic(edge.semantic_type)})` : undefined,
+      },
     };
   });
 
@@ -932,6 +1167,10 @@ function FlowWorkspace({
   }));
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [groupEditorNodeId, setGroupEditorNodeId] = useState<string | null>(null);
+  const [lineageFocusMode, setLineageFocusMode] = useState<LineageFocusMode>("lineage");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("summary");
   const rfRef = useRef<ReactFlowInstance | null>(null);
   const fittedForGraphRef = useRef<string | null>(null);
@@ -968,6 +1207,18 @@ function FlowWorkspace({
       onOpenNodeViewer?.(nodeId);
     },
     [onOpenNodeViewer]
+  );
+
+  const openNodeEditor = useCallback(
+    (nodeId: string) => {
+      const target = apiNodes.find((item) => item.id === nodeId) ?? null;
+      if (target?.config.kind === "node_group") {
+        setGroupEditorNodeId(nodeId);
+        return;
+      }
+      onOpenNodeEditor?.(nodeId);
+    },
+    [apiNodes, onOpenNodeEditor]
   );
 
   const queueNodeRun = useCallback(
@@ -1013,8 +1264,8 @@ function FlowWorkspace({
   );
 
   const ctxValue = useMemo(
-    () => ({ openInspector, openNodeViewer, queueNodeRun, renameNode, toggleLock, openAoiEditor: onOpenAoiEditor }),
-    [openInspector, openNodeViewer, queueNodeRun, renameNode, toggleLock, onOpenAoiEditor]
+    () => ({ openInspector, openNodeViewer, openNodeEditor, queueNodeRun, renameNode, toggleLock, openAoiEditor: onOpenAoiEditor }),
+    [openInspector, openNodeViewer, openNodeEditor, queueNodeRun, renameNode, toggleLock, onOpenAoiEditor]
   );
 
   const load = useCallback(async () => {
@@ -1031,13 +1282,22 @@ function FlowWorkspace({
           : 4326;
       setWorkspaceEpsg(pe);
       setApiNodes(data.nodes);
-      const { n, e } = toFlowElements(graphId, data.nodes, data.edges, artifacts);
+      const activeFocusNodeId = selectedId ?? hoveredNodeId;
+      const { n, e } = toFlowElements(
+        graphId,
+        data.nodes,
+        data.edges,
+        artifacts,
+        activeFocusNodeId,
+        lineageFocusMode,
+        selectedEdgeId
+      );
       setNodes(n);
       setEdges(e);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [artifacts, graphId, setEdges, setNodes]);
+  }, [artifacts, graphId, hoveredNodeId, lineageFocusMode, selectedId, selectedEdgeId, setEdges, setNodes]);
 
   useEffect(() => {
     if (ctxMenu.kind === "none") return;
@@ -1134,7 +1394,10 @@ function FlowWorkspace({
         while (used.has(freeIdx)) freeIdx += 1;
         to_port = activeGroup.slotId(freeIdx);
       }
-      const semantic_type = portSemantic(sourceKind, "out", from_port) ?? "data_table";
+      const semantic_type =
+        (sourceKind === "node_group"
+          ? groupPortsFromNode(sourceNode, "out").find((p) => p.id === from_port)?.semantic
+          : portSemantic(sourceKind, "out", from_port)) ?? "data_table";
       try {
         await createGraphEdge(graphId, {
           from_node: c.source,
@@ -1160,7 +1423,7 @@ function FlowWorkspace({
         const { id } = await addGraphNode(graphId, {
           category: preset.category,
           kind: preset.kind,
-          params: {},
+          params: preset.params ?? {},
           policy: preset.policy,
           branch_id: activeBranchId ?? null,
         });
@@ -1199,7 +1462,10 @@ function FlowWorkspace({
     if (selectedId && !apiNodes.some((n) => n.id === selectedId)) {
       setSelectedId(null);
     }
-  }, [apiNodes, selectedId]);
+    if (groupEditorNodeId && !apiNodes.some((n) => n.id === groupEditorNodeId)) {
+      setGroupEditorNodeId(null);
+    }
+  }, [apiNodes, selectedId, groupEditorNodeId]);
 
   const onNodeDragStop = useCallback(
     (_: unknown, node: Node) => {
@@ -1212,10 +1478,22 @@ function FlowWorkspace({
     () => apiNodes.find((n) => n.id === selectedId) ?? null,
     [apiNodes, selectedId]
   );
+  const groupEditorNode = useMemo(
+    () => apiNodes.find((n) => n.id === groupEditorNodeId) ?? null,
+    [apiNodes, groupEditorNodeId]
+  );
   const addNodePresets = getAddNodePresets();
+  const groupAddPresets = useMemo(
+    () => addNodePresets.filter((preset) => preset.isGroup),
+    [addNodePresets]
+  );
+  const nodeAddPresets = useMemo(
+    () => addNodePresets.filter((preset) => !preset.isGroup),
+    [addNodePresets]
+  );
   const groupedAddNodePresets = useMemo(() => {
     const byGroup = new Map<string, Map<string, AddNodePreset[]>>();
-    for (const p of addNodePresets) {
+    for (const p of nodeAddPresets) {
       const group = p.frameworkGroup || "other";
       const submenu = p.submenu || "general";
       if (!byGroup.has(group)) byGroup.set(group, new Map());
@@ -1234,7 +1512,7 @@ function FlowWorkspace({
             items: items.slice().sort((a, b) => a.label.localeCompare(b.label)),
           })),
       }));
-  }, [addNodePresets]);
+  }, [nodeAddPresets]);
   const classFlyoutMenus = useMemo(() => {
     return groupedAddNodePresets.map((g) => {
       const directItems: AddNodePreset[] = [];
@@ -1291,8 +1569,7 @@ function FlowWorkspace({
 
   const filteredAddNodeItems = useMemo(() => {
     const q = menuFilter.trim().toLowerCase();
-    if (!q) return classFlyoutMenus; // no filter: return all grouped
-    // Filter: merge all items into flat list, match on label + group
+    if (!q) return classFlyoutMenus;
     return classFlyoutMenus.map((c) => {
       const allItems = [
         ...c.directItems,
@@ -1306,6 +1583,16 @@ function FlowWorkspace({
       return { ...c, directItems: allItems, groupedItems: [] };
     }).filter((c) => c.directItems.length > 0);
   }, [classFlyoutMenus, menuFilter]);
+  const filteredGroupPresets = useMemo(() => {
+    const q = menuFilter.trim().toLowerCase();
+    if (!q) return groupAddPresets;
+    return groupAddPresets.filter(
+      (preset) =>
+        preset.label.toLowerCase().includes(q) ||
+        preset.kind.toLowerCase().includes(q) ||
+        "groups".includes(q)
+    );
+  }, [groupAddPresets, menuFilter]);
 
   const artifactsForSelected = useMemo(
     () =>
@@ -1391,11 +1678,26 @@ function FlowWorkspace({
               });
             }}
             onNodeDragStop={onNodeDragStop}
+            onNodeMouseEnter={(_, n) => {
+              if (!selectedId) setHoveredNodeId(n.id);
+            }}
+            onNodeMouseLeave={(_, n) => {
+              setHoveredNodeId((prev) => (prev === n.id ? null : prev));
+            }}
             onNodeClick={(_, n) => {
               setSelectedId(n.id);
+              setHoveredNodeId(null);
+              setSelectedEdgeId(null);
               setInspectorTab("summary");
             }}
-            onPaneClick={() => setSelectedId(null)}
+            onEdgeClick={(_, edge) => {
+              setSelectedEdgeId(String(edge.id));
+            }}
+            onPaneClick={() => {
+              setSelectedId(null);
+              setHoveredNodeId(null);
+              setSelectedEdgeId(null);
+            }}
             proOptions={proOptions}
           >
             <Background color="#30363d" gap={20} size={1} />
@@ -1406,6 +1708,54 @@ function FlowWorkspace({
               style={{ background: "#161b22" }}
             />
           </ReactFlow>
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              top: 12,
+              zIndex: 20,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 10px",
+              background: "rgba(15,20,25,0.9)",
+              border: "1px solid #30363d",
+              borderRadius: 10,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.26)",
+            }}
+          >
+            <span style={{ fontSize: 11, color: "#8b949e", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              Focus
+            </span>
+            {(["lineage", "upstream", "downstream"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setLineageFocusMode(mode)}
+                style={{
+                  ...menuBtn,
+                  width: "auto",
+                  marginBottom: 0,
+                  padding: "4px 8px",
+                  fontSize: 10,
+                  background: lineageFocusMode === mode ? "#1c2638" : "#21262d",
+                  border: `1px solid ${lineageFocusMode === mode ? "#58a6ff" : "transparent"}`,
+                }}
+                title={
+                  mode === "lineage"
+                    ? "Highlight both upstream and downstream lineage"
+                    : mode === "upstream"
+                      ? "Highlight only upstream lineage"
+                      : "Highlight only downstream lineage"
+                }
+              >
+                {mode}
+              </button>
+            ))}
+            <span style={{ fontSize: 11, color: "#8b949e" }}>
+              {selectedId ? "selected" : hoveredNodeId ? "hover preview" : "idle"}
+            </span>
+          </div>
           {ctxMenu.kind !== "none" && (() => {
             const activeLayout = ctxMenu.kind === "pane" ? paneMenuLayout : nodeEdgeMenuLayout;
             return createPortal(
@@ -1448,7 +1798,7 @@ function FlowWorkspace({
                             setHoveredGroupKey(null);
                             setHoveredSubGroupKey(null);
                           }}
-                          placeholder="Search nodes…"
+                          placeholder="Search nodes or groups…"
                           style={{
                             width: "100%",
                             background: "#0d1117",
@@ -1469,59 +1819,99 @@ function FlowWorkspace({
                       {/* Menu body — cascading when no filter, flat when searching */}
                       <div style={{ overflowY: "auto", flex: 1, paddingTop: 2 }}>
                         {menuFilter.trim() ? (
-                          /* ── Flat search results ── */
-                          filteredAddNodeItems.length === 0 ? (
+                          filteredAddNodeItems.length === 0 && filteredGroupPresets.length === 0 ? (
                             <div style={{ fontSize: 11, color: "#484f58", padding: "6px 10px" }}>
-                              No nodes match
+                              No nodes or groups match
                             </div>
                           ) : (
-                            filteredAddNodeItems.map((c) => (
-                              <div key={c.key}>
-                                <div style={{
-                                  fontSize: 9.5, fontWeight: 700, letterSpacing: "0.07em",
-                                  textTransform: "uppercase", color: "#484f58",
-                                  padding: "6px 8px 2px", userSelect: "none",
-                                }}>
-                                  {c.label}
+                            <>
+                              {filteredGroupPresets.length > 0 && (
+                                <div>
+                                  <div style={sectionMenuHeader("#ff9e3d")}>Groups</div>
+                                  {filteredGroupPresets.map((preset) => (
+                                    <button
+                                      key={`${preset.kind}:${preset.label}`}
+                                      type="button"
+                                      onClick={() => void addNodeFromPreset(preset, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
+                                      style={{
+                                        ...menuBtn,
+                                        marginBottom: 1,
+                                        border: `1px solid ${(preset.accent ?? "#ff9e3d")}55`,
+                                        background: `${preset.accent ?? "#ff9e3d"}18`,
+                                      }}
+                                    >
+                                      <span style={{ color: preset.accent ?? "#ff9e3d", marginRight: 6 }}>{preset.icon ?? "▣"}</span>
+                                      {preset.label}
+                                    </button>
+                                  ))}
                                 </div>
-                                {c.directItems.map((p) => (
-                                  <button key={p.kind} type="button"
-                                    onClick={() => void addNodeFromPreset(p, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
-                                    style={{ ...menuBtn, marginBottom: 1 }}
-                                    title={`${p.frameworkGroup}/${p.submenu}`}
+                              )}
+                              {filteredAddNodeItems.map((c) => (
+                                <div key={c.key}>
+                                  <div style={sectionMenuHeader("#484f58")}>{c.label}</div>
+                                  {c.directItems.map((p) => (
+                                    <button key={`${p.kind}:${p.label}`} type="button"
+                                      onClick={() => void addNodeFromPreset(p, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
+                                      style={{ ...menuBtn, marginBottom: 1 }}
+                                      title={`${p.frameworkGroup}/${p.submenu}`}
+                                    >
+                                      {p.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              ))}
+                            </>
+                          )
+                        ) : (
+                          <>
+                            {groupAddPresets.length > 0 && (
+                              <div style={{ paddingBottom: 8, marginBottom: 6, borderBottom: "1px solid #30363d" }}>
+                                <div style={sectionMenuHeader("#ff9e3d")}>Groups</div>
+                                {groupAddPresets.map((preset) => (
+                                  <button
+                                    key={`${preset.kind}:${preset.label}`}
+                                    type="button"
+                                    onClick={() => void addNodeFromPreset(preset, { x: ctxMenu.flowX, y: ctxMenu.flowY })}
+                                    style={{
+                                      ...menuBtn,
+                                      marginBottom: 1,
+                                      border: `1px solid ${(preset.accent ?? "#ff9e3d")}55`,
+                                      background: `${preset.accent ?? "#ff9e3d"}18`,
+                                    }}
                                   >
-                                    {p.label}
+                                    <span style={{ color: preset.accent ?? "#ff9e3d", marginRight: 6 }}>{preset.icon ?? "▣"}</span>
+                                    {preset.label}
                                   </button>
                                 ))}
                               </div>
-                            ))
-                          )
-                        ) : (
-                          /* ── Cascading L1 group buttons ── */
-                          classFlyoutMenus.map((c) => (
-                            <button
-                              key={c.key}
-                              type="button"
-                              onMouseEnter={(e) => {
-                                // Store Y position synchronously in ref — no timing issue
-                                hoveredGroupTop.current = e.currentTarget.getBoundingClientRect().top;
-                                setHoveredGroupKey(c.key);
-                                setHoveredSubGroupKey(null);
-                              }}
-                              style={{
-                                ...menuBtn,
-                                marginBottom: 1,
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                background: hoveredGroupKey === c.key ? "#1c2638" : menuBtn.background,
-                                border: `1px solid ${hoveredGroupKey === c.key ? "#3b82f6" : "transparent"}`,
-                              }}
-                            >
-                              <span style={{ textTransform: "capitalize" }}>{c.label}</span>
-                              <span style={{ opacity: 0.55, fontSize: 10 }}>›</span>
-                            </button>
-                          ))
+                            )}
+                            <div>
+                              <div style={sectionMenuHeader("#58a6ff")}>Nodes</div>
+                              {classFlyoutMenus.map((c) => (
+                                <button
+                                  key={c.key}
+                                  type="button"
+                                  onMouseEnter={(e) => {
+                                    hoveredGroupTop.current = e.currentTarget.getBoundingClientRect().top;
+                                    setHoveredGroupKey(c.key);
+                                    setHoveredSubGroupKey(null);
+                                  }}
+                                  style={{
+                                    ...menuBtn,
+                                    marginBottom: 1,
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    background: hoveredGroupKey === c.key ? "#1c2638" : menuBtn.background,
+                                    border: `1px solid ${hoveredGroupKey === c.key ? "#3b82f6" : "transparent"}`,
+                                  }}
+                                >
+                                  <span style={{ textTransform: "capitalize" }}>{c.label}</span>
+                                  <span style={{ opacity: 0.55, fontSize: 10 }}>›</span>
+                                </button>
+                              ))}
+                            </div>
+                          </>
                         )}
                       </div>
                     </>
@@ -1553,6 +1943,19 @@ function FlowWorkspace({
                       >
                         Open inspector
                       </button>
+                      {apiNodes.find((n) => n.id === ctxMenu.nodeId)?.config.kind === "node_group" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const id = ctxMenu.nodeId;
+                            setCtxMenu({ kind: "none" });
+                            openNodeEditor(id);
+                          }}
+                          style={{ ...menuBtn, color: "#ff9e3d" }}
+                        >
+                          Open group editor
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -1727,10 +2130,19 @@ function FlowWorkspace({
             tab={inspectorTab}
             onTab={setInspectorTab}
             onClose={() => setSelectedId(null)}
-            onOpenEditor={() => onOpenNodeEditor?.(selectedNode.id)}
+            onOpenEditor={() => openNodeEditor(selectedNode.id)}
             onNodeUpdated={onNodeUpdated}
             nodeArtifacts={artifactsForSelected}
             onPipelineQueued={onPipelineQueued}
+          />
+        )}
+        {groupEditorNode && (
+          <GroupEditorOverlay
+            graphId={graphId}
+            activeBranchId={activeBranchId}
+            node={groupEditorNode}
+            onClose={() => setGroupEditorNodeId(null)}
+            onNodeUpdated={onNodeUpdated}
           />
         )}
       </div>

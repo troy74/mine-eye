@@ -7,8 +7,9 @@ use crate::kinds::{
     run_collar_ingest, run_data_model_transform, run_dem_fetch, run_dem_integrate_stub,
     run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
     run_heatmap_raster_tile_cache, run_imagery_provider, run_ip_corridor_model,
-    run_ip_inversion_mesh, run_ip_inversion_preview, run_ip_pseudosection, run_ip_qc_normalize,
-    run_ip_survey_ingest, run_magnetic_depth_model, run_magnetic_model, run_md_viewer,
+    run_ip_inversion_input, run_ip_inversion_mesh, run_ip_inversion_preview, run_ip_invert,
+    run_ip_pseudosection, run_ip_qc_normalize, run_ip_section_slice, run_ip_survey_ingest,
+    run_magnetic_depth_model, run_magnetic_model, run_md_viewer, run_node_group,
     run_observation_ingest, run_plan_view_2d, run_plan_view_3d, run_plot_chart,
     run_scene3d_layer_stack, run_surface_iso_extract, run_surface_sample_ingest, run_survey_ingest,
     run_terrain_adjust, run_tilebroker, run_xyz_to_surface,
@@ -95,9 +96,15 @@ impl RegistryExecutor {
             Arc::new(IpInversionMeshExecutor),
         );
         inner.insert(
+            "ip_inversion_input".into(),
+            Arc::new(IpInversionInputExecutor),
+        );
+        inner.insert(
             "ip_inversion_preview".into(),
             Arc::new(IpInversionPreviewExecutor),
         );
+        inner.insert("ip_invert".into(), Arc::new(IpInvertExecutor));
+        inner.insert("ip_section_slice".into(), Arc::new(IpSectionSliceExecutor));
         inner.insert(
             "data_model_transform".into(),
             Arc::new(DataModelTransformExecutor),
@@ -121,6 +128,7 @@ impl RegistryExecutor {
         inner.insert("aoi".into(), Arc::new(AoiExecutor));
         inner.insert("imagery_provider".into(), Arc::new(ImageryProviderExecutor));
         inner.insert("tilebroker".into(), Arc::new(TilebrokerExecutor));
+        inner.insert("node_group".into(), Arc::new(NodeGroupExecutor));
         inner.insert(
             "scene3d_layer_stack".into(),
             Arc::new(Scene3DLayerStackExecutor),
@@ -271,6 +279,19 @@ impl NodeExecutor for IpInversionMeshExecutor {
     }
 }
 
+struct IpInversionInputExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpInversionInputExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_inversion_input(ctx, job).await
+    }
+}
+
 struct IpInversionPreviewExecutor;
 
 #[async_trait]
@@ -284,6 +305,19 @@ impl NodeExecutor for IpInversionPreviewExecutor {
     }
 }
 
+struct IpInvertExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpInvertExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_invert(ctx, job).await
+    }
+}
+
 struct IpPseudosectionExecutor;
 
 #[async_trait]
@@ -294,6 +328,19 @@ impl NodeExecutor for IpPseudosectionExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_ip_pseudosection(ctx, job).await
+    }
+}
+
+struct IpSectionSliceExecutor;
+
+#[async_trait]
+impl NodeExecutor for IpSectionSliceExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_ip_section_slice(ctx, job).await
     }
 }
 
@@ -554,6 +601,19 @@ impl NodeExecutor for ImageryProviderExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_imagery_provider(ctx, job).await
+    }
+}
+
+struct NodeGroupExecutor;
+
+#[async_trait]
+impl NodeExecutor for NodeGroupExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_node_group(ctx, job).await
     }
 }
 

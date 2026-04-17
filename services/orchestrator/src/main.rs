@@ -25,10 +25,11 @@ use mine_eye_graph::propagate_stale;
 use mine_eye_scheduler::{collect_dirty_nodes, Scheduler};
 use mine_eye_store::{JobQueue, PgJobQueue, PgStore, StoreError};
 use mine_eye_types::{
-    personal_organization_id, ArtifactRef, AuthContextRef, BranchPromotionStatus, BranchStatus,
-    CacheState, CrsRecord, ExecutionState, GraphMeta, LineageMeta, LockState, NodeCategory,
-    NodeConfig, NodeExecutionPolicy, NodeRecord, OrganizationRole, OwnerRef, PropagationPolicy,
-    QualityPolicy, RecomputePolicy, SemanticPortType, WorkspaceStatus,
+    node_group_depth, personal_organization_id, ArtifactRef, AuthContextRef, BranchPromotionStatus,
+    BranchStatus, CacheState, CrsRecord, ExecutionState, GraphMeta, LineageMeta, LockState,
+    NodeCategory, NodeConfig, NodeExecutionPolicy, NodeGroupDefinition, NodeRecord,
+    OrganizationRole, OwnerRef, PropagationPolicy, QualityPolicy, RecomputePolicy,
+    SemanticPortType, WorkspaceStatus, NODE_GROUP_MAX_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1818,6 +1819,23 @@ struct PatchNodeParamsReq {
     branch_id: Option<Uuid>,
 }
 
+fn merge_json_params(base: &mut serde_json::Value, patch: &serde_json::Value) {
+    let (serde_json::Value::Object(bm), serde_json::Value::Object(pm)) = (base, patch) else {
+        return;
+    };
+    for (k, v) in pm {
+        if let Some(existing) = bm.get(k) {
+            if existing.is_object() && v.is_object() {
+                let mut inner = existing.clone();
+                merge_json_params(&mut inner, v);
+                bm.insert(k.clone(), inner);
+                continue;
+            }
+        }
+        bm.insert(k.clone(), v.clone());
+    }
+}
+
 async fn patch_node_params(
     State(s): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -1825,6 +1843,21 @@ async fn patch_node_params(
     Json(body): Json<PatchNodeParamsReq>,
 ) -> Result<Json<NodeRecord>, (StatusCode, String)> {
     require_graph_access(&s, &auth, graph_id).await?;
+    let snap = s
+        .store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let existing = snap.nodes.get(&node_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("node '{}' not found", node_id),
+        )
+    })?;
+    let mut merged_params = existing.config.params.clone();
+    merge_json_params(&mut merged_params, &body.params);
+    validate_node_group_params(existing.config.kind.as_str(), &merged_params)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let node = s
         .store
         .patch_node_config(graph_id, node_id, body.params, body.policy)
@@ -1844,6 +1877,27 @@ async fn patch_node_params(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(node))
+}
+
+fn validate_node_group_params(kind: &str, params: &serde_json::Value) -> Result<(), String> {
+    if kind != "node_group" {
+        return Ok(());
+    }
+    let raw = params
+        .get("group_definition")
+        .or_else(|| params.get("ui").and_then(|v| v.get("group_definition")))
+        .cloned()
+        .ok_or_else(|| "node_group missing params.group_definition".to_string())?;
+    let def: NodeGroupDefinition =
+        serde_json::from_value(raw).map_err(|e| format!("invalid group definition: {}", e))?;
+    let depth = node_group_depth(&def)?;
+    if depth > NODE_GROUP_MAX_DEPTH {
+        return Err(format!(
+            "node_group nesting depth {} exceeds max supported depth {}",
+            depth, NODE_GROUP_MAX_DEPTH
+        ));
+    }
+    Ok(())
 }
 
 fn stable_graph_sig(snap: &mine_eye_graph::GraphSnapshot, arts: &[ArtifactEntry]) -> String {
@@ -1928,6 +1982,36 @@ struct AddEdgeReq {
     branch_id: Option<Uuid>,
 }
 
+fn group_port_semantic(
+    node: &NodeRecord,
+    direction: &str,
+    port_id: &str,
+) -> Result<Option<SemanticPortType>, String> {
+    if node.config.kind != "node_group" {
+        return Ok(None);
+    }
+    let raw = node
+        .config
+        .params
+        .get("group_definition")
+        .or_else(|| {
+            node.config
+                .params
+                .get("ui")
+                .and_then(|v| v.get("group_definition"))
+        })
+        .cloned()
+        .ok_or_else(|| "node_group missing params.group_definition".to_string())?;
+    let def: NodeGroupDefinition =
+        serde_json::from_value(raw).map_err(|e| format!("invalid group definition: {}", e))?;
+    let ports = if direction == "in" {
+        &def.inputs
+    } else {
+        &def.outputs
+    };
+    Ok(ports.iter().find(|p| p.id == port_id).map(|p| p.semantic))
+}
+
 async fn add_edge(
     State(s): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -1940,31 +2024,63 @@ async fn add_edge(
         .load_graph(graph_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let from_kind = snapshot
-        .nodes
-        .get(&body.from_node)
-        .map(|n| n.config.kind.as_str())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("from_node '{}' not found", body.from_node),
-            )
-        })?;
-    let to_kind = snapshot
-        .nodes
-        .get(&body.to_node)
-        .map(|n| n.config.kind.as_str())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!("to_node '{}' not found", body.to_node),
-            )
-        })?;
+    let from_node = snapshot.nodes.get(&body.from_node).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("from_node '{}' not found", body.from_node),
+        )
+    })?;
+    let to_node = snapshot.nodes.get(&body.to_node).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("to_node '{}' not found", body.to_node),
+        )
+    })?;
+    let from_kind = from_node.config.kind.as_str();
+    let to_kind = to_node.config.kind.as_str();
     let registry =
         NodeRegistry::global().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let resolved_semantic = registry
-        .resolve_edge_semantic(from_kind, &body.from_port, to_kind, &body.to_port)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let resolved_semantic = if from_kind == "node_group" || to_kind == "node_group" {
+        let out_sem = group_port_semantic(from_node, "out", &body.from_port)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            .unwrap_or_else(|| {
+                registry
+                    .resolve_output_port(from_kind, &body.from_port)
+                    .ok()
+                    .and_then(|p| p.port.semantic.parse().ok())
+                    .unwrap_or(SemanticPortType::DataTable)
+            });
+        let in_sem = group_port_semantic(to_node, "in", &body.to_port)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            .unwrap_or_else(|| {
+                registry
+                    .resolve_input_port(to_kind, &body.to_port)
+                    .ok()
+                    .and_then(|p| p.port.semantic.parse().ok())
+                    .unwrap_or(SemanticPortType::DataTable)
+            });
+        out_sem
+            .compatibility_to(in_sem)
+            .map(|_| out_sem)
+            .ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "wire incompatibility: {}.{} ({}) cannot connect to {}.{} ({})",
+                        from_kind,
+                        body.from_port,
+                        out_sem.as_str(),
+                        to_kind,
+                        body.to_port,
+                        in_sem.as_str()
+                    ),
+                )
+            })?
+    } else {
+        registry
+            .resolve_edge_semantic(from_kind, &body.from_port, to_kind, &body.to_port)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+    };
     if let Some(requested) = body.semantic_type.as_deref() {
         let requested_semantic: SemanticPortType = requested
             .parse()

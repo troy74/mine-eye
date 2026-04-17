@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geophysics.ip_mesh.v1",
+  "title": "Induced Polarization Mesh",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "type", "crs", "mesh_kind", "grid", "rows"],
+  "properties": {
+    "schema_id": { "const": "geophysics.ip_mesh.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "type": { "const": "ip_mesh" },
+    "mesh_kind": { "type": "string" },
+    "model_family": { "type": ["string", "null"] },
+    "crs": { "type": "object" },
+    "grid": { "type": "object" },
+    "domain": { "type": "object" },
+    "rows": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "meta": { "type": "object" }
+  }
+}

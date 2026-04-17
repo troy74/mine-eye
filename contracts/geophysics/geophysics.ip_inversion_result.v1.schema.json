@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geophysics.ip_inversion_result.v1",
+  "title": "Induced Polarization Inversion Result",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "type", "crs", "model_kind", "rows"],
+  "properties": {
+    "schema_id": { "const": "geophysics.ip_inversion_result.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "type": { "const": "ip_inversion_result" },
+    "model_kind": { "type": "string" },
+    "model_family": { "type": ["string", "null"] },
+    "mesh_schema_id": { "type": ["string", "null"] },
+    "physical_properties": { "type": "array", "items": { "type": "string" } },
+    "confidence_measures": { "type": "array", "items": { "type": "string" } },
+    "crs": { "type": "object" },
+    "rows": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "meta": { "type": "object" }
+  }
+}

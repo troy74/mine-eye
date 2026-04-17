@@ -109,6 +109,23 @@ type HeatmapSurfaceGrid = {
   };
 };
 
+type SectionPlaneGrid = {
+  id: string;
+  nodeId: string;
+  nodeKind: string;
+  label: string;
+  centerX: number;
+  centerY: number;
+  azimuthDeg: number;
+  sMin: number;
+  sMax: number;
+  zTop: number;
+  zBottom: number;
+  nx: number;
+  nz: number;
+  measureGrids: Record<string, Array<number | null>>;
+};
+
 type SceneData = {
   traces: Segment3D[];
   drillSegments: Segment3D[];
@@ -125,10 +142,10 @@ type SceneData = {
   }>;
   terrainGrid: TerrainGrid | null;
   aoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null;
-  measureCandidates: string[];
   totalArtifacts: number;
   sourceLayers: SourceLayer[];
   heatmapSurfaces: HeatmapSurfaceGrid[];
+  sectionPlanes: SectionPlaneGrid[];
 };
 
 type SourceLayer = {
@@ -138,6 +155,8 @@ type SourceLayer = {
   nodeKind: string;
   label: string;      // human-readable
   dotColor: string;
+  measureCandidates: string[];
+  editable: string[];
 };
 
 type LayerStackLayer = {
@@ -899,7 +918,7 @@ function parseSegmentMeasuresFromAssays(raw: unknown): Record<string, number | s
 function parseSceneJson(
   text: string,
   manifestLayer: ViewerManifestLayer | undefined
-): Omit<SceneData, "totalArtifacts" | "sourceLayers" | "heatmapSurfaces"> {
+): Omit<SceneData, "totalArtifacts" | "sourceLayers" | "heatmapSurfaces" | "sectionPlanes"> {
   let root: unknown;
   try {
     root = JSON.parse(text) as unknown;
@@ -915,6 +934,7 @@ function parseSceneJson(
       terrainGrid: null,
       aoiBounds: null,
       measureCandidates: [],
+      sectionPlanes: [],
     };
   }
 
@@ -924,6 +944,7 @@ function parseSceneJson(
   const assayPoints: Point3D[] = [];
   const blockVoxels: BlockVoxel[] = [];
   const terrainPoints: TerrainPoint[] = [];
+  const sectionPlanes: SectionPlaneGrid[] = [];
   const terrainGrids: Array<{
     id: string;
     label: string;
@@ -933,7 +954,8 @@ function parseSceneJson(
   }> = [];
   let terrainGrid: TerrainGrid | null = null;
   let aoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null = null;
-  const measures = new Set<string>();
+  const inferredMeasures = new Set<string>();
+  const declaredMeasures: string[] = [];
 
   const lowerKey = manifestLayer?.artifact_key.toLowerCase() ?? "";
   const sourceKind = manifestLayer?.source_node_kind ?? "";
@@ -1014,7 +1036,7 @@ function parseSceneJson(
       hasExplicitZ: z0Raw !== null && z1Raw !== null,
     });
     if (segMeasures) {
-      for (const k of Object.keys(segMeasures)) measures.add(k);
+      for (const k of Object.keys(segMeasures)) inferredMeasures.add(k);
     }
   };
 
@@ -1031,7 +1053,7 @@ function parseSceneJson(
     const z = zRaw ?? 0;
     if (x === null || y === null) return;
     const parsedMeasures = parseAssayAttributes(rawMeasures);
-    for (const k of Object.keys(parsedMeasures)) measures.add(k);
+    for (const k of Object.keys(parsedMeasures)) inferredMeasures.add(k);
     assayPoints.push({
       x,
       y,
@@ -1064,7 +1086,7 @@ function parseSceneJson(
     if (x === null || y === null || z === null || dx === null || dy === null || dz === null) return;
     if (dx <= 0 || dy <= 0 || dz <= 0) return;
     const parsedMeasures = parseAssayAttributes(rawMeasures);
-    for (const k of Object.keys(parsedMeasures)) measures.add(k);
+    for (const k of Object.keys(parsedMeasures)) inferredMeasures.add(k);
     blockVoxels.push({
       x,
       y,
@@ -1182,7 +1204,62 @@ function parseSceneJson(
     const mcs = obj.measure_candidates;
     if (Array.isArray(mcs)) {
       for (const m of mcs) {
-        if (typeof m === "string" && m.trim().length) measures.add(m.trim());
+        if (typeof m === "string" && m.trim().length && !declaredMeasures.includes(m.trim())) {
+          declaredMeasures.push(m.trim());
+        }
+      }
+    }
+
+    const section = obj.section;
+    if (section && typeof section === "object" && !Array.isArray(section)) {
+      const sec = section as Record<string, unknown>;
+      const centerX = n(sec.center_x);
+      const centerY = n(sec.center_y);
+      const azimuthDeg = n(sec.azimuth_deg);
+      const sMin = n(sec.s_min);
+      const sMax = n(sec.s_max);
+      const zTop = n(sec.z_top);
+      const zBottom = n(sec.z_bottom);
+      const nx = n(sec.nx);
+      const nz = n(sec.nz);
+      const grids =
+        sec.measure_grids && typeof sec.measure_grids === "object" && !Array.isArray(sec.measure_grids)
+          ? (sec.measure_grids as Record<string, unknown>)
+          : null;
+      if (
+        centerX !== null &&
+        centerY !== null &&
+        azimuthDeg !== null &&
+        sMin !== null &&
+        sMax !== null &&
+        zTop !== null &&
+        zBottom !== null &&
+        nx !== null &&
+        nz !== null &&
+        grids
+      ) {
+        const measureGrids: Record<string, Array<number | null>> = {};
+        for (const [k, v] of Object.entries(grids)) {
+          if (!Array.isArray(v)) continue;
+          measureGrids[k] = v.map((x) => (typeof x === "number" && Number.isFinite(x) ? x : null));
+          inferredMeasures.add(k);
+        }
+        sectionPlanes.push({
+          id: `${manifestLayer?.source_node_id ?? "section"}:${manifestLayer?.artifact_key ?? "section"}`,
+          nodeId: String(manifestLayer?.source_node_id ?? "section"),
+          nodeKind: String(manifestLayer?.source_node_kind ?? "unknown"),
+          label: "Section plane",
+          centerX,
+          centerY,
+          azimuthDeg,
+          sMin,
+          sMax,
+          zTop,
+          zBottom,
+          nx: Math.max(2, Math.trunc(nx)),
+          nz: Math.max(2, Math.trunc(nz)),
+          measureGrids,
+        });
       }
     }
 
@@ -1301,7 +1378,11 @@ function parseSceneJson(
     terrainGrids,
     terrainGrid,
     aoiBounds,
-    measureCandidates: [...measures].sort(),
+    measureCandidates:
+      declaredMeasures.length > 0
+        ? declaredMeasures
+        : [...inferredMeasures].sort(),
+    sectionPlanes,
   };
 }
 
@@ -2221,6 +2302,95 @@ function SurfaceHeatmapLayer3D({
   );
 }
 
+function SectionPlaneLayer3D({
+  sectionPlane,
+  style,
+  toLocal,
+}: {
+  sectionPlane: SectionPlaneGrid;
+  style: LayerVizStyle;
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+}) {
+  const result = useMemo(() => {
+    const key =
+      style.attributeKey.trim() ||
+      Object.keys(sectionPlane.measureGrids)[0] ||
+      "";
+    if (!key) return null;
+    const values = sectionPlane.measureGrids[key];
+    if (!values || values.length !== sectionPlane.nx * sectionPlane.nz) return null;
+    const finiteVals = values.filter((v): v is number => v !== null && Number.isFinite(v));
+    if (finiteVals.length === 0) return null;
+    const domLo = style.rampNormMode === "fixed" ? style.fixedMin : Math.min(...finiteVals);
+    const domHi = style.rampNormMode === "fixed" ? style.fixedMax : Math.max(...finiteVals);
+    const vRange = domHi - domLo || 1;
+    const stops =
+      style.colorStops?.length >= 2
+        ? style.colorStops
+        : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = sectionPlane.nx;
+    canvas.height = sectionPlane.nz;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const img = ctx.createImageData(sectionPlane.nx, sectionPlane.nz);
+    for (let iz = 0; iz < sectionPlane.nz; iz++) {
+      for (let ix = 0; ix < sectionPlane.nx; ix++) {
+        const v = values[iz * sectionPlane.nx + ix];
+        const idx = (iz * sectionPlane.nx + ix) * 4;
+        if (v === null || !Number.isFinite(v)) {
+          img.data[idx + 3] = 0;
+          continue;
+        }
+        const t = Math.max(0, Math.min(1, (v - domLo) / vRange));
+        const hex = interpolateStopsColor(stops, t);
+        const [r, g, b] = hexToRgb(hex);
+        img.data[idx] = r;
+        img.data[idx + 1] = g;
+        img.data[idx + 2] = b;
+        img.data[idx + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    return { tex };
+  }, [sectionPlane, style.attributeKey, style.colorStops, style.palette, style.rampNormMode, style.fixedMin, style.fixedMax]);
+
+  useEffect(() => () => { result?.tex.dispose(); }, [result]);
+  if (!result) return null;
+
+  const halfLen = 0.5 * (sectionPlane.sMax - sectionPlane.sMin);
+  const centerS = 0.5 * (sectionPlane.sMax + sectionPlane.sMin);
+  const theta = (sectionPlane.azimuthDeg * Math.PI) / 180.0;
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
+  const worldCx = sectionPlane.centerX + centerS * ux;
+  const worldCy = sectionPlane.centerY + centerS * uy;
+  const worldCz = 0.5 * (sectionPlane.zTop + sectionPlane.zBottom);
+  const center = toLocal(worldCx, worldCy, worldCz);
+  const width = Math.max(1.0, sectionPlane.sMax - sectionPlane.sMin);
+  const depth = Math.max(1.0, Math.abs(sectionPlane.zTop - sectionPlane.zBottom));
+
+  return (
+    <mesh
+      position={[center.x, center.y, center.z]}
+      rotation={[0, -theta, 0]}
+      renderOrder={6}
+    >
+      <planeGeometry args={[width, depth]} />
+      <meshBasicMaterial
+        map={result.tex}
+        transparent
+        opacity={Math.max(0.05, style.opacity)}
+        side={THREE.DoubleSide}
+        depthWrite={false}
+      />
+    </mesh>
+  );
+}
+
 function EsriDrape({
   urls,
   width,
@@ -2657,10 +2827,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     terrainGrids: [],
     terrainGrid: null,
     aoiBounds: null,
-    measureCandidates: [],
     totalArtifacts: 0,
     sourceLayers: [],
     heatmapSurfaces: [],
+    sectionPlanes: [],
   });
   const [ui, setUi] = useState<SceneUiState>(DEFAULT_UI);
   const [configHydrated, setConfigHydrated] = useState(false);
@@ -2678,6 +2848,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     trajectories: false,
     grade_segments: true,
     assay_points: false,
+    section_plane: true,
   });
   const savedRef = useRef<string>("");
   const saveTidRef = useRef<number | null>(null);
@@ -2939,10 +3110,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           terrainGrids: [],
           terrainGrid: null,
           aoiBounds: null,
-          measureCandidates: [],
           totalArtifacts: 0,
           sourceLayers: [],
           heatmapSurfaces: [],
+          sectionPlanes: [],
         });
         setStatus(inputLinks.length ? "No upstream 3D artifacts yet. Queue run, run worker, then refresh." : "No compatible inputs wired into this 3D viewer.");
         return;
@@ -2963,6 +3134,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const allTerrain: TerrainPoint[] = [];
       const allSourceLayers: SourceLayer[] = [];
       const allHeatmapSurfaces: HeatmapSurfaceGrid[] = [];
+      const allSectionPlanes: SectionPlaneGrid[] = [];
       const seenSourceLayerIds = new Set<string>();
       const terrainCandidates: Array<{
         id: string;
@@ -2976,7 +3148,6 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       let mergedAoiBounds: { xmin: number; xmax: number; ymin: number; ymax: number } | null = null;
       let imageryContract: RasterOverlayContract | null = null;
       let layerStackContract: LayerStackContract | null = null;
-      const allMeasures = new Set<string>();
       let loaded = 0;
 
       for (const art of source) {
@@ -3014,7 +3185,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     seenSourceLayerIds.add(id);
                     const values = rawVals.map(v => (typeof v === "number" && Number.isFinite(v)) ? v : null);
                     allHeatmapSurfaces.push({ id, nodeId: artNodeId, nodeKind: artNodeKind, label: "Assay Heatmap", grid: { nx, ny, xmin, xmax, ymin, ymax, values } });
-                    allSourceLayers.push({ id, baseType: "heatmap_surface", nodeId: artNodeId, nodeKind: artNodeKind, label: "Assay Heatmap", dotColor: "#fb923c" });
+                    allSourceLayers.push({
+                      id,
+                      baseType: "heatmap_surface",
+                      nodeId: artNodeId,
+                      nodeKind: artNodeKind,
+                      label: "Assay Heatmap",
+                      dotColor: "#fb923c",
+                      measureCandidates: [],
+                      editable: ["visible", "opacity"],
+                    });
                   }
                 }
               }
@@ -3025,12 +3205,22 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
           const parsed = parseSceneJson(txt, artManifest);
           loaded += 1;
+          allSectionPlanes.push(...parsed.sectionPlanes);
           {
             const ml = artManifest;
             const nodeId = artNodeId;
             const nodeKind = artNodeKind;
             const makeId = (base: string) => `${base}__${nodeId}`;
             const fmtKind = (k: string) => k.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase());
+            const editable =
+              ml?.presentation &&
+              typeof ml.presentation === "object" &&
+              !Array.isArray(ml.presentation) &&
+              Array.isArray(ml.presentation.editable)
+                ? (ml.presentation.editable as unknown[])
+                    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+                : [];
+            const measureCandidates = parsed.measureCandidates.slice();
 
             const taggedSegs   = parsed.drillSegments.map(s => ({...s, sourceLayerId: makeId("grade_segments")}));
             const taggedPts    = parsed.assayPoints.map(p   => ({...p, sourceLayerId: makeId("assay_points")}));
@@ -3052,6 +3242,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               ["trajectories",   parsed.traces.length > 0],
               ["contours",       parsed.contourSegments.length > 0],
               ["block_voxels",   parsed.blockVoxels.length > 0],
+              ["section_plane",  parsed.sectionPlanes.length > 0],
             ] as const) {
               if (!hasItems) continue;
               const id = makeId(baseType);
@@ -3074,7 +3265,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                         : baseType === "grade_segments" ? "#f97316"
                         : baseType === "contours" ? "#34d399"
                         : baseType === "block_voxels" ? "#f43f5e"
+                        : baseType === "section_plane" ? "#f59e0b"
                         : "#a78bfa",
+                measureCandidates,
+                editable,
               });
             }
           }
@@ -3114,7 +3308,6 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               bestTerrainGrid = cur.grid;
             }
           }
-          for (const m of parsed.measureCandidates) allMeasures.add(m);
         } catch {
           /* ignore */
         }
@@ -3141,10 +3334,10 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         terrainGrids: orderedTerrain,
         terrainGrid: preferredTerrain,
         aoiBounds: mergedAoiBounds,
-        measureCandidates: [...allMeasures].sort(),
         totalArtifacts: loaded,
         sourceLayers: allSourceLayers,
         heatmapSurfaces: allHeatmapSurfaces,
+        sectionPlanes: allSectionPlanes,
       });
       setStatus(`${allTraces.length + allSegs.length + allContours.length} line segment(s), ${allPoints.length} point(s), ${allBlocks.length} block voxel(s), ${allTerrain.length} terrain samples from ${loaded} artifact(s).`);
     })();
@@ -3155,20 +3348,37 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   }, [artifacts, graphId, inputLinks, manifestArtifacts, manifestLayers, viewerNodeId]);
 
   useEffect(() => {
-    if (sceneData.measureCandidates.length === 0) return;
-    const firstMeasure = sceneData.measureCandidates[0];
+    if (sceneData.sourceLayers.length === 0) return;
     setUi((p) => {
-      const hasAnyAttr = Object.values(p.layerStyles).some(s => s?.attributeKey?.trim());
-      if (hasAnyAttr) return p;
       const newStyles: Record<string, LayerVizStyle> = { ...p.layerStyles };
+      let changed = false;
       for (const sl of sceneData.sourceLayers) {
-        if (!newStyles[sl.id]?.attributeKey?.trim()) {
-          newStyles[sl.id] = { ...(newStyles[sl.id] ?? defaultLayerStyleForId(sl.id)), attributeKey: firstMeasure };
+        const preferredMeasure = sl.measureCandidates[0] ?? "";
+        const existing = newStyles[sl.id] ?? defaultLayerStyleForId(sl.id);
+        let next = existing;
+        if (preferredMeasure && !existing.attributeKey.trim()) {
+          next = { ...next, attributeKey: preferredMeasure };
+        }
+        if (
+          existing.attributeKey.trim() &&
+          !sl.measureCandidates.includes(existing.attributeKey.trim())
+        ) {
+          next = { ...next, attributeKey: preferredMeasure };
+        }
+        if (
+          existing.sizeAttribute.trim() &&
+          !sl.measureCandidates.includes(existing.sizeAttribute.trim())
+        ) {
+          next = { ...next, sizeAttribute: "" };
+        }
+        if (next !== existing) {
+          newStyles[sl.id] = next;
+          changed = true;
         }
       }
-      return { ...p, layerStyles: newStyles };
+      return changed ? { ...p, layerStyles: newStyles } : p;
     });
-  }, [sceneData.measureCandidates, sceneData.sourceLayers]);
+  }, [sceneData.sourceLayers]);
 
   useEffect(() => {
     if (sceneData.sourceLayers.length === 0) return;
@@ -3225,6 +3435,19 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       pts.push([b.x - hx, b.y - hy, b.z - hz], [b.x + hx, b.y + hy, b.z + hz]);
     }
     for (const p of sceneData.terrainPoints) pts.push([p.x, p.y, p.z]);
+    for (const sp of sceneData.sectionPlanes) {
+      const theta = (sp.azimuthDeg * Math.PI) / 180.0;
+      const ux = Math.cos(theta);
+      const uy = Math.sin(theta);
+      const sCenter = 0.5 * (sp.sMin + sp.sMax);
+      const sHalf = 0.5 * (sp.sMax - sp.sMin);
+      const cx = sp.centerX + sCenter * ux;
+      const cy = sp.centerY + sCenter * uy;
+      pts.push(
+        [cx - sHalf * ux, cy - sHalf * uy, sp.zTop],
+        [cx + sHalf * ux, cy + sHalf * uy, sp.zBottom]
+      );
+    }
     if (groundTerrainGrid && groundTerrainGrid.values.length > 0) {
       const g = groundTerrainGrid;
       let gzMin = Number.POSITIVE_INFINITY;
@@ -3370,6 +3593,26 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       return { ...defaultLayerStyleForId(layerId), ...(s ?? {}) };
     },
     [ui.layerStyles]
+  );
+
+  const sourceLayerFor = useCallback(
+    (layerId: string) => sceneData.sourceLayers.find((sl) => sl.id === layerId) ?? null,
+    [sceneData.sourceLayers]
+  );
+
+  const layerMeasureCandidates = useCallback(
+    (layerId: string) => sourceLayerFor(layerId)?.measureCandidates ?? [],
+    [sourceLayerFor]
+  );
+
+  const layerEditableCaps = useCallback(
+    (layerId: string) => sourceLayerFor(layerId)?.editable ?? [],
+    [sourceLayerFor]
+  );
+
+  const layerSupports = useCallback(
+    (layerId: string, capability: string) => layerEditableCaps(layerId).includes(capability),
+    [layerEditableCaps]
   );
 
   const setLayerStyle = useCallback(
@@ -4167,6 +4410,22 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     />
                   );
                 }
+                if (baseType === "section_plane") {
+                  const thisStyle = layerStyle(layerId);
+                  if (!thisStyle.visible) return null;
+                  const plane = sceneData.sectionPlanes.find(
+                    (p) => `section_plane__${p.nodeId}` === layerId
+                  );
+                  if (!plane) return null;
+                  return (
+                    <SectionPlaneLayer3D
+                      key={`section-${layerId}`}
+                      sectionPlane={plane}
+                      style={thisStyle}
+                      toLocal={toLocal}
+                    />
+                  );
+                }
                 return null;
               })}
 
@@ -4217,7 +4476,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     {orderedLayerIds.map((layerId) => {
                       const style = layerStyle(layerId);
                       const lBaseType = layerId.includes("__") ? layerId.split("__")[0] : layerId;
-                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "block_voxels" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface";
+                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "block_voxels" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface" || lBaseType === "section_plane";
                       const sourceLayer = sceneData.sourceLayers.find(sl => sl.id === layerId);
                       const thisLayerLabel = sourceLayer?.label
                         ?? (layerId === "esri_drape" ? "Imagery drape"
@@ -4495,7 +4754,9 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                 <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
 
                                   {/* ── MEASURE (not shown for contour/heatmap layers — they colour by their own value domain automatically) ── */}
-                                  {lBaseType !== "contours" && lBaseType !== "heatmap_surface" ? (
+                                  {lBaseType !== "contours" &&
+                                  lBaseType !== "heatmap_surface" &&
+                                  layerSupports(layerId, "measure") ? (
                                   <div>
                                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
                                       <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, flex: 1 }}>Measure</span>
@@ -4511,7 +4772,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                     <select style={ctlSelect} value={style.attributeKey}
                                       onChange={(e) => setLayerStyle(layerId, { attributeKey: e.target.value })}>
                                       <option value="">(constant color)</option>
-                                      {sceneData.measureCandidates.map((m) => (
+                                      {layerMeasureCandidates(layerId).map((m) => (
                                         <option key={`${layerId}-${m}`} value={m}>{m}</option>
                                       ))}
                                     </select>
@@ -4523,7 +4784,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   )}
 
                                   {/* ── COLOR RAMP ── */}
-                                  {style.colorMode === "continuous" ? (
+                                  {(lBaseType === "contours" ||
+                                    lBaseType === "heatmap_surface" ||
+                                    layerSupports(layerId, "palette") ||
+                                    layerSupports(layerId, "measure")) ? (
+                                  style.colorMode === "continuous" ? (
                                     <ColorRampEditor
                                       stops={style.colorStops?.length >= 2 ? style.colorStops : PALETTE_STOPS[style.palette] ?? PALETTE_STOPS.inferno}
                                       onStopsChange={(s) => setLayerStyle(layerId, { colorStops: s })}
@@ -4622,10 +4887,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                         />
                                       </label>
                                     </div>
-                                  )}
+                                  )
+                                  ) : null}
 
                                   {/* ── WIDTH (grade_segments / trajectories) ── */}
-                                  {lBaseType === "grade_segments" ? (
+                                  {lBaseType === "grade_segments" && layerSupports(layerId, "width") ? (
                                     <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 30px", gap: 4, alignItems: "center" }}>
                                       <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, gridColumn: "1/-1", marginBottom: 2 }}>Width</span>
                                       <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>px</span>
@@ -4636,7 +4902,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                       />
                                       <span style={{ fontSize: 9.5, color: "#c9d1d9", fontFamily: "ui-monospace,monospace", textAlign: "right" }}>{ui.segmentWidth}</span>
                                     </div>
-                                  ) : lBaseType === "trajectories" ? (
+                                  ) : lBaseType === "trajectories" && layerSupports(layerId, "width") ? (
                                     <div style={{ display: "grid", gridTemplateColumns: "28px 1fr 30px", gap: 4, alignItems: "center" }}>
                                       <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, gridColumn: "1/-1", marginBottom: 2 }}>Width</span>
                                       <span style={{ fontSize: 9.5, color: "#6e7681", textAlign: "right" }}>px</span>
@@ -4650,7 +4916,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   ) : null}
 
                                   {/* ── SIZE (assay_points only) ── */}
-                                  {lBaseType === "assay_points" ? (
+                                  {lBaseType === "assay_points" && layerSupports(layerId, "size") ? (
                                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                         <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.07em", color: "#484f58", textTransform: "uppercase" as const, flex: 1 }}>Size</span>
@@ -4658,7 +4924,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                       <select style={ctlSelect} value={style.sizeAttribute}
                                         onChange={(e) => setLayerStyle(layerId, { sizeAttribute: e.target.value })}>
                                         <option value="">(constant)</option>
-                                        {sceneData.measureCandidates.map((m) => (
+                                        {layerMeasureCandidates(layerId).map((m) => (
                                           <option key={`sz-${m}`} value={m}>{m}</option>
                                         ))}
                                       </select>

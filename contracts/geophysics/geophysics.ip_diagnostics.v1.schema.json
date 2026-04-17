@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "geophysics.ip_diagnostics.v1",
+  "title": "Induced Polarization Diagnostics",
+  "type": "object",
+  "required": ["schema_id", "schema_version", "type", "summary"],
+  "properties": {
+    "schema_id": { "const": "geophysics.ip_diagnostics.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "type": { "const": "ip_diagnostics" },
+    "model_kind": { "type": ["string", "null"] },
+    "summary": { "type": "object" },
+    "parameters": { "type": "object" },
+    "coverage": { "type": "object" },
+    "confidence": { "type": "object" },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

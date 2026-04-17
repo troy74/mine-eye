@@ -2,6 +2,23 @@
   "version": 1,
   "nodes": [
     {
+      "kind": "node_group",
+      "category": "model",
+      "label": "Node group",
+      "role": "Workflow · wrapper node with internal subgraph and explicitly exposed inputs/outputs",
+      "menu": {
+        "enabled": true,
+        "order": 1
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": []
+      },
+      "framework_group": "workflow",
+      "submenu": "workflow",
+      "plugin_source": "core"
+    },
+    {
       "kind": "collar_ingest",
       "category": "input",
       "label": "Collar ingest",
@@ -130,7 +147,7 @@
       "kind": "ip_survey_ingest",
       "category": "input",
       "label": "IP survey ingest",
-      "role": "Acquisition · TDIP/DCIP quadrupoles → canonical IP survey + electrode points",
+      "role": "Acquisition · TDIP/DCIP quadrupoles → canonical IP observations + electrode points",
       "menu": {
         "enabled": true,
         "order": 31
@@ -140,7 +157,7 @@
         "outputs": [
           {
             "id": "survey",
-            "label": "IP survey",
+            "label": "IP observations",
             "semantic": "data_table"
           },
           {
@@ -163,7 +180,7 @@
       "kind": "ip_qc_normalize",
       "category": "transform",
       "label": "IP QC normalize",
-      "role": "Transform · IP survey QC, reciprocity filtering, and cleaned contract emit",
+      "role": "Transform · IP observations QC, reciprocity filtering, and cleaned contract emit",
       "menu": {
         "enabled": true,
         "order": 32
@@ -172,14 +189,14 @@
         "inputs": [
           {
             "id": "survey_in",
-            "label": "IP survey",
+            "label": "IP observations",
             "semantic": "data_table"
           }
         ],
         "outputs": [
           {
             "id": "survey_clean",
-            "label": "Clean survey",
+            "label": "Clean observations",
             "semantic": "data_table"
           },
           {
@@ -207,7 +224,7 @@
       "kind": "ip_pseudosection",
       "category": "transform",
       "label": "IP pseudosection",
-      "role": "Transform · cleaned IP survey → pseudo-depth points + rows for rapid section review",
+      "role": "Transform · cleaned IP observations → pseudo-depth points + rows for rapid section review",
       "menu": {
         "enabled": true,
         "order": 33
@@ -216,7 +233,7 @@
         "inputs": [
           {
             "id": "survey_in",
-            "label": "Clean survey",
+            "label": "Clean observations",
             "semantic": "data_table"
           }
         ],
@@ -285,7 +302,7 @@
       "kind": "ip_inversion_mesh",
       "category": "model",
       "label": "IP inversion mesh",
-      "role": "Model · pseudosection rows → regular preview mesh/domain for TDIP display and solver handoff",
+      "role": "Model · pseudosection rows → regular IP mesh/domain for preview display and solver handoff",
       "menu": {
         "enabled": true,
         "order": 35
@@ -301,7 +318,7 @@
         "outputs": [
           {
             "id": "mesh_rows",
-            "label": "Mesh rows",
+            "label": "IP mesh",
             "semantic": "data_table"
           },
           {
@@ -321,10 +338,10 @@
       "plugin_source": "core"
     },
     {
-      "kind": "ip_inversion_preview",
+      "kind": "ip_inversion_input",
       "category": "model",
-      "label": "IP inversion preview",
-      "role": "Model · pseudosection + preview mesh → interpolated voxel display for TDIP testing",
+      "label": "IP inversion input",
+      "role": "Model · cleaned observations + pseudosection + IP mesh → hardened modelling payload for preview and future solvers",
       "menu": {
         "enabled": true,
         "order": 36
@@ -332,14 +349,102 @@
       "ports": {
         "inputs": [
           {
+            "id": "observations_in",
+            "label": "Clean observations",
+            "semantic": "data_table"
+          },
+          {
             "id": "pseudo_in",
             "label": "Pseudosection",
             "semantic": "data_table"
           },
           {
             "id": "mesh_in",
-            "label": "Preview mesh",
+            "label": "IP mesh",
             "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "inversion_input",
+            "label": "Inversion input",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "report",
+            "label": "Input report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_invert",
+      "category": "model",
+      "label": "IP invert",
+      "role": "Model · inversion input → first-pass regularized IP inversion result plus diagnostics",
+      "menu": {
+        "enabled": true,
+        "order": 37
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "inversion_input",
+            "label": "Inversion input",
+            "semantic": "semantic_json"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "inversion_voxels",
+            "label": "Inversion voxels",
+            "semantic": "mesh"
+          },
+          {
+            "id": "inversion_centers",
+            "label": "Inversion centers",
+            "semantic": "point_set"
+          },
+          {
+            "id": "inversion_result",
+            "label": "Inversion result",
+            "semantic": "data_table"
+          },
+          {
+            "id": "diagnostics",
+            "label": "Diagnostics",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "report",
+            "label": "Inversion report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_inversion_preview",
+      "category": "model",
+      "label": "IP inversion preview",
+      "role": "Model · inversion input → interpolated inversion-result preview plus diagnostics",
+      "menu": {
+        "enabled": true,
+        "order": 38
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "inversion_input",
+            "label": "Inversion input",
+            "semantic": "semantic_json"
           }
         ],
         "outputs": [
@@ -355,12 +460,51 @@
           },
           {
             "id": "preview_rows",
-            "label": "Preview rows",
+            "label": "Inversion result",
             "semantic": "data_table"
+          },
+          {
+            "id": "diagnostics",
+            "label": "Diagnostics",
+            "semantic": "semantic_json"
           },
           {
             "id": "report",
             "label": "Preview report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "electrical_ip",
+      "submenu": "geophysics",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "ip_section_slice",
+      "category": "model",
+      "label": "IP section slice",
+      "role": "Model · inversion preview or pseudosection → coloured vertical section plane for fast interpretation",
+      "menu": {
+        "enabled": true,
+        "order": 39
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "model_in",
+            "label": "IP model/pseudosection",
+            "semantic": "data_table"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "section_plane",
+            "label": "Section plane",
+            "semantic": "mesh"
+          },
+          {
+            "id": "report",
+            "label": "Section report",
             "semantic": "semantic_json"
           }
         ]

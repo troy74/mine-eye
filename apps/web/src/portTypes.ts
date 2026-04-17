@@ -36,6 +36,15 @@ export const SEMANTIC_EDGE_COLORS: Record<string, string> = {
   semantic_json: "#22d3ee",
 };
 
+export const GRAPH_VISUALS = {
+  portIdle: "#484f58",
+  invalid: "#f85149",
+  warning: "#d29922",
+  selected: "#f0f6fc",
+  selectedGlow: "rgba(240,246,252,0.28)",
+  mutedEdge: "rgba(110,118,129,0.38)",
+} as const;
+
 /** When the graph marks a collar-bearing output (port id), tint the link. */
 export const COLLAR_LINK_COLOR = "#34d399";
 
@@ -124,6 +133,11 @@ export function pickHandleColorForPortWithSemantic<
   if (linked !== "#484f58") return linked;
   if (fallbackSemantic) return baseColorForSemantic(fallbackSemantic);
   return linked;
+}
+
+export function glowForSemantic(sem: string): string {
+  const color = baseColorForSemantic(sem);
+  return `${color}44`;
 }
 
 /** @deprecated use PORT_TAXONOMY_SUMMARY in portTaxonomy.ts */

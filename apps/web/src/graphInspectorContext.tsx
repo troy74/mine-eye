@@ -19,6 +19,8 @@ type Ctx = {
   renameNode: (nodeId: string, alias: string) => Promise<void>;
   /** Toggle the recompute policy between manual (locked) and auto. */
   toggleLock: (nodeId: string, isCurrentlyLocked: boolean) => Promise<void>;
+  /** Open a dedicated node editor surface when available. */
+  openNodeEditor?: (nodeId: string) => void;
   /** Open the AOI bbox map editor tab for this node. */
   openAoiEditor?: (nodeId: string) => void;
 };

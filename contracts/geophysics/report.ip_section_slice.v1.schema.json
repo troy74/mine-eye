@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report.ip_section_slice.v1",
+  "title": "Induced Polarization Section Slice Report",
+  "type": "object",
+  "required": ["schema_id", "type", "summary"],
+  "properties": {
+    "schema_id": { "const": "report.ip_section_slice.v1" },
+    "type": { "const": "ip_section_slice_report" },
+    "summary": { "type": "object" }
+  }
+}

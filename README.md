@@ -21,6 +21,7 @@ This is the core parity rule for web, iOS, and desktop clients.
 
 - ingest collars, surveys, assays, and surface samples
 - run transform/model nodes (desurvey, drillhole model, heatmap, terrain helpers)
+- compose higher-level workflow wrappers with `node_group` while keeping strict typed ports at the canvas boundary
 - route outputs through typed graph ports
 - render node-scoped previews (2D/3D and generic artifact preview)
 - persist graph, branch/revision history, artifacts, and node configuration in backend storage
@@ -55,6 +56,7 @@ This is the core parity rule for web, iOS, and desktop clients.
 - `magnetic_depth` (Euler deconvolution — 3D depth/susceptibility voxels from magnetic grid)
 - `scene_contract` (scene layer composition)
 - `visualization` (viewer payload nodes)
+- `node_group` (wrapper execution over an internal subgraph with explicitly exposed ports)
 - `stubs` (alpha placeholders)
 
 Shared utilities in `kinds/`:
@@ -76,6 +78,36 @@ To keep frontends efficient and consistent, behavior is split into broker compon
 - **Artifact broker** (`mine-eye-store`): immutable artifacts, lineage/content hash, schema/variant metadata.
 
 Frontend rule: fetch one brokered contract/manifest and render, rather than recomputing semantics in the UI.
+
+## Node Groups (V1)
+
+`node_group` lets us wrap a small internal workflow behind a cleaner top-level node on the main canvas.
+
+Current goals:
+
+- reduce wiring clutter for standard patterns such as IP modelling and drillhole ingest
+- preserve strong middle-layer contracts instead of hiding semantics in frontend-only glue
+- allow selective exposure of intermediary internal outputs when they are operationally useful
+
+Current behavior:
+
+- group definitions are persisted in node config as data, not hard-coded runtime state
+- group input/output ports are dynamic and derived from the saved group definition
+- the worker executes the internal DAG in topological order and reuses the normal node registry for each internal node
+- the web client now provides a dedicated drill-in group editor surface with a persisted internal layout, breadcrumb navigation for nested groups, and canvas-level editing of internal topology
+- group templates are exposed directly in the add-node menu as a distinct `Groups` section, with their own icon/accent treatment on the main canvas
+- the group editor is opened on demand rather than mounted globally, which keeps normal project-open flow isolated from group-edit state
+
+Built-in templates at this stage:
+
+- `IP model` — pseudosection, inversion mesh, inversion input, inversion
+- `Drillhole ingest` — collars plus survey ingest
+
+Current V1 limits:
+
+- nested groups are supported with breadcrumb drill-in, capped to a maximum depth of `3`
+- internal editing still uses one editor surface rather than spawning separate windows per nesting level
+- plugins should still target core semantics/contracts first
 
 ## AI Chat (Current)
 

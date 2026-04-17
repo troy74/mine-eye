@@ -82,10 +82,12 @@ impl Scheduler {
                 input_fingerprint,
                 project_crs: project_crs.clone(),
                 input_artifact_refs: inputs,
+                input_artifact_bindings: Vec::new(),
                 input_payload: None,
                 output_spec: serde_json::json!({
                     "quality": format!("{:?}", node.policy.quality),
                     "node_ui": node_ui,
+                    "node_params": node.config.params,
                 }),
             };
             jobs.push(job);

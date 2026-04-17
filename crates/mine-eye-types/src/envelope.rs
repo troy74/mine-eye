@@ -18,6 +18,12 @@ pub struct ArtifactRef {
     pub media_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InputArtifactBinding {
+    pub to_port: String,
+    pub artifact_ref: ArtifactRef,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
@@ -43,6 +49,8 @@ pub struct JobEnvelope {
     pub input_fingerprint: String,
     pub project_crs: Option<crate::CrsRecord>,
     pub input_artifact_refs: Vec<ArtifactRef>,
+    #[serde(default)]
+    pub input_artifact_bindings: Vec<InputArtifactBinding>,
     /// Optional inline inputs (e.g. ingest JSON) when no artifact exists yet.
     pub input_payload: Option<JsonValue>,
     pub output_spec: JsonValue,

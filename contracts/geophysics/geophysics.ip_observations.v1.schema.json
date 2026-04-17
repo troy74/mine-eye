@@ -1,14 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "geophysics.ip_survey.v1",
-  "title": "Induced Polarization Survey",
+  "$id": "geophysics.ip_observations.v1",
+  "title": "Induced Polarization Observations",
   "type": "object",
   "required": ["schema_id", "schema_version", "type", "survey_mode", "crs", "electrodes", "measurements"],
   "properties": {
-    "schema_id": { "const": "geophysics.ip_survey.v1" },
+    "schema_id": { "const": "geophysics.ip_observations.v1" },
     "schema_version": { "type": "integer", "const": 1 },
-    "type": { "const": "ip_survey" },
+    "type": { "const": "ip_observations" },
     "survey_mode": { "type": "string" },
+    "processing_stage": { "type": ["string", "null"] },
+    "quality": { "type": ["string", "null"] },
     "crs": {
       "type": "object",
       "required": ["epsg"],
@@ -73,6 +75,11 @@
           "attributes": { "type": ["object", "array", "string", "number", "boolean", "null"] }
         }
       }
-    }
+    },
+    "rows": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "meta": { "type": "object" }
   }
 }

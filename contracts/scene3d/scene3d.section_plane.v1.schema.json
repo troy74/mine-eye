@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scene3d.section_plane.v1",
+  "title": "Scene3D Section Plane",
+  "type": "object",
+  "required": ["schema_id", "type", "crs", "section"],
+  "properties": {
+    "schema_id": { "const": "scene3d.section_plane.v1" },
+    "type": { "const": "ip_section_plane" },
+    "crs": { "type": "object" },
+    "section": { "type": "object" }
+  }
+}

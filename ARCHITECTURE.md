@@ -71,6 +71,7 @@ Domain modules own public node execution APIs:
 | `magnetic_depth` | Euler deconvolution: 3D source depth/susceptibility voxels from a magnetic grid |
 | `scene_contract` | Scene layer composition |
 | `visualization` | Viewer payload nodes |
+| `node_group` | Wrapper node execution over an internal DAG with explicit input/output exposure |
 | `stubs` | Alpha/placeholder node kinds |
 
 `crates/mine-eye-nodes/src/kinds/runtime.rs` is internal helper/runtime logic and is not a domain API surface.
@@ -147,6 +148,41 @@ Design constraints:
 - avoid FFT dependency; the ∂M/∂z approximation is noted as exploratory-grade
 - keep output schema consistent with `block_grade_model_voxels.v1` so no new renderer is needed
 
+### 3.5 `node_group` Architecture
+
+`node_group` is the first composition primitive for reducing canvas clutter without weakening contract discipline.
+
+Model:
+
+- the wrapper node persists a `group_definition` in node config
+- the definition contains:
+  - wrapper inputs/outputs
+  - internal nodes
+  - internal edges
+  - explicit input bindings from wrapper inputs to internal node ports
+  - explicit output bindings from internal node outputs to wrapper outputs
+- wrapper-facing ports remain semantically typed and are used by the orchestrator during edge validation
+
+Execution:
+
+- the scheduler still plans the wrapper as a normal node
+- the worker resolves upstream artifacts by destination port and passes them as `input_artifact_bindings` in the `JobEnvelope`
+- the `node_group` executor topologically sorts the internal DAG and runs each internal node through the normal registry executor
+- internal outputs are routed by explicit output index, then selected artifacts are re-exposed as the wrapper outputs
+
+Design intent:
+
+- keep composition data-driven and persistable so later plugin/group-template systems can extend it coherently
+- avoid frontend-only grouping that would bypass the hardened middleware layer
+- preserve observability by allowing intermediary internal outputs to be surfaced intentionally
+- keep authoring explicit: the current web drill-in editor edits internal nodes, wrapper-input bindings, internal edges, exposed outputs, and internal layout as persisted definition data
+- allow recursive group composition deliberately, with breadcrumb drill-in in the editor and a hard maximum depth enforced in middleware/runtime
+- keep graph-open resilient by mounting the recursive group editor only when a concrete `node_group` is being edited, not as always-on canvas state
+
+Current limit:
+
+- nested groups are allowed up to a maximum depth of `3`; saves and execution both reject deeper compositions
+
 ## 4. Data and Persistence Layer
 
 Current module:
@@ -210,6 +246,7 @@ Responsibilities:
 
 - claim queued jobs
 - resolve latest input artifacts
+- resolve input artifacts by destination port when wrapper/group execution requires it
 - execute node kinds through `NodeExecutorRegistry`
 - persist artifacts, hashes, execution status, and errors
 

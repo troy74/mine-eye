@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use mine_eye_graph::{EdgeRef, GraphSnapshot};
 use mine_eye_types::{
     AuthContextRef, BranchPromotionRecord, BranchPromotionStatus, BranchStatus, CacheState,
-    CrsRecord, ExecutionState, GraphBranch, GraphMeta, GraphRevision, LineageMeta, NodeCategory,
-    NodeConfig, NodeExecutionPolicy, NodeRecord, OwnerRef, PortBinding, SemanticPortType,
+    CrsRecord, ExecutionState, GraphBranch, GraphMeta, GraphRevision, InputArtifactBinding,
+    LineageMeta, NodeCategory, NodeConfig, NodeExecutionPolicy, NodeRecord, OwnerRef, PortBinding,
+    SemanticPortType,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -1168,6 +1169,37 @@ impl PgStore {
         }
         refs.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(refs)
+    }
+
+    pub async fn resolve_input_artifact_bindings(
+        &self,
+        graph_id: Uuid,
+        node_id: Uuid,
+    ) -> Result<Vec<InputArtifactBinding>, StoreError> {
+        let snap = self.load_graph(graph_id).await?;
+        let mut out = Vec::<InputArtifactBinding>::new();
+        for edge in &snap.edges {
+            if edge.to_node != node_id {
+                continue;
+            }
+            let rows = self.list_artifacts_for_node(edge.from_node).await?;
+            for (key, content_hash, media_type) in rows {
+                out.push(InputArtifactBinding {
+                    to_port: edge.to_port.clone(),
+                    artifact_ref: mine_eye_types::ArtifactRef {
+                        key,
+                        content_hash,
+                        media_type,
+                    },
+                });
+            }
+        }
+        out.sort_by(|a, b| {
+            a.to_port
+                .cmp(&b.to_port)
+                .then(a.artifact_ref.key.cmp(&b.artifact_ref.key))
+        });
+        Ok(out)
     }
 
     pub async fn insert_ai_suggestion(

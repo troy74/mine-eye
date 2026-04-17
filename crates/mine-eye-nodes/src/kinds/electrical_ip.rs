@@ -21,6 +21,39 @@ fn parse_num(v: &Value) -> Option<f64> {
     }
 }
 
+fn canonical_ip_field_names() -> &'static [&'static str] {
+    &[
+        "measurement_id",
+        "line_id",
+        "survey_mode",
+        "array_type",
+        "a_id",
+        "a_x",
+        "a_y",
+        "a_z",
+        "b_id",
+        "b_x",
+        "b_y",
+        "b_z",
+        "m_id",
+        "m_x",
+        "m_y",
+        "m_z",
+        "n_id",
+        "n_x",
+        "n_y",
+        "n_z",
+        "current_ma",
+        "voltage_mv",
+        "apparent_resistivity_ohm_m",
+        "chargeability_mv_v",
+        "gate_start_ms",
+        "gate_end_ms",
+        "stack_count",
+        "reciprocity_error_pct",
+    ]
+}
+
 fn rows_from_csv_bytes(bytes: &[u8], delimiter: u8) -> Option<Vec<Map<String, Value>>> {
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(delimiter)
@@ -74,6 +107,50 @@ fn delimiter_from_ui(job: &JobEnvelope) -> u8 {
         .and_then(|v| v.as_str())
         .and_then(|s| s.as_bytes().first().copied())
         .unwrap_or(b',')
+}
+
+fn ip_field_mapping(job: &JobEnvelope) -> HashMap<String, String> {
+    let raw = job
+        .input_payload
+        .as_ref()
+        .and_then(|p| p.get("mapping"))
+        .or_else(|| job.output_spec.pointer("/node_ui/mapping"));
+    let Some(obj) = raw.and_then(|v| v.as_object()) else {
+        return HashMap::new();
+    };
+    canonical_ip_field_names()
+        .iter()
+        .filter_map(|canonical| {
+            obj.get(*canonical)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|source| ((*canonical).to_string(), source.to_string()))
+        })
+        .collect()
+}
+
+fn remap_ip_rows(
+    rows: Vec<Map<String, Value>>,
+    mapping: &HashMap<String, String>,
+) -> Vec<Map<String, Value>> {
+    if mapping.is_empty() {
+        return rows;
+    }
+    rows.into_iter()
+        .map(|mut row| {
+            for (canonical, source) in mapping {
+                let Some(value) = row.get(source).cloned() else {
+                    continue;
+                };
+                row.insert(canonical.clone(), value);
+                if source != canonical {
+                    row.remove(source);
+                }
+            }
+            row
+        })
+        .collect()
 }
 
 async fn ingest_rows_from_job(
@@ -416,6 +493,7 @@ pub async fn run_ip_survey_ingest(
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
     let (rows, fallback_crs, source_label) = ingest_rows_from_job(ctx, job).await?;
+    let rows = remap_ip_rows(rows, &ip_field_mapping(job));
     ctx.report_progress(
         "parse_rows",
         Some(0.18),
@@ -427,10 +505,11 @@ pub async fn run_ip_survey_ingest(
     let contract_rows = build_contract_rows(&measurements);
     let contract_columns = table_columns(&contract_rows);
     let survey_payload = json!({
-        "schema_id": "geophysics.ip_survey.v1",
+        "schema_id": "geophysics.ip_observations.v1",
         "schema_version": 1,
-        "type": "ip_survey",
+        "type": "ip_observations",
         "survey_mode": "tdip",
+        "processing_stage": "raw_ingest",
         "crs": crs,
         "display_contract": {
             "renderer": "table",
@@ -451,7 +530,8 @@ pub async fn run_ip_survey_ingest(
             "row_count": measurements.len(),
             "electrode_count": electrodes.len(),
             "columns": contract_columns,
-            "source": source_label
+            "source": source_label,
+            "model_family": "electrical_ip"
         }
     });
 
@@ -467,7 +547,7 @@ pub async fn run_ip_survey_ingest(
             "source": source_label
         },
         "notes": [
-            "Canonical IP survey contract keeps electrode geometry separate from measurement rows.",
+            "Canonical IP observations contract keeps electrode geometry separate from measurement rows.",
             "Use the QC node before pseudosection or inversion so reciprocity and malformed rows are surfaced explicitly."
         ]
     });
@@ -541,13 +621,15 @@ pub async fn run_ip_qc_normalize(
     let mut survey = None;
     for ar in &job.input_artifact_refs {
         let v = super::runtime::read_json_artifact(ctx, &ar.key).await?;
-        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_survey.v1") {
+        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_observations.v1") {
             survey = Some(v);
             break;
         }
     }
     let survey = survey.ok_or_else(|| {
-        NodeError::InvalidConfig("ip_qc_normalize requires upstream geophysics.ip_survey.v1".into())
+        NodeError::InvalidConfig(
+            "ip_qc_normalize requires upstream geophysics.ip_observations.v1".into(),
+        )
     })?;
 
     let crs = survey
@@ -639,9 +721,10 @@ pub async fn run_ip_qc_normalize(
     let cleaned_columns = table_columns(&cleaned_rows);
     let rejected_columns = table_columns(&rejected_rows);
     let cleaned_payload = json!({
-        "schema_id": "geophysics.ip_survey.v1",
+        "schema_id": "geophysics.ip_observations.v1",
         "schema_version": 1,
-        "type": "ip_survey",
+        "type": "ip_observations",
+        "processing_stage": "qc_cleaned",
         "quality": "cleaned",
         "crs": crs,
         "display_contract": {
@@ -663,6 +746,7 @@ pub async fn run_ip_qc_normalize(
             "row_count": cleaned.len(),
             "columns": cleaned_columns,
             "reject_count": rejected_rows.len(),
+            "model_family": "electrical_ip",
             "qc_thresholds": {
                 "max_reciprocity_error_pct": max_recip,
                 "min_chargeability_mv_v": min_chargeability,
@@ -778,14 +862,14 @@ pub async fn run_ip_pseudosection(
     let mut survey = None;
     for ar in &job.input_artifact_refs {
         let v = super::runtime::read_json_artifact(ctx, &ar.key).await?;
-        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_survey.v1") {
+        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_observations.v1") {
             survey = Some(v);
             break;
         }
     }
     let survey = survey.ok_or_else(|| {
         NodeError::InvalidConfig(
-            "ip_pseudosection requires upstream geophysics.ip_survey.v1".into(),
+            "ip_pseudosection requires upstream geophysics.ip_observations.v1".into(),
         )
     })?;
 
@@ -1131,7 +1215,7 @@ pub async fn run_ip_corridor_model(
         "display_contract": {
             "renderer": "block_voxels",
             "display_pointer": "scene3d.block_voxels",
-            "editable": ["visible", "opacity", "measure", "palette", "cutoff", "below_cutoff_opacity"]
+            "editable": ["visible", "opacity", "measure", "palette"]
         },
         "measure_candidates": [
             "chargeability_mv_v",
@@ -1142,9 +1226,7 @@ pub async fn run_ip_corridor_model(
             "reciprocity_error_pct"
         ],
         "style_defaults": {
-            "palette": "inferno",
-            "cutoff_grade": 0.0,
-            "below_cutoff_opacity": 0.15
+            "palette": "inferno"
         },
         "blocks": blocks,
         "stats": {
@@ -1259,13 +1341,56 @@ fn read_ip_pseudosection_payload<'a>(
     None
 }
 
+fn read_ip_observations_payload<'a>(
+    inputs: &'a [mine_eye_types::ArtifactRef],
+    payloads: &'a [Value],
+) -> Option<&'a Value> {
+    for (idx, _ar) in inputs.iter().enumerate() {
+        let Some(v) = payloads.get(idx) else { continue };
+        let schema_id = v.get("schema_id").and_then(|x| x.as_str());
+        if schema_id == Some("geophysics.ip_observations.v1")
+            || schema_id == Some("geophysics.ip_survey.v1")
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
 fn read_ip_inversion_mesh_payload<'a>(
     inputs: &'a [mine_eye_types::ArtifactRef],
     payloads: &'a [Value],
 ) -> Option<&'a Value> {
     for (idx, _ar) in inputs.iter().enumerate() {
         let Some(v) = payloads.get(idx) else { continue };
-        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_inversion_mesh.v1") {
+        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_mesh.v1") {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn read_ip_inversion_result_payload<'a>(
+    inputs: &'a [mine_eye_types::ArtifactRef],
+    payloads: &'a [Value],
+) -> Option<&'a Value> {
+    for (idx, _ar) in inputs.iter().enumerate() {
+        let Some(v) = payloads.get(idx) else { continue };
+        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_inversion_result.v1")
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn read_ip_inversion_input_payload<'a>(
+    inputs: &'a [mine_eye_types::ArtifactRef],
+    payloads: &'a [Value],
+) -> Option<&'a Value> {
+    for (idx, _ar) in inputs.iter().enumerate() {
+        let Some(v) = payloads.get(idx) else { continue };
+        if v.get("schema_id").and_then(|x| x.as_str()) == Some("geophysics.ip_inversion_input.v1") {
             return Some(v);
         }
     }
@@ -1446,10 +1571,12 @@ pub async fn run_ip_inversion_mesh(
     }
 
     let mesh_payload = json!({
-        "schema_id": "geophysics.ip_inversion_mesh.v1",
+        "schema_id": "geophysics.ip_mesh.v1",
         "schema_version": 1,
-        "type": "ip_inversion_mesh",
+        "type": "ip_mesh",
         "crs": crs,
+        "mesh_kind": "regular_preview_grid",
+        "model_family": "electrical_ip",
         "grid": {
             "origin_x": origin_x,
             "origin_y": origin_y,
@@ -1462,6 +1589,14 @@ pub async fn run_ip_inversion_mesh(
             "nz": nz,
             "lateral_padding_m": lateral_padding_m,
             "depth_padding_m": depth_padding_m
+        },
+        "domain": {
+            "x_min": origin_x,
+            "x_max": origin_x + (nx as f64) * cell_x_m,
+            "y_min": origin_y,
+            "y_max": origin_y + (ny as f64) * cell_y_m,
+            "z_top": top_z,
+            "z_bottom": bottom_z
         },
         "display_contract": {
             "renderer":"table",
@@ -1558,28 +1693,39 @@ pub async fn run_ip_inversion_mesh(
     })
 }
 
-pub async fn run_ip_inversion_preview(
+pub async fn run_ip_inversion_input(
     ctx: &ExecutionContext<'_>,
     job: &JobEnvelope,
 ) -> Result<JobResult, NodeError> {
     let payloads = load_input_payloads(ctx, job).await?;
+    let observations = read_ip_observations_payload(&job.input_artifact_refs, &payloads)
+        .ok_or_else(|| {
+            NodeError::InvalidConfig(
+                "ip_inversion_input requires upstream geophysics.ip_observations.v1".into(),
+            )
+        })?;
     let pseudo =
         read_ip_pseudosection_payload(&job.input_artifact_refs, &payloads).ok_or_else(|| {
             NodeError::InvalidConfig(
-                "ip_inversion_preview requires upstream geophysics.ip_pseudosection.v1".into(),
+                "ip_inversion_input requires upstream geophysics.ip_pseudosection.v1".into(),
             )
         })?;
     let mesh =
         read_ip_inversion_mesh_payload(&job.input_artifact_refs, &payloads).ok_or_else(|| {
             NodeError::InvalidConfig(
-                "ip_inversion_preview requires upstream geophysics.ip_inversion_mesh.v1".into(),
+                "ip_inversion_input requires upstream geophysics.ip_mesh.v1".into(),
             )
         })?;
 
-    let crs = mesh
+    let crs = observations
         .get("crs")
         .cloned()
         .and_then(|v| serde_json::from_value::<CrsRecord>(v).ok())
+        .or_else(|| {
+            mesh.get("crs")
+                .cloned()
+                .and_then(|v| serde_json::from_value::<CrsRecord>(v).ok())
+        })
         .or_else(|| {
             pseudo
                 .get("crs")
@@ -1588,6 +1734,11 @@ pub async fn run_ip_inversion_preview(
         })
         .unwrap_or_else(|| CrsRecord::epsg(32630));
 
+    let observation_rows = observations
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let pseudo_rows = pseudo
         .get("rows")
         .and_then(|v| v.as_array())
@@ -1598,9 +1749,10 @@ pub async fn run_ip_inversion_preview(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    if pseudo_rows.is_empty() || mesh_rows.is_empty() {
+    if observation_rows.is_empty() || pseudo_rows.is_empty() || mesh_rows.is_empty() {
         return Err(NodeError::InvalidConfig(
-            "ip_inversion_preview requires non-empty pseudosection and mesh inputs".into(),
+            "ip_inversion_input requires non-empty observations, pseudosection, and mesh inputs"
+                .into(),
         ));
     }
 
@@ -1624,6 +1776,669 @@ pub async fn run_ip_inversion_preview(
     let conductivity_bias = job
         .output_spec
         .pointer("/node_ui/conductivity_bias")
+        .and_then(parse_num)
+        .unwrap_or(0.35)
+        .clamp(0.0, 1.0);
+
+    let inversion_input_payload = json!({
+        "schema_id": "geophysics.ip_inversion_input.v1",
+        "schema_version": 1,
+        "type": "ip_inversion_input",
+        "crs": crs,
+        "model_family": "electrical_ip",
+        "solver_profile": "preview_interpolation_v1",
+        "target_properties": [
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m"
+        ],
+        "input_summary": {
+            "observation_row_count": observation_rows.len(),
+            "pseudosection_row_count": pseudo_rows.len(),
+            "mesh_row_count": mesh_rows.len(),
+            "electrode_count": observations.get("electrodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0)
+        },
+        "parameters": {
+            "influence_radius_m": influence_radius_m,
+            "idw_power": power,
+            "min_support": min_support,
+            "conductivity_bias": conductivity_bias
+        },
+        "observations": {
+            "schema_id": "geophysics.ip_observations.v1",
+            "processing_stage": observations.get("processing_stage").cloned().unwrap_or(Value::Null),
+            "quality": observations.get("quality").cloned().unwrap_or(Value::Null),
+            "rows": observation_rows
+        },
+        "derived_inputs": {
+            "pseudosection_schema_id": "geophysics.ip_pseudosection.v1",
+            "pseudosection_rows": pseudo_rows
+        },
+        "mesh": {
+            "schema_id": "geophysics.ip_mesh.v1",
+            "mesh_kind": mesh.get("mesh_kind").cloned().unwrap_or(Value::Null),
+            "grid": mesh.get("grid").cloned().unwrap_or(Value::Null),
+            "domain": mesh.get("domain").cloned().unwrap_or(Value::Null),
+            "rows": mesh_rows
+        }
+    });
+    let report_payload = json!({
+        "schema_id": "report.ip_inversion_input.v1",
+        "type": "ip_inversion_input_report",
+        "summary": {
+            "observation_row_count": inversion_input_payload.pointer("/input_summary/observation_row_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "pseudosection_row_count": inversion_input_payload.pointer("/input_summary/pseudosection_row_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "mesh_row_count": inversion_input_payload.pointer("/input_summary/mesh_row_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            "solver_profile": "preview_interpolation_v1"
+        },
+        "parameters": inversion_input_payload.get("parameters").cloned().unwrap_or(Value::Null),
+        "notes": [
+            "This contract is the hardened handoff into IP modelling so solver nodes do not scrape UI or arbitrary upstream payloads.",
+            "Current preview modelling still uses pseudosection-derived rows, but future Rust solvers can consume the same prepared contract."
+        ]
+    });
+
+    let input_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_input.json",
+        job.graph_id, job.node_id
+    );
+    let report_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_input_report.json",
+        job.graph_id, job.node_id
+    );
+    let input_ref = super::runtime::write_artifact(
+        ctx,
+        &input_key,
+        &serde_json::to_vec(&inversion_input_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+    let report_ref = super::runtime::write_artifact(
+        ctx,
+        &report_key,
+        &serde_json::to_vec(&report_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![input_ref.clone(), report_ref.clone()],
+        content_hashes: vec![input_ref.content_hash, report_ref.content_hash],
+        error_message: None,
+    })
+}
+
+pub async fn run_ip_invert(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let payloads = load_input_payloads(ctx, job).await?;
+    let inversion_input = read_ip_inversion_input_payload(&job.input_artifact_refs, &payloads)
+        .ok_or_else(|| {
+            NodeError::InvalidConfig(
+                "ip_invert requires upstream geophysics.ip_inversion_input.v1".into(),
+            )
+        })?;
+
+    let crs = inversion_input
+        .get("crs")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<CrsRecord>(v).ok())
+        .unwrap_or_else(|| CrsRecord::epsg(32630));
+    let pseudo_rows = inversion_input
+        .pointer("/derived_inputs/pseudosection_rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mesh_rows = inversion_input
+        .pointer("/mesh/rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if pseudo_rows.is_empty() || mesh_rows.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "ip_invert requires non-empty prepared pseudosection and mesh rows".into(),
+        ));
+    }
+
+    let influence_radius_m = inversion_input
+        .pointer("/parameters/influence_radius_m")
+        .and_then(parse_num)
+        .unwrap_or(90.0)
+        .clamp(10.0, 1000.0);
+    let power = inversion_input
+        .pointer("/parameters/idw_power")
+        .and_then(parse_num)
+        .unwrap_or(2.0)
+        .clamp(0.5, 8.0);
+    let min_support = inversion_input
+        .pointer("/parameters/min_support")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2) as usize;
+    let conductivity_bias = inversion_input
+        .pointer("/parameters/conductivity_bias")
+        .and_then(parse_num)
+        .unwrap_or(0.35)
+        .clamp(0.0, 1.0);
+    let smoothing_lambda = job
+        .output_spec
+        .pointer("/node_ui/smoothing_lambda")
+        .and_then(parse_num)
+        .unwrap_or(0.85)
+        .clamp(0.0, 10.0);
+    let depth_weight = job
+        .output_spec
+        .pointer("/node_ui/depth_weight")
+        .and_then(parse_num)
+        .unwrap_or(0.2)
+        .clamp(0.0, 4.0);
+    let iterations = job
+        .output_spec
+        .pointer("/node_ui/max_iterations")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(6) as usize;
+
+    let mut pseudo_points = Vec::<(f64, f64, f64, f64, f64, f64)>::new();
+    for row in &pseudo_rows {
+        let Some(obj) = row.as_object() else { continue };
+        let x = obj.get("pseudo_x").and_then(parse_num).unwrap_or(0.0);
+        let y = obj.get("pseudo_y").and_then(parse_num).unwrap_or(0.0);
+        let z = obj.get("pseudo_z").and_then(parse_num).unwrap_or(0.0);
+        let charge = obj
+            .get("chargeability_mv_v")
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        let rho = obj
+            .get("apparent_resistivity_ohm_m")
+            .and_then(parse_num)
+            .unwrap_or(0.0)
+            .max(1e-6);
+        let recip = obj
+            .get("reciprocity_error_pct")
+            .and_then(parse_num)
+            .unwrap_or(0.0)
+            .max(0.0);
+        pseudo_points.push((x, y, z, charge, rho, recip));
+    }
+
+    let mut mesh_meta = Vec::<(Map<String, Value>, f64, f64, f64, f64, f64, f64)>::new();
+    let mut initial_charge = Vec::<f64>::new();
+    let mut initial_log_rho = Vec::<f64>::new();
+    let mut confidences = Vec::<f64>::new();
+    let mut supports = Vec::<usize>::new();
+    let mut nearest_dists = Vec::<f64>::new();
+    let mut index_by_cell = HashMap::<(i64, i64, i64), usize>::new();
+
+    for row in &mesh_rows {
+        let Some(obj) = row.as_object() else { continue };
+        let x = obj.get("x").and_then(parse_num).unwrap_or(0.0);
+        let y = obj.get("y").and_then(parse_num).unwrap_or(0.0);
+        let z = obj.get("z").and_then(parse_num).unwrap_or(0.0);
+        let dx = obj.get("dx").and_then(parse_num).unwrap_or(25.0);
+        let dy = obj.get("dy").and_then(parse_num).unwrap_or(25.0);
+        let dz = obj.get("dz").and_then(parse_num).unwrap_or(15.0);
+        let ix = obj.get("ix").and_then(|v| v.as_i64()).unwrap_or(0);
+        let iy = obj.get("iy").and_then(|v| v.as_i64()).unwrap_or(0);
+        let iz = obj.get("iz").and_then(|v| v.as_i64()).unwrap_or(0);
+
+        let mut sum_w = 0.0;
+        let mut sum_charge = 0.0;
+        let mut sum_log_rho = 0.0;
+        let mut support = 0usize;
+        let mut min_dist = f64::INFINITY;
+        let mut sum_quality = 0.0;
+
+        for (px, py, pz, charge, rho, recip) in &pseudo_points {
+            let dx0 = x - *px;
+            let dy0 = y - *py;
+            let dz0 = (z - *pz) * 1.35;
+            let dist = (dx0 * dx0 + dy0 * dy0 + dz0 * dz0).sqrt();
+            if dist > influence_radius_m {
+                continue;
+            }
+            let base_w = 1.0 / dist.max(1.0).powf(power);
+            let quality = (1.0 / (1.0 + recip / 10.0)).clamp(0.05, 1.0);
+            let w = base_w * quality;
+            support += 1;
+            min_dist = min_dist.min(dist);
+            sum_w += w;
+            sum_quality += quality;
+            sum_charge += w * *charge;
+            sum_log_rho += w * rho.ln();
+        }
+        if support < min_support || sum_w <= 0.0 {
+            continue;
+        }
+
+        let chargeability_mv_v = sum_charge / sum_w;
+        let apparent_resistivity_ohm_m = (sum_log_rho / sum_w).exp();
+        let support_confidence = ((support as f64) / ((min_support as f64) + 3.0)).clamp(0.0, 1.0);
+        let distance_confidence = (1.0 - (min_dist / influence_radius_m)).clamp(0.0, 1.0);
+        let data_confidence = (sum_quality / (support as f64)).clamp(0.0, 1.0);
+        let confidence =
+            (0.45 * support_confidence + 0.35 * distance_confidence + 0.20 * data_confidence)
+                .clamp(0.0, 1.0);
+
+        let idx = mesh_meta.len();
+        index_by_cell.insert((ix, iy, iz), idx);
+        mesh_meta.push((obj.clone(), x, y, z, dx, dy, dz));
+        initial_charge.push(chargeability_mv_v);
+        initial_log_rho.push(apparent_resistivity_ohm_m.ln());
+        confidences.push(confidence);
+        supports.push(support);
+        nearest_dists.push(min_dist);
+    }
+
+    if mesh_meta.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "ip_invert could not derive any supported model cells from the inversion input".into(),
+        ));
+    }
+
+    let mut charge_model = initial_charge.clone();
+    let mut log_rho_model = initial_log_rho.clone();
+    let mut max_delta_charge = 0.0_f64;
+    let mut max_delta_log_rho = 0.0_f64;
+
+    for _ in 0..iterations {
+        let prev_charge = charge_model.clone();
+        let prev_log_rho = log_rho_model.clone();
+        max_delta_charge = 0.0;
+        max_delta_log_rho = 0.0;
+        for (idx, (obj, _, _, _, _, _, _)) in mesh_meta.iter().enumerate() {
+            let ix = obj.get("ix").and_then(|v| v.as_i64()).unwrap_or(0);
+            let iy = obj.get("iy").and_then(|v| v.as_i64()).unwrap_or(0);
+            let iz = obj.get("iz").and_then(|v| v.as_i64()).unwrap_or(0);
+            let mut neigh_charge = 0.0;
+            let mut neigh_log_rho = 0.0;
+            let mut neigh_w = 0.0;
+            let neighbors = [
+                (ix - 1, iy, iz),
+                (ix + 1, iy, iz),
+                (ix, iy - 1, iz),
+                (ix, iy + 1, iz),
+                (ix, iy, iz - 1),
+                (ix, iy, iz + 1),
+            ];
+            for nkey in neighbors {
+                let Some(nidx) = index_by_cell.get(&nkey).copied() else {
+                    continue;
+                };
+                let vertical_factor = if nkey.2 != iz {
+                    1.0 + depth_weight
+                } else {
+                    1.0
+                };
+                neigh_charge += prev_charge[nidx] * vertical_factor;
+                neigh_log_rho += prev_log_rho[nidx] * vertical_factor;
+                neigh_w += vertical_factor;
+            }
+            if neigh_w <= 0.0 {
+                continue;
+            }
+            let data_weight = (0.4 + 1.6 * confidences[idx]).clamp(0.2, 2.0);
+            let smooth_weight = smoothing_lambda * (1.0 + (1.0 - confidences[idx]) * 0.75);
+            let next_charge = (data_weight * initial_charge[idx]
+                + smooth_weight * (neigh_charge / neigh_w))
+                / (data_weight + smooth_weight);
+            let next_log_rho = (data_weight * initial_log_rho[idx]
+                + smooth_weight * (neigh_log_rho / neigh_w))
+                / (data_weight + smooth_weight);
+            max_delta_charge = max_delta_charge.max((next_charge - prev_charge[idx]).abs());
+            max_delta_log_rho = max_delta_log_rho.max((next_log_rho - prev_log_rho[idx]).abs());
+            charge_model[idx] = next_charge;
+            log_rho_model[idx] = next_log_rho;
+        }
+    }
+
+    let mut blocks = Vec::<Value>::new();
+    let mut centers = Vec::<Value>::new();
+    let mut result_rows = Vec::<Value>::new();
+    let mut charge_vals = Vec::<f64>::new();
+    let mut rho_vals = Vec::<f64>::new();
+    let mut conf_vals = Vec::<f64>::new();
+
+    for (idx, (obj, x, y, z, dx, dy, dz)) in mesh_meta.iter().enumerate() {
+        let chargeability_mv_v = charge_model[idx];
+        let apparent_resistivity_ohm_m = log_rho_model[idx].exp();
+        let conductivity_proxy = 1.0 / apparent_resistivity_ohm_m.max(1e-6);
+        let normalized_conductivity = conductivity_proxy / (1.0 + conductivity_proxy);
+        let target_index = (chargeability_mv_v * (1.0 - conductivity_bias))
+            + (1000.0 * normalized_conductivity * conductivity_bias);
+        let confidence = confidences[idx];
+        let support = supports[idx];
+        let min_dist = nearest_dists[idx];
+
+        let attrs = json!({
+            "cell_id": obj.get("cell_id").cloned().unwrap_or(Value::Null),
+            "chargeability_mv_v": chargeability_mv_v,
+            "apparent_resistivity_ohm_m": apparent_resistivity_ohm_m,
+            "confidence": confidence,
+            "support_count": support,
+            "nearest_sample_distance_m": min_dist,
+            "conductivity_proxy_s_m": conductivity_proxy,
+            "target_index": target_index,
+            "solver_profile": "regularized_surrogate_inversion_v1"
+        });
+        let out_row = json!({
+            "cell_id": obj.get("cell_id").cloned().unwrap_or(Value::Null),
+            "ix": obj.get("ix").cloned().unwrap_or(Value::Null),
+            "iy": obj.get("iy").cloned().unwrap_or(Value::Null),
+            "iz": obj.get("iz").cloned().unwrap_or(Value::Null),
+            "x": x,
+            "y": y,
+            "z": z,
+            "dx": dx,
+            "dy": dy,
+            "dz": dz,
+            "chargeability_mv_v": chargeability_mv_v,
+            "apparent_resistivity_ohm_m": apparent_resistivity_ohm_m,
+            "conductivity_proxy_s_m": conductivity_proxy,
+            "target_index": target_index,
+            "confidence": confidence,
+            "support_count": support,
+            "nearest_sample_distance_m": min_dist
+        });
+        charge_vals.push(chargeability_mv_v);
+        rho_vals.push(apparent_resistivity_ohm_m);
+        conf_vals.push(confidence);
+        result_rows.push(out_row.clone());
+        blocks.push(json!({
+            "x": x,
+            "y": y,
+            "z": z,
+            "dx": dx,
+            "dy": dy,
+            "dz": dz,
+            "above_cutoff": true,
+            "attributes": attrs.clone()
+        }));
+        centers.push(json!({
+            "x": x,
+            "y": y,
+            "z": z,
+            "attributes": attrs
+        }));
+    }
+
+    let (charge_min, charge_max) = min_max(&charge_vals);
+    let (rho_min, rho_max) = min_max(&rho_vals);
+    let (conf_min, conf_max) = min_max(&conf_vals);
+    let voxels_payload = json!({
+        "schema_id": "scene3d.block_voxels.v1",
+        "type": "ip_inversion_voxels",
+        "crs": crs,
+        "display_contract": {
+            "renderer": "block_voxels",
+            "display_pointer": "scene3d.block_voxels",
+            "editable": ["visible", "opacity", "measure", "palette"]
+        },
+        "measure_candidates": [
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m",
+            "conductivity_proxy_s_m",
+            "target_index",
+            "confidence",
+            "support_count",
+            "nearest_sample_distance_m"
+        ],
+        "style_defaults": {
+            "palette": "inferno"
+        },
+        "blocks": blocks,
+        "stats": {
+            "voxel_count": result_rows.len(),
+            "chargeability_min_mv_v": charge_min,
+            "chargeability_max_mv_v": charge_max,
+            "apparent_resistivity_min_ohm_m": rho_min,
+            "apparent_resistivity_max_ohm_m": rho_max,
+            "confidence_min": conf_min,
+            "confidence_max": conf_max,
+            "model_kind": "tdip_inversion_surrogate"
+        }
+    });
+    let centers_payload = json!({
+        "schema_id": "point_set.ip_inversion_centers.v1",
+        "type": "ip_inversion_centers",
+        "crs": crs,
+        "measure_candidates": [
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m",
+            "conductivity_proxy_s_m",
+            "target_index",
+            "confidence",
+            "support_count"
+        ],
+        "display_contract": {
+            "renderer": "sample_points",
+            "display_pointer": "scene3d.sample_points",
+            "editable": ["visible", "opacity", "size", "measure", "palette"]
+        },
+        "points": centers
+    });
+    let model_payload = json!({
+        "schema_id": "geophysics.ip_inversion_result.v1",
+        "schema_version": 1,
+        "type": "ip_inversion_result",
+        "crs": crs,
+        "model_kind": "regularized_surrogate_inversion",
+        "model_family": "electrical_ip",
+        "mesh_schema_id": "geophysics.ip_mesh.v1",
+        "physical_properties": [
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m",
+            "conductivity_proxy_s_m",
+            "target_index"
+        ],
+        "confidence_measures": [
+            "confidence",
+            "support_count",
+            "nearest_sample_distance_m"
+        ],
+        "display_contract": {
+            "renderer":"table",
+            "display_pointer":"table.rows",
+            "editable":["visible"]
+        },
+        "meta": {
+            "row_count": result_rows.len(),
+            "columns": table_columns(&result_rows),
+            "source_pseudosection_rows": pseudo_rows.len(),
+            "source_mesh_rows": mesh_rows.len(),
+            "solver_profile": "regularized_surrogate_inversion_v1"
+        },
+        "rows": result_rows
+    });
+    let diagnostics_payload = json!({
+        "schema_id": "geophysics.ip_diagnostics.v1",
+        "schema_version": 1,
+        "type": "ip_diagnostics",
+        "model_kind": "regularized_surrogate_inversion",
+        "summary": {
+            "input_sample_count": pseudo_points.len(),
+            "model_cell_count": result_rows.len(),
+            "chargeability_min_mv_v": charge_min,
+            "chargeability_max_mv_v": charge_max,
+            "apparent_resistivity_min_ohm_m": rho_min,
+            "apparent_resistivity_max_ohm_m": rho_max,
+            "confidence_min": conf_min,
+            "confidence_max": conf_max
+        },
+        "parameters": {
+            "influence_radius_m": influence_radius_m,
+            "idw_power": power,
+            "min_support": min_support,
+            "conductivity_bias": conductivity_bias,
+            "smoothing_lambda": smoothing_lambda,
+            "depth_weight": depth_weight,
+            "max_iterations": iterations
+        },
+        "coverage": {
+            "retained_fraction": if mesh_rows.is_empty() { 0.0 } else { (result_rows.len() as f64) / (mesh_rows.len() as f64) },
+            "dropped_cell_count": mesh_rows.len().saturating_sub(result_rows.len())
+        },
+        "confidence": {
+            "min": conf_min,
+            "max": conf_max
+        },
+        "convergence": {
+            "max_delta_chargeability": max_delta_charge,
+            "max_delta_log_resistivity": max_delta_log_rho,
+            "iterations": iterations
+        },
+        "notes": [
+            "This is a first-pass regularized surrogate inversion in Rust, using a local data term plus mesh-neighborhood smoothing.",
+            "It is more solver-like than the preview interpolation, but it is still not a physics-complete TDIP inversion."
+        ]
+    });
+    let report_payload = json!({
+        "schema_id": "report.ip_inversion.v1",
+        "type": "ip_inversion_report",
+        "summary": {
+            "voxel_count": result_rows.len(),
+            "chargeability_min_mv_v": charge_min,
+            "chargeability_max_mv_v": charge_max,
+            "apparent_resistivity_min_ohm_m": rho_min,
+            "apparent_resistivity_max_ohm_m": rho_max,
+            "confidence_min": conf_min,
+            "confidence_max": conf_max
+        },
+        "parameters": diagnostics_payload.get("parameters").cloned().unwrap_or(Value::Null),
+        "convergence": diagnostics_payload.get("convergence").cloned().unwrap_or(Value::Null),
+        "notes": [
+            "Downstream slice and 3D viewer nodes can consume this inversion result without any schema change.",
+            "Compare this output with the preview node to judge how much regularization helps visibility and stability."
+        ]
+    });
+
+    let voxels_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_voxels.json",
+        job.graph_id, job.node_id
+    );
+    let centers_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_centers.json",
+        job.graph_id, job.node_id
+    );
+    let model_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_result.json",
+        job.graph_id, job.node_id
+    );
+    let diagnostics_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_diagnostics.json",
+        job.graph_id, job.node_id
+    );
+    let report_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_report.json",
+        job.graph_id, job.node_id
+    );
+    let voxels_ref = super::runtime::write_artifact(
+        ctx,
+        &voxels_key,
+        &serde_json::to_vec(&voxels_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+    let centers_ref = super::runtime::write_artifact(
+        ctx,
+        &centers_key,
+        &serde_json::to_vec(&centers_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+    let model_ref = super::runtime::write_artifact(
+        ctx,
+        &model_key,
+        &serde_json::to_vec(&model_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+    let diagnostics_ref = super::runtime::write_artifact(
+        ctx,
+        &diagnostics_key,
+        &serde_json::to_vec(&diagnostics_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+    let report_ref = super::runtime::write_artifact(
+        ctx,
+        &report_key,
+        &serde_json::to_vec(&report_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![
+            voxels_ref.clone(),
+            centers_ref.clone(),
+            model_ref.clone(),
+            diagnostics_ref.clone(),
+            report_ref.clone(),
+        ],
+        content_hashes: vec![
+            voxels_ref.content_hash,
+            centers_ref.content_hash,
+            model_ref.content_hash,
+            diagnostics_ref.content_hash,
+            report_ref.content_hash,
+        ],
+        error_message: None,
+    })
+}
+
+pub async fn run_ip_inversion_preview(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let payloads = load_input_payloads(ctx, job).await?;
+    let inversion_input = read_ip_inversion_input_payload(&job.input_artifact_refs, &payloads)
+        .ok_or_else(|| {
+            NodeError::InvalidConfig(
+                "ip_inversion_preview requires upstream geophysics.ip_inversion_input.v1".into(),
+            )
+        })?;
+
+    let crs = inversion_input
+        .get("crs")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<CrsRecord>(v).ok())
+        .unwrap_or_else(|| CrsRecord::epsg(32630));
+
+    let pseudo_rows = inversion_input
+        .pointer("/derived_inputs/pseudosection_rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mesh_rows = inversion_input
+        .pointer("/mesh/rows")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if pseudo_rows.is_empty() || mesh_rows.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "ip_inversion_preview requires non-empty prepared pseudosection and mesh rows".into(),
+        ));
+    }
+
+    let influence_radius_m = inversion_input
+        .pointer("/parameters/influence_radius_m")
+        .and_then(parse_num)
+        .unwrap_or(90.0)
+        .clamp(10.0, 1000.0);
+    let power = inversion_input
+        .pointer("/parameters/idw_power")
+        .and_then(parse_num)
+        .unwrap_or(2.0)
+        .clamp(0.5, 8.0);
+    let min_support = inversion_input
+        .pointer("/parameters/min_support")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2) as usize;
+    let conductivity_bias = inversion_input
+        .pointer("/parameters/conductivity_bias")
         .and_then(parse_num)
         .unwrap_or(0.35)
         .clamp(0.0, 1.0);
@@ -1771,7 +2586,7 @@ pub async fn run_ip_inversion_preview(
         "display_contract": {
             "renderer": "block_voxels",
             "display_pointer": "scene3d.block_voxels",
-            "editable": ["visible", "opacity", "measure", "palette", "cutoff", "below_cutoff_opacity"]
+            "editable": ["visible", "opacity", "measure", "palette"]
         },
         "measure_candidates": [
             "chargeability_mv_v",
@@ -1783,9 +2598,7 @@ pub async fn run_ip_inversion_preview(
             "nearest_sample_distance_m"
         ],
         "style_defaults": {
-            "palette": "inferno",
-            "cutoff_grade": 0.0,
-            "below_cutoff_opacity": 0.08
+            "palette": "inferno"
         },
         "blocks": blocks,
         "stats": {
@@ -1819,10 +2632,24 @@ pub async fn run_ip_inversion_preview(
         "points": centers
     });
     let model_payload = json!({
-        "schema_id": "geophysics.ip_inversion_preview.v1",
+        "schema_id": "geophysics.ip_inversion_result.v1",
         "schema_version": 1,
-        "type": "ip_inversion_preview",
+        "type": "ip_inversion_result",
         "crs": crs,
+        "model_kind": "preview_interpolation",
+        "model_family": "electrical_ip",
+        "mesh_schema_id": "geophysics.ip_mesh.v1",
+        "physical_properties": [
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m",
+            "conductivity_proxy_s_m",
+            "target_index"
+        ],
+        "confidence_measures": [
+            "confidence",
+            "support_count",
+            "nearest_sample_distance_m"
+        ],
         "display_contract": {
             "renderer":"table",
             "display_pointer":"table.rows",
@@ -1830,9 +2657,45 @@ pub async fn run_ip_inversion_preview(
         },
         "meta": {
             "row_count": result_rows.len(),
-            "columns": table_columns(&result_rows)
+            "columns": table_columns(&result_rows),
+            "source_pseudosection_rows": pseudo_rows.len(),
+            "source_mesh_rows": mesh_rows.len()
         },
         "rows": result_rows
+    });
+    let diagnostics_payload = json!({
+        "schema_id": "geophysics.ip_diagnostics.v1",
+        "schema_version": 1,
+        "type": "ip_diagnostics",
+        "model_kind": "preview_interpolation",
+        "summary": {
+            "input_sample_count": pseudo_points.len(),
+            "model_cell_count": result_rows.len(),
+            "chargeability_min_mv_v": charge_min,
+            "chargeability_max_mv_v": charge_max,
+            "apparent_resistivity_min_ohm_m": rho_min,
+            "apparent_resistivity_max_ohm_m": rho_max,
+            "confidence_min": conf_min,
+            "confidence_max": conf_max
+        },
+        "parameters": {
+            "influence_radius_m": influence_radius_m,
+            "idw_power": power,
+            "min_support": min_support,
+            "conductivity_bias": conductivity_bias
+        },
+        "coverage": {
+            "retained_fraction": if mesh_rows.is_empty() { 0.0 } else { (result_rows.len() as f64) / (mesh_rows.len() as f64) },
+            "dropped_cell_count": mesh_rows.len().saturating_sub(result_rows.len())
+        },
+        "confidence": {
+            "min": conf_min,
+            "max": conf_max
+        },
+        "notes": [
+            "This diagnostics artifact describes preview-model support and confidence separately from display styling.",
+            "Treat low-support or long-distance cells as interpretive context rather than resolved inversion truth."
+        ]
     });
     let report_payload = json!({
         "schema_id": "report.ip_inversion_preview.v1",
@@ -1874,6 +2737,10 @@ pub async fn run_ip_inversion_preview(
         "graphs/{}/nodes/{}/ip_inversion_preview_report.json",
         job.graph_id, job.node_id
     );
+    let diagnostics_key = format!(
+        "graphs/{}/nodes/{}/ip_inversion_diagnostics.json",
+        job.graph_id, job.node_id
+    );
     let voxels_ref = super::runtime::write_artifact(
         ctx,
         &voxels_key,
@@ -1895,6 +2762,13 @@ pub async fn run_ip_inversion_preview(
         Some("application/json"),
     )
     .await?;
+    let diagnostics_ref = super::runtime::write_artifact(
+        ctx,
+        &diagnostics_key,
+        &serde_json::to_vec(&diagnostics_payload)?,
+        Some("application/json"),
+    )
+    .await?;
     let report_ref = super::runtime::write_artifact(
         ctx,
         &report_key,
@@ -1910,14 +2784,292 @@ pub async fn run_ip_inversion_preview(
             voxels_ref.clone(),
             centers_ref.clone(),
             model_ref.clone(),
+            diagnostics_ref.clone(),
             report_ref.clone(),
         ],
         content_hashes: vec![
             voxels_ref.content_hash,
             centers_ref.content_hash,
             model_ref.content_hash,
+            diagnostics_ref.content_hash,
             report_ref.content_hash,
         ],
+        error_message: None,
+    })
+}
+
+pub async fn run_ip_section_slice(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let payloads = load_input_payloads(ctx, job).await?;
+    let inversion = read_ip_inversion_result_payload(&job.input_artifact_refs, &payloads);
+    let pseudo = read_ip_pseudosection_payload(&job.input_artifact_refs, &payloads);
+    if inversion.is_none() && pseudo.is_none() {
+        return Err(NodeError::InvalidConfig(
+            "ip_section_slice requires upstream geophysics.ip_inversion_result.v1 or geophysics.ip_pseudosection.v1".into(),
+        ));
+    }
+
+    let crs = inversion
+        .and_then(|v| {
+            v.get("crs")
+                .cloned()
+                .and_then(|x| serde_json::from_value::<CrsRecord>(x).ok())
+        })
+        .or_else(|| {
+            pseudo.and_then(|v| {
+                v.get("crs")
+                    .cloned()
+                    .and_then(|x| serde_json::from_value::<CrsRecord>(x).ok())
+            })
+        })
+        .unwrap_or_else(|| CrsRecord::epsg(32630));
+
+    let measure_names = if inversion.is_some() {
+        vec![
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m",
+            "conductivity_proxy_s_m",
+            "target_index",
+            "confidence",
+        ]
+    } else {
+        vec![
+            "chargeability_mv_v",
+            "apparent_resistivity_ohm_m",
+            "pseudo_depth_m",
+        ]
+    };
+
+    let mut rows = Vec::<Map<String, Value>>::new();
+    if let Some(inv) = inversion {
+        for row in inv
+            .get("rows")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(obj) = row.as_object() {
+                rows.push(obj.clone());
+            }
+        }
+    } else if let Some(ps) = pseudo {
+        for row in ps
+            .get("rows")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            if let Some(obj) = row.as_object() {
+                rows.push(obj.clone());
+            }
+        }
+    }
+    if rows.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "ip_section_slice received an empty upstream dataset".into(),
+        ));
+    }
+
+    let mut xs = Vec::<f64>::new();
+    let mut ys = Vec::<f64>::new();
+    let mut zs = Vec::<f64>::new();
+    for row in &rows {
+        let x = row
+            .get("x")
+            .or_else(|| row.get("pseudo_x"))
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        let y = row
+            .get("y")
+            .or_else(|| row.get("pseudo_y"))
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        let z = row
+            .get("z")
+            .or_else(|| row.get("pseudo_z"))
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        xs.push(x);
+        ys.push(y);
+        zs.push(z);
+    }
+    let cx = xs.iter().sum::<f64>() / xs.len() as f64;
+    let cy = ys.iter().sum::<f64>() / ys.len() as f64;
+    let mut sxx = 0.0;
+    let mut syy = 0.0;
+    let mut sxy = 0.0;
+    for (x, y) in xs.iter().zip(ys.iter()) {
+        let dx = *x - cx;
+        let dy = *y - cy;
+        sxx += dx * dx;
+        syy += dy * dy;
+        sxy += dx * dy;
+    }
+    let theta = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    let ux = theta.cos();
+    let uy = theta.sin();
+
+    let mut projected = Vec::<(f64, f64, &Map<String, Value>)>::new();
+    for row in &rows {
+        let x = row
+            .get("x")
+            .or_else(|| row.get("pseudo_x"))
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        let y = row
+            .get("y")
+            .or_else(|| row.get("pseudo_y"))
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        let z = row
+            .get("z")
+            .or_else(|| row.get("pseudo_z"))
+            .and_then(parse_num)
+            .unwrap_or(0.0);
+        let s = (x - cx) * ux + (y - cy) * uy;
+        projected.push((s, z, row));
+    }
+    let s_min = projected
+        .iter()
+        .map(|(s, _, _)| *s)
+        .fold(f64::INFINITY, f64::min);
+    let s_max = projected
+        .iter()
+        .map(|(s, _, _)| *s)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let z_min = zs.iter().copied().fold(f64::INFINITY, f64::min);
+    let z_max = zs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    let nx = job
+        .output_spec
+        .pointer("/node_ui/nx")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(96) as usize;
+    let nz = job
+        .output_spec
+        .pointer("/node_ui/nz")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(56) as usize;
+    let lateral_margin_m = job
+        .output_spec
+        .pointer("/node_ui/lateral_margin_m")
+        .and_then(parse_num)
+        .unwrap_or(10.0)
+        .max(0.0);
+    let vertical_margin_m = job
+        .output_spec
+        .pointer("/node_ui/vertical_margin_m")
+        .and_then(parse_num)
+        .unwrap_or(10.0)
+        .max(0.0);
+
+    let s0 = s_min - lateral_margin_m;
+    let s1 = s_max + lateral_margin_m;
+    let z0 = z_max + vertical_margin_m;
+    let z1 = z_min - vertical_margin_m;
+    let ds = ((s1 - s0) / nx.max(1) as f64).max(1.0);
+    let dz = ((z0 - z1).abs() / nz.max(1) as f64).max(1.0);
+
+    let mut grids = Map::<String, Value>::new();
+    for measure in &measure_names {
+        let mut values = Vec::<Value>::with_capacity(nx * nz);
+        for iz in 0..nz {
+            let zc = z0 - ((iz as f64) + 0.5) * dz;
+            for ix in 0..nx {
+                let sc = s0 + ((ix as f64) + 0.5) * ds;
+                let mut sum_w = 0.0;
+                let mut sum_v = 0.0;
+                for (s, z, row) in &projected {
+                    let Some(v) = row.get(*measure).and_then(parse_num) else {
+                        continue;
+                    };
+                    let dist = (((sc - *s) / ds.max(1.0)).powi(2)
+                        + ((zc - *z) / dz.max(1.0)).powi(2))
+                    .sqrt();
+                    let w = 1.0 / dist.max(0.6).powf(2.0);
+                    sum_w += w;
+                    sum_v += w * v;
+                }
+                if sum_w > 0.0 {
+                    values.push(json!(sum_v / sum_w));
+                } else {
+                    values.push(Value::Null);
+                }
+            }
+        }
+        grids.insert((*measure).to_string(), Value::Array(values));
+    }
+
+    let plane_payload = json!({
+        "schema_id": "scene3d.section_plane.v1",
+        "type": "ip_section_plane",
+        "crs": crs,
+        "measure_candidates": measure_names,
+        "display_contract": {
+            "renderer": "section_plane",
+            "display_pointer": "scene3d.section_plane",
+            "editable": ["visible", "opacity", "measure", "palette"]
+        },
+        "section": {
+            "center_x": cx,
+            "center_y": cy,
+            "azimuth_deg": theta.to_degrees(),
+            "s_min": s0,
+            "s_max": s1,
+            "z_top": z0,
+            "z_bottom": z1,
+            "nx": nx,
+            "nz": nz,
+            "cell_s_m": ds,
+            "cell_z_m": dz,
+            "measure_grids": grids
+        }
+    });
+    let report_payload = json!({
+        "schema_id": "report.ip_section_slice.v1",
+        "type": "ip_section_slice_report",
+        "summary": {
+            "input_row_count": rows.len(),
+            "nx": nx,
+            "nz": nz,
+            "azimuth_deg": theta.to_degrees()
+        },
+        "notes": [
+            "Section plane follows the dominant survey trend in plan and renders a vertical coloured slice.",
+            "Use this for rapid section interpretation alongside the voxel preview."
+        ]
+    });
+
+    let plane_key = format!(
+        "graphs/{}/nodes/{}/ip_section_plane.json",
+        job.graph_id, job.node_id
+    );
+    let report_key = format!(
+        "graphs/{}/nodes/{}/ip_section_slice_report.json",
+        job.graph_id, job.node_id
+    );
+    let plane_ref = super::runtime::write_artifact(
+        ctx,
+        &plane_key,
+        &serde_json::to_vec(&plane_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+    let report_ref = super::runtime::write_artifact(
+        ctx,
+        &report_key,
+        &serde_json::to_vec(&report_payload)?,
+        Some("application/json"),
+    )
+    .await?;
+
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![plane_ref.clone(), report_ref.clone()],
+        content_hashes: vec![plane_ref.content_hash, report_ref.content_hash],
         error_message: None,
     })
 }

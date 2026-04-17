@@ -5,6 +5,7 @@ mod crs;
 mod domain;
 mod envelope;
 mod graph_meta;
+mod group;
 mod identity;
 mod lineage;
 mod node;
@@ -20,8 +21,12 @@ pub use domain::{
     IpElectrodeRecord, IpMeasurementRecord, PointSampleRecord, ScalarFieldMeta, SurfacePointRecord,
     SurveyStationRecord, TrajectorySegment,
 };
-pub use envelope::{ArtifactRef, JobEnvelope, JobResult, JobStatus};
+pub use envelope::{ArtifactRef, InputArtifactBinding, JobEnvelope, JobResult, JobStatus};
 pub use graph_meta::{ApprovalRecord, GraphMeta, LockState, OwnerRef, WorkspaceStatus};
+pub use group::{
+    node_group_depth, NodeGroupDefinition, NodeGroupEdge, NodeGroupInputBinding, NodeGroupNode,
+    NodeGroupOutputBinding, NodeGroupPort, NODE_GROUP_MAX_DEPTH,
+};
 pub use identity::{
     personal_organization_id, AuthContextRef, OrganizationMembership, OrganizationRecord,
     OrganizationRole, UserRecord,
