@@ -1,5 +1,14 @@
 # Activities Log (AI Context)
 
+## 2026-04-17
+- Added `sample-data/kimberlina_borehole_dataset`:
+  - compact subset of the public `kim_ready.csv` borehole fixture used in the GemPy Kimberlina example.
+  - reproducible generator script using Python stdlib only.
+  - normalized `collar.csv`, `lithology_intervals.csv`, and `interface_points.csv` derivatives for future Rust middleware tests.
+- Documented the next middleware direction:
+  - treat borehole stratigraphy/contact handling as a distinct path from assay/grade modelling.
+  - prepare for Rust-native interface extraction and formation/surface modelling nodes.
+
 ## 2026-04-08
 - Added `block_grade_model` node (model domain) with three outputs:
   - voxel/mesh-ready block model with grade + cutoff flags.

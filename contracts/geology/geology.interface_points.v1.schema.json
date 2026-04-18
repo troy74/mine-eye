@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.interface_points.v1.schema.json",
+  "title": "geology.interface_points.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "points"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.interface_points.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "hole_id",
+          "formation",
+          "contact_kind",
+          "x",
+          "y",
+          "z",
+          "depth_m"
+        ],
+        "properties": {
+          "hole_id": { "type": "string" },
+          "formation": { "type": "string" },
+          "formation_below": { "type": ["string", "null"] },
+          "formation_above": { "type": ["string", "null"] },
+          "contact_kind": {
+            "type": "string",
+            "enum": ["top", "base", "fault", "unconformity", "intrusive_contact"]
+          },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "z": { "type": "number" },
+          "depth_m": { "type": "number", "minimum": 0 },
+          "trajectory_mode": {
+            "type": "string",
+            "enum": ["surveyed", "vertical", "inferred"]
+          },
+          "attributes": { "type": "object" },
+          "qa_flags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "formation_order": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "display_contract": {
+      "type": "object",
+      "properties": {
+        "renderer": { "const": "sample_points" },
+        "display_pointer": { "const": "scene3d.sample_points" }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

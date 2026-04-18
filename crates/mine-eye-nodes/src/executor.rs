@@ -4,15 +4,19 @@ use std::sync::Arc;
 
 use crate::kinds::{
     run_aoi, run_assay_heatmap, run_assay_ingest, run_block_grade_model, run_block_model_stub,
-    run_collar_ingest, run_data_model_transform, run_dem_fetch, run_dem_integrate_stub,
-    run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge, run_drillhole_model,
+    run_collar_ingest, run_constraint_merge, run_data_model_transform, run_dem_fetch,
+    run_dem_integrate_stub, run_desurvey_trajectory, run_drillhole_ingest, run_drillhole_merge,
+    run_drillhole_model, run_formation_catalog_build, run_formation_interface_extract,
     run_heatmap_raster_tile_cache, run_imagery_provider, run_ip_corridor_model,
     run_ip_inversion_input, run_ip_inversion_mesh, run_ip_inversion_preview, run_ip_invert,
     run_ip_pseudosection, run_ip_qc_normalize, run_ip_section_slice, run_ip_survey_ingest,
-    run_magnetic_depth_model, run_magnetic_model, run_md_viewer, run_node_group,
-    run_observation_ingest, run_plan_view_2d, run_plan_view_3d, run_plot_chart,
-    run_scene3d_layer_stack, run_surface_iso_extract, run_surface_sample_ingest, run_survey_ingest,
-    run_terrain_adjust, run_tilebroker, run_xyz_to_surface,
+    run_lith_block_model_build, run_lithology_ingest, run_magnetic_depth_model, run_magnetic_model,
+    run_md_viewer, run_model_domain_define, run_node_group, run_observation_ingest,
+    run_orientation_ingest, run_plan_view_2d, run_plan_view_3d, run_plot_chart,
+    run_scene3d_layer_stack, run_stratigraphic_interpolator, run_stratigraphic_order_define,
+    run_stratigraphic_surface_model, run_structural_frame_builder, run_surface_iso_extract,
+    run_surface_sample_ingest, run_survey_ingest, run_terrain_adjust, run_tilebroker,
+    run_vertical_trajectory, run_xyz_to_surface,
 };
 use crate::NodeError;
 use async_trait::async_trait;
@@ -75,6 +79,36 @@ impl RegistryExecutor {
             Arc::new(SurfaceSampleIngestExecutor),
         );
         inner.insert("assay_ingest".into(), Arc::new(AssayIngestExecutor));
+        inner.insert("lithology_ingest".into(), Arc::new(LithologyIngestExecutor));
+        inner.insert(
+            "orientation_ingest".into(),
+            Arc::new(OrientationIngestExecutor),
+        );
+        inner.insert(
+            "formation_catalog_build".into(),
+            Arc::new(FormationCatalogBuildExecutor),
+        );
+        inner.insert(
+            "stratigraphic_order_define".into(),
+            Arc::new(StratigraphicOrderDefineExecutor),
+        );
+        inner.insert(
+            "model_domain_define".into(),
+            Arc::new(ModelDomainDefineExecutor),
+        );
+        inner.insert("constraint_merge".into(), Arc::new(ConstraintMergeExecutor));
+        inner.insert(
+            "structural_frame_builder".into(),
+            Arc::new(StructuralFrameBuilderExecutor),
+        );
+        inner.insert(
+            "stratigraphic_interpolator".into(),
+            Arc::new(StratigraphicInterpolatorExecutor),
+        );
+        inner.insert(
+            "lith_block_model_build".into(),
+            Arc::new(LithBlockModelBuildExecutor),
+        );
         inner.insert("magnetic_model".into(), Arc::new(MagneticModelExecutor));
         inner.insert(
             "magnetic_depth_model".into(),
@@ -123,6 +157,18 @@ impl RegistryExecutor {
         inner.insert("drillhole_merge".into(), Arc::new(DrillholeMergeExecutor));
         inner.insert("drillhole_model".into(), Arc::new(DrillholeModelExecutor));
         inner.insert("desurvey_trajectory".into(), Arc::new(DesurveyExecutor));
+        inner.insert(
+            "vertical_trajectory".into(),
+            Arc::new(VerticalTrajectoryExecutor),
+        );
+        inner.insert(
+            "formation_interface_extract".into(),
+            Arc::new(FormationInterfaceExtractExecutor),
+        );
+        inner.insert(
+            "stratigraphic_surface_model".into(),
+            Arc::new(StratigraphicSurfaceModelExecutor),
+        );
         inner.insert("dem_integrate".into(), Arc::new(DemExecutor));
         inner.insert("dem_fetch".into(), Arc::new(DemFetchExecutor));
         inner.insert("aoi".into(), Arc::new(AoiExecutor));
@@ -198,6 +244,123 @@ impl NodeExecutor for AssayIngestExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_assay_ingest(ctx, job).await
+    }
+}
+
+struct LithologyIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for LithologyIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_lithology_ingest(ctx, job).await
+    }
+}
+
+struct OrientationIngestExecutor;
+
+#[async_trait]
+impl NodeExecutor for OrientationIngestExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_orientation_ingest(ctx, job).await
+    }
+}
+
+struct FormationCatalogBuildExecutor;
+
+#[async_trait]
+impl NodeExecutor for FormationCatalogBuildExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_formation_catalog_build(ctx, job).await
+    }
+}
+
+struct StratigraphicOrderDefineExecutor;
+
+#[async_trait]
+impl NodeExecutor for StratigraphicOrderDefineExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_stratigraphic_order_define(ctx, job).await
+    }
+}
+
+struct ModelDomainDefineExecutor;
+
+#[async_trait]
+impl NodeExecutor for ModelDomainDefineExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_model_domain_define(ctx, job).await
+    }
+}
+
+struct ConstraintMergeExecutor;
+
+#[async_trait]
+impl NodeExecutor for ConstraintMergeExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_constraint_merge(ctx, job).await
+    }
+}
+
+struct StructuralFrameBuilderExecutor;
+
+#[async_trait]
+impl NodeExecutor for StructuralFrameBuilderExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_structural_frame_builder(ctx, job).await
+    }
+}
+
+struct StratigraphicInterpolatorExecutor;
+
+#[async_trait]
+impl NodeExecutor for StratigraphicInterpolatorExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_stratigraphic_interpolator(ctx, job).await
+    }
+}
+
+struct LithBlockModelBuildExecutor;
+
+#[async_trait]
+impl NodeExecutor for LithBlockModelBuildExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_lith_block_model_build(ctx, job).await
     }
 }
 
@@ -380,6 +543,45 @@ impl NodeExecutor for SurfaceSampleIngestExecutor {
         job: &JobEnvelope,
     ) -> Result<JobResult, NodeError> {
         run_surface_sample_ingest(ctx, job).await
+    }
+}
+
+struct VerticalTrajectoryExecutor;
+
+#[async_trait]
+impl NodeExecutor for VerticalTrajectoryExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_vertical_trajectory(ctx, job).await
+    }
+}
+
+struct FormationInterfaceExtractExecutor;
+
+#[async_trait]
+impl NodeExecutor for FormationInterfaceExtractExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_formation_interface_extract(ctx, job).await
+    }
+}
+
+struct StratigraphicSurfaceModelExecutor;
+
+#[async_trait]
+impl NodeExecutor for StratigraphicSurfaceModelExecutor {
+    async fn execute(
+        &self,
+        ctx: &ExecutionContext<'_>,
+        job: &JobEnvelope,
+    ) -> Result<JobResult, NodeError> {
+        run_stratigraphic_surface_model(ctx, job).await
     }
 }
 

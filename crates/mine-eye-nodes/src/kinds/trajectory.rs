@@ -99,3 +99,83 @@ pub async fn run_desurvey_trajectory(
         error_message: None,
     })
 }
+
+/// Build straight vertical trajectories from collars alone.
+pub async fn run_vertical_trajectory(
+    ctx: &ExecutionContext<'_>,
+    job: &JobEnvelope,
+) -> Result<JobResult, NodeError> {
+    let (collars, _surveys, _assays) = super::runtime::collect_drillhole_inputs(ctx, job).await?;
+    if collars.is_empty() {
+        return Err(NodeError::InvalidConfig(
+            "vertical_trajectory requires collars input".into(),
+        ));
+    }
+
+    let depth_override = job
+        .output_spec
+        .pointer("/node_ui/default_depth_m")
+        .and_then(|v| v.as_f64())
+        .filter(|v| *v > 0.0);
+
+    let mut depth_by_hole = std::collections::HashMap::<String, f64>::new();
+    for ar in &job.input_artifact_refs {
+        let root = super::runtime::read_json_artifact(ctx, &ar.key).await?;
+        let intervals = root
+            .get("intervals")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for row in intervals {
+            let Some(obj) = row.as_object() else { continue };
+            let Some(hole_id) = obj.get("hole_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(to_m) = obj.get("to_m").and_then(|v| v.as_f64()) else {
+                continue;
+            };
+            depth_by_hole
+                .entry(hole_id.to_string())
+                .and_modify(|d| *d = d.max(to_m))
+                .or_insert(to_m);
+        }
+    }
+
+    let mut segments = Vec::new();
+    for c in &collars {
+        let depth = depth_by_hole
+            .get(&c.hole_id)
+            .copied()
+            .or(depth_override)
+            .unwrap_or(100.0)
+            .max(0.1);
+        segments.push(TrajectorySegment {
+            hole_id: c.hole_id.clone(),
+            depth_from_m: 0.0,
+            depth_to_m: depth,
+            x_from: c.x,
+            y_from: c.y,
+            z_from: c.z,
+            x_to: c.x,
+            y_to: c.y,
+            z_to: c.z - depth,
+            crs: c.crs.clone(),
+        });
+    }
+
+    let bytes = serde_json::to_vec(&segments)?;
+    let key = format!(
+        "graphs/{}/nodes/{}/trajectory.json",
+        job.graph_id, job.node_id
+    );
+    let artifact =
+        super::runtime::write_artifact(ctx, &key, &bytes, Some("application/json")).await?;
+
+    Ok(JobResult {
+        job_id: job.job_id,
+        status: JobStatus::Succeeded,
+        output_artifact_refs: vec![artifact.clone()],
+        content_hashes: vec![artifact.content_hash],
+        error_message: None,
+    })
+}

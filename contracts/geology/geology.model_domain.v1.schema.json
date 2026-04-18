@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.model_domain.v1.schema.json",
+  "title": "geology.model_domain.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "bounds",
+    "grid_strategy"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.model_domain.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "bounds": {
+      "type": "object",
+      "required": ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"],
+      "properties": {
+        "xmin": { "type": "number" },
+        "xmax": { "type": "number" },
+        "ymin": { "type": "number" },
+        "ymax": { "type": "number" },
+        "zmin": { "type": "number" },
+        "zmax": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "grid_strategy": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["regular", "octree"] },
+        "nx": { "type": "integer", "minimum": 2 },
+        "ny": { "type": "integer", "minimum": 2 },
+        "nz": { "type": "integer", "minimum": 2 },
+        "levels": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "topography": {
+      "type": "object",
+      "properties": {
+        "source_artifact_key": { "type": "string" },
+        "clip_mode": {
+          "type": "string",
+          "enum": ["none", "mask_above_topography", "trim_to_topography"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "padding": {
+      "type": "object",
+      "properties": {
+        "xy_percent": { "type": "number", "minimum": 0 },
+        "z_percent": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "diagnostics": { "type": "object" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -26,10 +26,10 @@ use mine_eye_scheduler::{collect_dirty_nodes, Scheduler};
 use mine_eye_store::{JobQueue, PgJobQueue, PgStore, StoreError};
 use mine_eye_types::{
     node_group_depth, personal_organization_id, ArtifactRef, AuthContextRef, BranchPromotionStatus,
-    BranchStatus, CacheState, CrsRecord, ExecutionState, GraphMeta, LineageMeta, LockState,
-    NodeCategory, NodeConfig, NodeExecutionPolicy, NodeGroupDefinition, NodeRecord,
-    OrganizationRole, OwnerRef, PropagationPolicy, QualityPolicy, RecomputePolicy,
-    SemanticPortType, WorkspaceStatus, NODE_GROUP_MAX_DEPTH,
+    BranchStatus, CacheState, CollarRecord, CrsRecord, ExecutionState, GraphMeta,
+    IntervalSampleRecord, LineageMeta, LockState, NodeCategory, NodeConfig, NodeExecutionPolicy,
+    NodeGroupDefinition, NodeRecord, OrganizationRole, OwnerRef, PropagationPolicy, QualityPolicy,
+    RecomputePolicy, SemanticPortType, WorkspaceStatus, NODE_GROUP_MAX_DEPTH,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -564,6 +564,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/ai/suggestions/{id}/confirm", post(ai_confirm))
         .route("/demo/seed", post(demo_seed))
+        .route(
+            "/demo/seed-kimberlina-geology",
+            post(seed_kimberlina_geology_demo),
+        )
+        .route(
+            "/demo/seed-kimberlina-geology-preview",
+            post(seed_kimberlina_geology_preview_demo),
+        )
         .nest_service("/files", immutable_files)
         .layer(DefaultBodyLimit::max(300 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
@@ -606,6 +614,8 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                     | "survey_ingest"
                     | "surface_sample_ingest"
                     | "assay_ingest"
+                    | "lithology_ingest"
+                    | "orientation_ingest"
                     | "observation_ingest"
                     | "magnetic_model"
                     | "data_model_transform"
@@ -621,6 +631,8 @@ async fn get_node_registry() -> Result<Json<serde_json::Value>, (StatusCode, Str
                 | "survey_ingest"
                 | "surface_sample_ingest"
                 | "assay_ingest"
+                | "lithology_ingest"
+                | "orientation_ingest"
                 | "observation_ingest"
                 | "magnetic_model" => "mapping",
                 "data_model_transform"
@@ -2723,6 +2735,507 @@ async fn ai_confirm(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+const KIMBERLINA_SUBSET_CSV: &str =
+    include_str!("../../../data/examples/kimberlina/kim_ready_subset_6holes.csv");
+
+#[derive(Debug, Deserialize)]
+struct KimberlinaSubsetRow {
+    x: f64,
+    y: f64,
+    name: String,
+    altitude: f64,
+    base: f64,
+    formation: String,
+    top: f64,
+}
+
+fn build_kimberlina_subset_payloads() -> Result<(serde_json::Value, serde_json::Value), String> {
+    let mut rdr = csv::Reader::from_reader(KIMBERLINA_SUBSET_CSV.as_bytes());
+    let mut collars = Vec::<CollarRecord>::new();
+    let mut intervals = Vec::<IntervalSampleRecord>::new();
+    let mut seen_holes = HashSet::<String>::new();
+    let crs = CrsRecord::epsg(26711);
+
+    for row in rdr.deserialize::<KimberlinaSubsetRow>() {
+        let row = row.map_err(|e| format!("failed to parse Kimberlina subset CSV: {e}"))?;
+        if seen_holes.insert(row.name.clone()) {
+            collars.push(CollarRecord {
+                hole_id: row.name.clone(),
+                x: row.x,
+                y: row.y,
+                z: row.altitude,
+                crs: crs.clone(),
+                qa_flags: vec!["source:kimberlina_subset".into()],
+            });
+        }
+        let formation = row.formation.trim();
+        if formation.is_empty() || formation.eq_ignore_ascii_case("topo") {
+            continue;
+        }
+        intervals.push(IntervalSampleRecord {
+            hole_id: row.name,
+            from_m: row.top,
+            to_m: row.base,
+            attributes: serde_json::json!({
+                "formation": formation,
+                "source_dataset": "kim_ready_subset_6holes",
+            }),
+            qa_flags: vec!["source:kimberlina_subset".into()],
+        });
+    }
+
+    collars.sort_by(|a, b| a.hole_id.cmp(&b.hole_id));
+    intervals.sort_by(|a, b| {
+        a.hole_id.cmp(&b.hole_id).then_with(|| {
+            a.from_m
+                .partial_cmp(&b.from_m)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+
+    let collar_payload = serde_json::json!({
+        "collars": collars,
+    });
+    let lithology_payload = serde_json::json!({
+        "intervals": intervals,
+        "source_crs": crs,
+    });
+    Ok((collar_payload, lithology_payload))
+}
+
+async fn seed_kimberlina_geology_demo(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    seed_kimberlina_geology_impl(s, auth, false).await
+}
+
+async fn seed_kimberlina_geology_preview_demo(
+    State(s): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    seed_kimberlina_geology_impl(s, auth, true).await
+}
+
+async fn seed_kimberlina_geology_impl(
+    s: AppState,
+    auth: AuthContext,
+    include_block_preview: bool,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (collar_payload, lithology_payload) =
+        build_kimberlina_subset_payloads().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let ws = s
+        .store
+        .create_workspace(
+            if include_block_preview {
+                "kimberlina-geology-preview-demo"
+            } else {
+                "kimberlina-geology-demo"
+            },
+            OwnerRef {
+                user_id: auth.user_id.clone(),
+            },
+            &auth.organization_id,
+            Some(serde_json::to_value(CrsRecord::epsg(26711)).unwrap()),
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let graph_id = Uuid::new_v4();
+    let meta = GraphMeta {
+        graph_id,
+        workspace_id: ws,
+        name: if include_block_preview {
+            "kimberlina-geology-preview-demo".into()
+        } else {
+            "kimberlina-geology-demo".into()
+        },
+        owner: OwnerRef {
+            user_id: auth.user_id.clone(),
+        },
+        organization_id: auth.organization_id.clone(),
+        created_by_user_id: auth.user_id.clone(),
+        status: WorkspaceStatus::Draft,
+        lock: LockState::Unlocked,
+        approval: None,
+    };
+    s.store
+        .create_graph(
+            ws,
+            if include_block_preview {
+                "kimberlina-geology-preview-demo"
+            } else {
+                "kimberlina-geology-demo"
+            },
+            &meta,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let n_collar = Uuid::new_v4();
+    let n_lith = Uuid::new_v4();
+    let n_vertical = Uuid::new_v4();
+    let n_interface = Uuid::new_v4();
+    let n_surface = Uuid::new_v4();
+    let n_catalog = Uuid::new_v4();
+    let n_order = Uuid::new_v4();
+    let n_domain = Uuid::new_v4();
+    let n_constraints = Uuid::new_v4();
+    let n_frame = Uuid::new_v4();
+    let n_interpolator = Uuid::new_v4();
+    let n_blocks = Uuid::new_v4();
+    let n_viewer = Uuid::new_v4();
+
+    let mut node_specs = vec![
+        (
+            n_collar,
+            "collar_ingest",
+            NodeCategory::Input,
+            serde_json::json!({}),
+        ),
+        (
+            n_lith,
+            "lithology_ingest",
+            NodeCategory::Input,
+            serde_json::json!({}),
+        ),
+        (
+            n_vertical,
+            "vertical_trajectory",
+            NodeCategory::Transform,
+            serde_json::json!({}),
+        ),
+        (
+            n_interface,
+            "formation_interface_extract",
+            NodeCategory::Transform,
+            serde_json::json!({}),
+        ),
+        (
+            n_surface,
+            "stratigraphic_surface_model",
+            NodeCategory::Model,
+            serde_json::json!({
+                "node_ui": {
+                    "resolution_m": 250.0,
+                    "max_cells": 16000,
+                    "pad_pct": 0.03,
+                    "min_points_per_surface": 3
+                }
+            }),
+        ),
+        (
+            n_viewer,
+            "threejs_display_node",
+            NodeCategory::Visualisation,
+            serde_json::json!({}),
+        ),
+    ];
+    if include_block_preview {
+        node_specs.extend([
+            (
+                n_catalog,
+                "formation_catalog_build",
+                NodeCategory::Transform,
+                serde_json::json!({}),
+            ),
+            (
+                n_order,
+                "stratigraphic_order_define",
+                NodeCategory::Transform,
+                serde_json::json!({}),
+            ),
+            (
+                n_domain,
+                "model_domain_define",
+                NodeCategory::Transform,
+                serde_json::json!({
+                    "node_ui": {
+                        "padding_xy_percent": 5.0,
+                        "padding_z_percent": 10.0,
+                        "nx": 24,
+                        "ny": 24,
+                        "nz": 14
+                    }
+                }),
+            ),
+            (
+                n_constraints,
+                "constraint_merge",
+                NodeCategory::Transform,
+                serde_json::json!({}),
+            ),
+            (
+                n_frame,
+                "structural_frame_builder",
+                NodeCategory::Transform,
+                serde_json::json!({}),
+            ),
+            (
+                n_interpolator,
+                "stratigraphic_interpolator",
+                NodeCategory::Model,
+                serde_json::json!({}),
+            ),
+            (
+                n_blocks,
+                "lith_block_model_build",
+                NodeCategory::Model,
+                serde_json::json!({
+                    "node_ui": {
+                        "max_blocks": 6000,
+                        "display_shell_only": true,
+                        "display_aggregate_vertical": true
+                    }
+                }),
+            ),
+        ]);
+    }
+    for (id, kind, category, params) in node_specs {
+        let policy = if kind == "threejs_display_node" {
+            NodeExecutionPolicy {
+                recompute: RecomputePolicy::Manual,
+                propagation: PropagationPolicy::Hold,
+                quality: QualityPolicy::Preview,
+            }
+        } else {
+            NodeExecutionPolicy::default()
+        };
+        let node = NodeRecord {
+            id,
+            graph_id,
+            category,
+            config: NodeConfig {
+                version: 1,
+                kind: kind.into(),
+                params,
+            },
+            execution: ExecutionState::Idle,
+            cache: CacheState::Stale,
+            policy,
+            ports: Vec::new(),
+            lineage: LineageMeta::default(),
+            content_hash: None,
+            last_error: None,
+        };
+        s.store
+            .upsert_node(&node)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    use SemanticPortType as S;
+    let mut edges_spec: Vec<(Uuid, &'static str, Uuid, &'static str, S)> = vec![
+        (n_collar, "collars", n_vertical, "collars_in", S::PointSet),
+        (
+            n_lith,
+            "lithology",
+            n_vertical,
+            "lithology_in",
+            S::IntervalSet,
+        ),
+        (
+            n_vertical,
+            "trajectory",
+            n_interface,
+            "trajectory_in",
+            S::TrajectorySet,
+        ),
+        (
+            n_lith,
+            "lithology",
+            n_interface,
+            "lithology_in",
+            S::IntervalSet,
+        ),
+        (
+            n_interface,
+            "interface_points",
+            n_surface,
+            "interface_points_in",
+            S::PointSet,
+        ),
+    ];
+    if include_block_preview {
+        edges_spec.extend([
+            (
+                n_lith,
+                "lithology",
+                n_catalog,
+                "lithology_intervals_in",
+                S::IntervalSet,
+            ),
+            (
+                n_catalog,
+                "formation_catalog_out",
+                n_order,
+                "formation_catalog_in",
+                S::SemanticJson,
+            ),
+            (n_lith, "lithology", n_order, "lithology_in", S::IntervalSet),
+            (
+                n_interface,
+                "interface_points",
+                n_domain,
+                "interface_points_in",
+                S::PointSet,
+            ),
+            (
+                n_interface,
+                "interface_points",
+                n_constraints,
+                "interface_points_in",
+                S::PointSet,
+            ),
+            (
+                n_catalog,
+                "formation_catalog_out",
+                n_constraints,
+                "formation_catalog_in",
+                S::SemanticJson,
+            ),
+            (
+                n_order,
+                "stratigraphic_order_out",
+                n_constraints,
+                "stratigraphic_order_in",
+                S::SemanticJson,
+            ),
+            (
+                n_catalog,
+                "formation_catalog_out",
+                n_frame,
+                "formation_catalog_in",
+                S::SemanticJson,
+            ),
+            (
+                n_order,
+                "stratigraphic_order_out",
+                n_frame,
+                "stratigraphic_order_in",
+                S::SemanticJson,
+            ),
+            (
+                n_constraints,
+                "constraints_out",
+                n_frame,
+                "constraints_in",
+                S::SemanticJson,
+            ),
+            (
+                n_domain,
+                "model_domain_out",
+                n_frame,
+                "model_domain_in",
+                S::SemanticJson,
+            ),
+            (
+                n_frame,
+                "structural_frame_out",
+                n_interpolator,
+                "structural_frame_in",
+                S::SemanticJson,
+            ),
+            (
+                n_constraints,
+                "constraints_out",
+                n_interpolator,
+                "constraints_in",
+                S::SemanticJson,
+            ),
+            (
+                n_domain,
+                "model_domain_out",
+                n_interpolator,
+                "model_domain_in",
+                S::SemanticJson,
+            ),
+            (
+                n_interpolator,
+                "scalar_field_out",
+                n_blocks,
+                "scalar_field_in",
+                S::SemanticJson,
+            ),
+        ]);
+    }
+    for (from, fp, to, tp, sem) in edges_spec {
+        s.store
+            .add_edge(graph_id, from, fp, to, tp, sem)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    let mut viewer_edges: Vec<(Uuid, &'static str, &'static str, S)> = vec![
+        (n_vertical, "trajectory", "in_1", S::TrajectorySet),
+        (n_surface, "surfaces", "in_2", S::Surface),
+        (n_interface, "interface_points", "in_3", S::PointSet),
+    ];
+    if include_block_preview {
+        viewer_edges.push((n_blocks, "block_voxels", "in_4", S::Mesh));
+    }
+    for (from, fp, tp, sem) in viewer_edges {
+        s.store
+            .add_edge(graph_id, from, fp, n_viewer, tp, sem)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    let snapshot = s
+        .store
+        .load_graph(graph_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let roots: Vec<Uuid> = snapshot.nodes.keys().copied().collect();
+    let root_set: HashSet<Uuid> = roots.iter().copied().collect();
+    let dirty = propagate_stale(&snapshot, &roots);
+    let input_map = build_input_artifacts(&s.store, &snapshot)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let plan = s.scheduler.plan(
+        &snapshot,
+        &dirty,
+        &root_set,
+        &input_map,
+        Uuid::new_v4(),
+        Some(CrsRecord::epsg(26711)),
+        false,
+    );
+
+    for mut job in plan.jobs {
+        if job.node_id == n_collar {
+            job.input_payload = Some(collar_payload.clone());
+        } else if job.node_id == n_lith {
+            job.input_payload = Some(lithology_payload.clone());
+        }
+        s.jobs
+            .enqueue(&job)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "workspace_id": ws,
+        "graph_id": graph_id,
+        "nodes": {
+            "collar_ingest": n_collar,
+            "lithology_ingest": n_lith,
+            "vertical_trajectory": n_vertical,
+            "formation_interface_extract": n_interface,
+            "stratigraphic_surface_model": n_surface,
+            "threejs_display_node": n_viewer,
+            "formation_catalog_build": include_block_preview.then_some(n_catalog),
+            "stratigraphic_order_define": include_block_preview.then_some(n_order),
+            "model_domain_define": include_block_preview.then_some(n_domain),
+            "constraint_merge": include_block_preview.then_some(n_constraints),
+            "structural_frame_builder": include_block_preview.then_some(n_frame),
+            "stratigraphic_interpolator": include_block_preview.then_some(n_interpolator),
+            "lith_block_model_build": include_block_preview.then_some(n_blocks)
+        }
+    })))
 }
 
 /// Seeds demo: collars + surveys -> desurvey; desurvey + assays -> drillhole model.

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.structural_frame.v1.schema.json",
+  "title": "geology.structural_frame.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "formations",
+    "groups"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.structural_frame.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "formations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["formation_id", "name", "group_id", "order_index", "is_active"],
+        "properties": {
+          "formation_id": { "type": "string" },
+          "name": { "type": "string" },
+          "group_id": { "type": "string" },
+          "order_index": { "type": "integer", "minimum": 0 },
+          "is_active": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_id", "formations_top_to_bottom"],
+        "properties": {
+          "group_id": { "type": "string" },
+          "group_name": { "type": ["string", "null"] },
+          "relation_type": {
+            "type": "string",
+            "enum": ["conformable", "unconformity", "faulted", "intrusive"]
+          },
+          "formations_top_to_bottom": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "constraints_ref": { "type": "object" },
+    "domain_ref": { "type": "object" },
+    "diagnostics": { "type": "object" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

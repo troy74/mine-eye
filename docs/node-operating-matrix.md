@@ -12,6 +12,7 @@ This matrix is the practical operating guide for what we currently do with node 
 | Workflow Goal | Recommended Node Chain | Status | Notes |
 |---|---|---|---|
 | Drillhole 3D interpretation | `collar_ingest` + `survey_ingest` -> `desurvey_trajectory` -> `drillhole_model` -> `threejs_display_node` | Primary | Baseline for collars/surveys/assays into 3D scene context. |
+| Borehole stratigraphy / interface prep | `collar_ingest` + `lithology_ingest` -> `desurvey_trajectory` or vertical-trace helper -> future formation/interface node | Planned | GemPy-inspired path for converting borehole intervals into underground interface points before geologic surface modelling. |
 | Terrain + imagery context in 3D | `aoi` -> `dem_fetch` -> `tilebroker` -> `threejs_display_node` | Primary | Use with drillhole outputs for draped exploration context. |
 | Block resource estimation (voxel) | `drillhole_model`/grade points -> `block_grade_model` -> `threejs_display_node` | Primary | Emits block voxels + center points + resource summary report; clips to topography when terrain is wired. |
 | Surface geochem heatmap | `surface_sample_ingest` -> (`data_model_transform`) -> `assay_heatmap` -> `plan_view_2d`/`threejs_display_node` | Primary | Keep measure-column config explicit and validated from source schema. |
@@ -31,6 +32,7 @@ This matrix is the practical operating guide for what we currently do with node 
 | `observation_ingest` | input | Import large generic observation tables as pointer-first artifacts | file/config mapping | observation points + table pointer + ingest report | Primary |
 | `desurvey_trajectory` | transform | Build downhole trajectories | collars + surveys | `trajectory` | Primary |
 | `drillhole_model` | model | Build drill traces/meshes and assay points | trajectory + assays | meshes + points | Primary |
+| future formation/interface node | model | Build interface points and stratigraphic contacts from borehole intervals | collars + lithology intervals + optional trajectory/surface | interface points + contact report + surface-ready groups | Planned |
 | `magnetic_model` | model | Magnetic cleanup, interpolation and derivative generation | observation rows / mapped payload | magnetic points + magnetic grid + audit report | Primary |
 | `heatmap_raster_tile_cache` | transform | Build cached raster + tiles from generic XY point measures | point set with numeric attributes | tile manifest + imagery drape contract + cache report | Primary |
 | `block_grade_model` | model | Build voxel block grades + resource summary | grade points (+ optional terrain) | block voxels + centers + report | Primary |
@@ -55,4 +57,5 @@ This matrix is the practical operating guide for what we currently do with node 
 1. Default 3D viewer for new work is `threejs_display_node`.
 2. Treat Cesium nodes as historic/archived unless a user explicitly requests Cesium.
 3. For uploaded collar/survey/assay-style files, default graph setup should be ingest -> desurvey -> drillhole model -> threejs viewer.
-4. Keep CRS and semantic-port compatibility explicit before applying wires.
+4. For borehole lithology/contact tables, prefer an explicit middleware path that emits interface points before attempting stratigraphic surface modelling.
+5. Keep CRS and semantic-port compatibility explicit before applying wires.

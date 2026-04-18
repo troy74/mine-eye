@@ -50,6 +50,8 @@ Responsibilities:
 - typed semantic ports and compatibility behavior
 - node execution semantics and envelope behavior
 - shared contracts that every client depends on indirectly via API
+- geology contracts now have an explicit staged shape:
+  lithology intervals -> interface points -> stratigraphic surfaces -> touching volumes
 
 ### 3.1 Node Implementation Structure
 
@@ -66,6 +68,7 @@ Domain modules own public node execution APIs:
 | `imagery_raster` | Imagery provider and tilebroker contracts |
 | `trajectory` | Desurvey |
 | `drillhole` | Merge and model |
+| future `stratigraphy` / `formation_model` path | Borehole lithology/contact handling and interface extraction for geologic surfaces |
 | `resource_model` | Block grade modeling + resource summaries (k-d tree IDW, rayon parallel) |
 | `magnetic_model` | Airborne magnetics cleanup, gridding, derivatives |
 | `magnetic_depth` | Euler deconvolution: 3D source depth/susceptibility voxels from a magnetic grid |
@@ -79,6 +82,7 @@ Domain modules own public node execution APIs:
 Rule:
 
 - New node behavior should be implemented in the relevant domain module, not by adding new public `run_*` entrypoints in `runtime.rs`.
+- The next planned extension is a Rust-native borehole stratigraphy/model workflow: collars + lithology/contact intervals + optional surface constraints should produce explicit interface-point artifacts before any surface/formation interpolation.
 
 ### 3.2 Shared Utility Modules
 

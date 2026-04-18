@@ -22,6 +22,7 @@ pub mod resource_model;
 pub mod runtime;
 pub mod scene_contract;
 pub mod spatial;
+pub mod stratigraphy;
 pub mod stubs;
 pub mod surface;
 pub mod tile_cache;
@@ -29,8 +30,8 @@ pub mod trajectory;
 pub mod visualization;
 
 pub use acquisition::{
-    run_assay_ingest, run_collar_ingest, run_drillhole_ingest, run_surface_sample_ingest,
-    run_survey_ingest,
+    run_assay_ingest, run_collar_ingest, run_drillhole_ingest, run_lithology_ingest,
+    run_orientation_ingest, run_surface_sample_ingest, run_survey_ingest,
 };
 pub use chart_plot::run_plot_chart;
 pub use data_model::run_data_model_transform;
@@ -50,10 +51,15 @@ pub use observation_ingest::run_observation_ingest;
 pub use resource_model::run_block_grade_model;
 pub use scene_contract::run_scene3d_layer_stack;
 pub use spatial::run_aoi;
+pub use stratigraphy::{
+    run_constraint_merge, run_formation_catalog_build, run_formation_interface_extract,
+    run_lith_block_model_build, run_model_domain_define, run_stratigraphic_interpolator,
+    run_stratigraphic_order_define, run_stratigraphic_surface_model, run_structural_frame_builder,
+};
 pub use stubs::{run_block_model_stub, run_dem_integrate_stub};
 pub use surface::{
     run_assay_heatmap, run_dem_fetch, run_surface_iso_extract, run_terrain_adjust,
     run_xyz_to_surface,
 };
-pub use trajectory::run_desurvey_trajectory;
+pub use trajectory::{run_desurvey_trajectory, run_vertical_trajectory};
 pub use visualization::{run_plan_view_2d, run_plan_view_3d};

@@ -2641,6 +2641,29 @@ export function NodeInspector({
                     {selectCol("to_m", "To depth (m)")}
                   </div>
                 )}
+                {kind === "lithology_ingest" && (
+                  <div style={mapGrid}>
+                    {selectCol("hole_id", "Hole id")}
+                    {selectCol("from_m", "From depth (m)")}
+                    {selectCol("to_m", "To depth (m)")}
+                    {selectCol("formation", "Formation")}
+                    {selectCol("group", "Group (optional)")}
+                    {selectCol("lithology_code", "Lithology code (optional)")}
+                  </div>
+                )}
+                {kind === "orientation_ingest" && (
+                  <div style={mapGrid}>
+                    {selectCol("formation", "Formation")}
+                    {selectCol("x", "X / Easting")}
+                    {selectCol("y", "Y / Northing")}
+                    {selectCol("z", "Z / elevation")}
+                    {selectCol("dip_deg", "Dip (optional if pole vector provided)")}
+                    {selectCol("azimuth_deg", "Azimuth (optional if pole vector provided)")}
+                    {selectCol("pole_x", "Pole X (optional)")}
+                    {selectCol("pole_y", "Pole Y (optional)")}
+                    {selectCol("pole_z", "Pole Z (optional)")}
+                  </div>
+                )}
                 {kind === "ip_survey_ingest" && (
                   <div style={mapGrid}>
                     {selectCol("measurement_id", "Measurement id")}

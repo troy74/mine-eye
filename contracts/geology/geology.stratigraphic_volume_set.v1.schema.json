@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.stratigraphic_volume_set.v1.schema.json",
+  "title": "geology.stratigraphic_volume_set.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "topology",
+    "volumes"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.stratigraphic_volume_set.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "topology": {
+      "type": "object",
+      "required": ["mode", "formation_order"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["touching_ordered_stack", "faulted_stack", "unconformable_stack"]
+        },
+        "formation_order": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "volumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "volume_id",
+          "formation",
+          "mesh"
+        ],
+        "properties": {
+          "volume_id": { "type": "string" },
+          "formation": { "type": "string" },
+          "rank": { "type": ["integer", "null"] },
+          "top_surface_id": { "type": ["string", "null"] },
+          "base_surface_id": { "type": ["string", "null"] },
+          "color_hint": { "type": ["string", "null"] },
+          "mesh": {
+            "type": "object",
+            "required": ["vertices", "faces"],
+            "properties": {
+              "vertices": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "prefixItems": [
+                    { "type": "number" },
+                    { "type": "number" },
+                    { "type": "number" }
+                  ],
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              },
+              "faces": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "prefixItems": [
+                    { "type": "integer", "minimum": 0 },
+                    { "type": "integer", "minimum": 0 },
+                    { "type": "integer", "minimum": 0 }
+                  ],
+                  "minItems": 3,
+                  "maxItems": 3
+                }
+              }
+            },
+            "additionalProperties": true
+          },
+          "attributes": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "display_contract": {
+      "type": "object",
+      "properties": {
+        "renderer": { "const": "mesh" },
+        "display_pointer": { "const": "scene3d.surface_mesh" }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

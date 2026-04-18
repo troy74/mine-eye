@@ -87,6 +87,7 @@ Desurvey collars + survey angles into a 3-D trajectory.
 *Recommendations:*
 - Both inputs are required — node remains "unset" until both are connected.
 - Future: add optional `lithology_in: interval_set` to allow geology-aware desurvey methods.
+- For vertical-contact datasets without surveys, pair collars with a small helper that emits straight traces so downstream interface extraction can stay in middleware.
 
 ---
 
@@ -104,6 +105,7 @@ Build 3-D cylinder mesh and assay point cloud from trajectory + assays.
 - `assay_points` output semantic should be changed from `table` → `point_set` to get correct wire colour and enable direct connection to point-aware viewers.
 - Add optional `lithology_in: interval_set` for separate lith rendering pass.
 - Add optional `collar_labels_in: point_set` so collar IDs can be shown as 3-D text.
+- Keep assay-driven drillhole rendering separate from future stratigraphy/interface extraction so geologic contacts do not inherit grade-specific assumptions.
 
 ---
 
@@ -367,6 +369,7 @@ IN  layer_N+1   any          opt   (dynamic expansion)
 | Kind | Category | Purpose |
 |---|---|---|
 | `lithology_ingest` | input | Import downhole lithology intervals |
+| `formation_interface_extract` | transform | Convert borehole intervals + traces into underground interface points |
 | `structure_ingest` | input | Import structural measurements (orientation) |
 | `polygon_ingest` | input | Import shapefile / GeoJSON polygons (domains, extents) |
 | `data_connector` | input | Generic REST/DB source that drives ingest nodes |

@@ -109,6 +109,24 @@ type HeatmapSurfaceGrid = {
   };
 };
 
+type GeologicSurfaceGrid = {
+  id: string;
+  nodeId: string;
+  nodeKind: string;
+  label: string;
+  formation: string;
+  grid: {
+    nx: number;
+    ny: number;
+    xmin: number;
+    xmax: number;
+    ymin: number;
+    ymax: number;
+    values: Array<number | null>;
+    epsg?: number;
+  };
+};
+
 type SectionPlaneGrid = {
   id: string;
   nodeId: string;
@@ -145,6 +163,7 @@ type SceneData = {
   totalArtifacts: number;
   sourceLayers: SourceLayer[];
   heatmapSurfaces: HeatmapSurfaceGrid[];
+  geologicSurfaces: GeologicSurfaceGrid[];
   sectionPlanes: SectionPlaneGrid[];
 };
 
@@ -182,7 +201,7 @@ type SceneUiState = {
   showBalloons: boolean;
   imageryProvider: ImageryProviderId;
   selectedMeasure: string;
-  palette: "inferno" | "viridis" | "turbo" | "red_blue";
+  palette: "inferno" | "viridis" | "turbo" | "red_blue" | "earth" | "tableau";
   measureColorMode: "continuous" | "categorical";
   measureTransform: "linear" | "log10" | "ln";
   categoricalColorMap: string;
@@ -192,10 +211,12 @@ type SceneUiState = {
   clampLowPct: number;
   clampHighPct: number;
   radiusScale: number;
+  verticalExaggeration: number;
   traceWidth: number;
   segmentWidth: number;
   sampleSize: number;
   terrainOpacity: number;
+  subsurfaceReveal: number;
   drapeOpacity: number;
   contourColor: string;
   contourOpacity: number;
@@ -246,6 +267,7 @@ type LayerVizStyle = {
 const LAYER_KEYS = [
   "esri_drape",
   "terrain_points",
+  "geologic_surface",
   "contours",
   "trajectories",
   "grade_segments",
@@ -315,10 +337,12 @@ const DEFAULT_UI: SceneUiState = {
   clampLowPct: 2,
   clampHighPct: 98,
   radiusScale: 1.35,
+  verticalExaggeration: 1,
   traceWidth: 2,
   segmentWidth: 6,
   sampleSize: 7,
   terrainOpacity: 0.9,
+  subsurfaceReveal: 0.08,
   drapeOpacity: 0.95,
   contourColor: "#ffc440",
   contourOpacity: 0.9,
@@ -330,7 +354,7 @@ const DEFAULT_UI: SceneUiState = {
   balloonOpacity: 0.42,
   layerOrder: [...LAYER_KEYS],
   layerOrderMode: "contract",
-  invertDepth: false,
+  invertDepth: true,
   panelCollapsed: false,
   ambientIntensity: 0.92,
   fogEnabled: true,
@@ -372,7 +396,25 @@ const PALETTE_STOPS: Record<string, ColorStop[]> = {
     { pos: 0.00, color: "#030d28" }, { pos: 0.33, color: "#0077b6" },
     { pos: 0.66, color: "#48cae4" }, { pos: 1.00, color: "#caf0f8" },
   ],
+  earth: [
+    { pos: 0.00, color: "#4b5d16" }, { pos: 0.25, color: "#6f8f2f" },
+    { pos: 0.50, color: "#b39b5b" }, { pos: 0.75, color: "#9a5e3d" }, { pos: 1.00, color: "#6d3d2e" },
+  ],
+  tableau: [
+    { pos: 0.00, color: "#4e79a7" }, { pos: 0.25, color: "#f28e2b" },
+    { pos: 0.50, color: "#59a14f" }, { pos: 0.75, color: "#e15759" }, { pos: 1.00, color: "#b07aa1" },
+  ],
 };
+
+const CONTINUOUS_PALETTES = ["inferno", "viridis", "turbo", "red_blue"] as const;
+const CATEGORICAL_PALETTES = {
+  inferno: ["#fcffa4", "#fca50a", "#dd513a", "#932667", "#420a68", "#000004"],
+  viridis: ["#440154", "#414487", "#2a788e", "#22a884", "#7ad151", "#fde725"],
+  turbo: ["#30123b", "#4145ab", "#1f9ee3", "#3fd57b", "#c8e020", "#f5b126", "#d94b0d"],
+  red_blue: ["#3b82f6", "#6366f1", "#8b5cf6", "#ec4899", "#ef4444", "#f97316"],
+  earth: ["#5b8a3c", "#91b44b", "#d2b26f", "#a56a43", "#7c4f38", "#5f2f28"],
+  tableau: ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ab"],
+} satisfies Record<SceneUiState["palette"], string[]>;
 
 const DEFAULT_LAYER_STYLE: LayerVizStyle = {
   attributeKey: "",
@@ -518,6 +560,8 @@ function CameraAutoFit({
 function defaultLayerStyleForId(layerId: string): LayerVizStyle {
   const isContourLayer = layerId === "contours" || layerId.startsWith("contours__");
   const isBlockLayer = layerId === "block_voxels" || layerId.startsWith("block_voxels__");
+  const isGeologicSurfaceLayer =
+    layerId === "geologic_surface" || layerId.startsWith("geologic_surface__");
   return {
     ...DEFAULT_LAYER_STYLE,
     ...(isContourLayer ? { showLabels: true, labelSize: 12 } : {}),
@@ -528,6 +572,15 @@ function defaultLayerStyleForId(layerId: string): LayerVizStyle {
           colorStops: PALETTE_STOPS.turbo,
           clampLowPct: 5,
           clampHighPct: 95,
+        }
+      : {}),
+    ...(isGeologicSurfaceLayer
+      ? {
+          attributeKey: "formation",
+          palette: "earth",
+          colorStops: PALETTE_STOPS.earth,
+          opacity: 0.48,
+          colorMode: "categorical",
         }
       : {}),
   };
@@ -918,7 +971,7 @@ function parseSegmentMeasuresFromAssays(raw: unknown): Record<string, number | s
 function parseSceneJson(
   text: string,
   manifestLayer: ViewerManifestLayer | undefined
-): Omit<SceneData, "totalArtifacts" | "sourceLayers" | "heatmapSurfaces" | "sectionPlanes"> {
+): Omit<SceneData, "totalArtifacts" | "sourceLayers" | "heatmapSurfaces" | "geologicSurfaces" | "sectionPlanes"> {
   let root: unknown;
   try {
     root = JSON.parse(text) as unknown;
@@ -934,6 +987,7 @@ function parseSceneJson(
       terrainGrid: null,
       aoiBounds: null,
       measureCandidates: [],
+      geologicSurfaces: [],
       sectionPlanes: [],
     };
   }
@@ -945,6 +999,7 @@ function parseSceneJson(
   const blockVoxels: BlockVoxel[] = [];
   const terrainPoints: TerrainPoint[] = [];
   const sectionPlanes: SectionPlaneGrid[] = [];
+  const geologicSurfaces: GeologicSurfaceGrid[] = [];
   const terrainGrids: Array<{
     id: string;
     label: string;
@@ -976,6 +1031,10 @@ function parseSceneJson(
     lowerKey.endsWith("/dem_surface.json") ||
     lowerKey.endsWith("/terrain_adjusted.json") ||
     lowerKey.endsWith("/xyz_surface.json");
+  const treatSurfaceGridAsGeologicSurface =
+    displayPointer === "scene3d.surface" ||
+    displayPointer === "scene3d.surface_mesh" ||
+    sourceKindLower === "stratigraphic_surface_model";
   let artifactEpsg: number | undefined;
 
   if (!Array.isArray(root) && root && typeof root === "object") {
@@ -1307,6 +1366,49 @@ function parseSceneJson(
         };
       }
     }
+    if (treatSurfaceGridAsGeologicSurface && sg && typeof sg === "object" && !Array.isArray(sg)) {
+      const sgo = sg as Record<string, unknown>;
+      const nx = n(sgo.nx);
+      const ny = n(sgo.ny);
+      const xmin = n(sgo.xmin);
+      const xmax = n(sgo.xmax);
+      const ymin = n(sgo.ymin);
+      const ymax = n(sgo.ymax);
+      const vals = Array.isArray(sgo.values) ? sgo.values : [];
+      if (
+        nx !== null &&
+        ny !== null &&
+        xmin !== null &&
+        xmax !== null &&
+        ymin !== null &&
+        ymax !== null &&
+        vals.length === Math.trunc(nx) * Math.trunc(ny)
+      ) {
+        const formation =
+          typeof obj.formation === "string" && obj.formation.trim().length
+            ? obj.formation.trim()
+            : typeof obj.label === "string" && obj.label.trim().length
+              ? obj.label.trim()
+              : manifestLayer?.artifact_key.split("/").slice(-1)[0]?.replace(/\.json$/i, "") ?? "Formation";
+        geologicSurfaces.push({
+          id: `${manifestLayer?.artifact_key ?? formation}:${manifestLayer?.content_hash ?? "latest"}`,
+          nodeId: String(manifestLayer?.source_node_id ?? "geology-surface"),
+          nodeKind: String(manifestLayer?.source_node_kind ?? "stratigraphic_surface_model"),
+          label: formation,
+          formation,
+          grid: {
+            nx: Math.max(2, Math.trunc(nx)),
+            ny: Math.max(2, Math.trunc(ny)),
+            xmin,
+            xmax,
+            ymin,
+            ymax,
+            values: vals.map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null)),
+            epsg: artifactEpsg,
+          },
+        });
+      }
+    }
   }
 
   if (displayPointer === "scene3d.trace_polyline" || (displayPointer.length === 0 && lowerKey.includes("trajectory"))) {
@@ -1382,6 +1484,7 @@ function parseSceneJson(
       declaredMeasures.length > 0
         ? declaredMeasures
         : [...inferredMeasures].sort(),
+    geologicSurfaces,
     sectionPlanes,
   };
 }
@@ -1540,6 +1643,70 @@ function buildDrapedOverlayGeometry({
   return geom;
 }
 
+function buildSurfaceGridGeometry(
+  grid: {
+    nx: number;
+    ny: number;
+    xmin: number;
+    xmax: number;
+    ymin: number;
+    ymax: number;
+    values: Array<number | null>;
+  },
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3,
+  zLift: number
+): THREE.BufferGeometry | null {
+  if (grid.nx < 2 || grid.ny < 2) return null;
+  if (grid.values.length !== grid.nx * grid.ny) return null;
+
+  const positions = new Float32Array(grid.nx * grid.ny * 3);
+  const uvs = new Float32Array(grid.nx * grid.ny * 2);
+  const valid = new Uint8Array(grid.nx * grid.ny);
+  const stepX = (grid.xmax - grid.xmin) / (grid.nx - 1);
+  const stepY = (grid.ymax - grid.ymin) / (grid.ny - 1);
+
+  for (let iy = 0; iy < grid.ny; iy++) {
+    for (let ix = 0; ix < grid.nx; ix++) {
+      const idx = iy * grid.nx + ix;
+      const value = grid.values[idx];
+      if (value === null || !Number.isFinite(value)) continue;
+      valid[idx] = 1;
+      const x = grid.xmin + ix * stepX;
+      const y = grid.ymin + iy * stepY;
+      const p = toLocal(x, y, value + zLift);
+      positions[idx * 3 + 0] = p.x;
+      positions[idx * 3 + 1] = p.y;
+      positions[idx * 3 + 2] = p.z;
+      uvs[idx * 2 + 0] = ix / (grid.nx - 1);
+      uvs[idx * 2 + 1] = 1 - iy / (grid.ny - 1);
+    }
+  }
+
+  const indices: number[] = [];
+  for (let iy = 0; iy < grid.ny - 1; iy++) {
+    for (let ix = 0; ix < grid.nx - 1; ix++) {
+      const i00 = iy * grid.nx + ix;
+      const i10 = i00 + 1;
+      const i01 = i00 + grid.nx;
+      const i11 = i01 + 1;
+      if (valid[i00] && valid[i01] && valid[i10]) {
+        indices.push(i00, i01, i10);
+      }
+      if (valid[i10] && valid[i01] && valid[i11]) {
+        indices.push(i10, i01, i11);
+      }
+    }
+  }
+  if (indices.length === 0) return null;
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
 function resolvePointZ(point: Point3D, grid: TerrainGrid | null): number | null {
   if (point.hasExplicitZ !== false && Number.isFinite(point.z)) return point.z;
   const sampled = sampleTerrainZ(grid, point.x, point.y);
@@ -1557,6 +1724,7 @@ function parseLayerStackContract(v: unknown): LayerStackContract | null {
 function mapLayerKindToKey(kind: string): LayerKey | null {
   if (kind === "imagery_drape") return "esri_drape";
   if (kind === "terrain") return "terrain_points";
+  if (kind === "geologic_surface") return "geologic_surface";
   if (kind === "contours") return "contours";
   if (kind === "drill_segments") return "grade_segments";
   if (kind === "assay_points") return "assay_points";
@@ -1649,14 +1817,25 @@ function applyMeasureTransform(
 }
 
 function categoricalMeasureColor(
-  rawValue: number | null,
+  rawValue: number | string | null,
   palette: SceneUiState["palette"]
 ): string {
-  if (rawValue === null || !Number.isFinite(rawValue)) return "#58a6ff";
-  const bucket = Math.round(rawValue * 1000) / 1000;
-  const x = Math.abs(Math.floor(bucket * 104729));
-  const t = (x % 997) / 996;
-  return paletteColor(t, 0, 1, palette);
+  if (rawValue === null) return "#58a6ff";
+  const colors = CATEGORICAL_PALETTES[palette] ?? CATEGORICAL_PALETTES.tableau;
+  let x = 0;
+  if (typeof rawValue === "number") {
+    if (!Number.isFinite(rawValue)) return "#58a6ff";
+    const bucket = Math.round(rawValue * 1000) / 1000;
+    x = Math.abs(Math.floor(bucket * 104729));
+  } else {
+    const value = rawValue.trim();
+    if (!value) return "#58a6ff";
+    for (let i = 0; i < value.length; i++) {
+      x = ((x << 5) - x + value.charCodeAt(i)) | 0;
+    }
+    x = Math.abs(x);
+  }
+  return colors[x % colors.length] ?? "#58a6ff";
 }
 
 // ── Color stop helpers ────────────────────────────────────────────────────────
@@ -1764,6 +1943,7 @@ function BlockVoxelLayer3D({
   lift: number;
   colorForMeasure: (raw: number | string | null, domain: { lo: number; hi: number }) => string;
 }) {
+  const renderEdges = voxels.length <= 4000;
   const mergedGeometry = useMemo(() => {
     const attrKey = style.attributeKey.trim();
     const base = new THREE.BoxGeometry(1, 1, 1);
@@ -1819,9 +1999,9 @@ function BlockVoxelLayer3D({
   }, [colorForMeasure, domain, lift, style.attributeKey, toLocal, voxels]);
 
   const edgesGeometry = useMemo(() => {
-    if (!mergedGeometry) return null;
+    if (!mergedGeometry || !renderEdges) return null;
     return new THREE.EdgesGeometry(mergedGeometry);
-  }, [mergedGeometry]);
+  }, [mergedGeometry, renderEdges]);
 
   useEffect(() => {
     return () => {
@@ -2302,6 +2482,81 @@ function SurfaceHeatmapLayer3D({
   );
 }
 
+function GeologicSurfaceLayer3D({
+  surface,
+  style,
+  toLocal,
+  sceneScale,
+  subsurfaceReveal,
+  colorForMeasure,
+}: {
+  surface: GeologicSurfaceGrid;
+  style: LayerVizStyle;
+  toLocal: (x: number, y: number, z: number) => THREE.Vector3;
+  sceneScale: number;
+  subsurfaceReveal: number;
+  colorForMeasure: (raw: number | string | null, domain: { lo: number; hi: number }) => string;
+}) {
+  const geometry = useMemo(
+    () =>
+      buildSurfaceGridGeometry(
+        surface.grid,
+        toLocal,
+        Math.max(0.02, sceneScale * 0.00025)
+      ),
+    [sceneScale, surface.grid, toLocal]
+  );
+  useEffect(() => () => { geometry?.dispose(); }, [geometry]);
+  if (!geometry) return null;
+
+  const formation = surface.formation.trim();
+  const rawValue = style.attributeKey.trim() === "formation" || !style.attributeKey.trim()
+    ? (formation || surface.label)
+    : null;
+  const color = colorForMeasure(rawValue, { lo: 0, hi: 1 });
+  return (
+    <group>
+      <mesh geometry={geometry} renderOrder={8}>
+        <meshStandardMaterial
+          color={color}
+          transparent
+          opacity={Math.max(0.08, style.opacity)}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+          roughness={0.82}
+          metalness={0.02}
+        />
+      </mesh>
+      <mesh geometry={geometry} renderOrder={9}>
+        <meshBasicMaterial
+          color={color}
+          transparent
+          opacity={Math.min(0.18, Math.max(0.05, style.opacity * 0.32))}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+          wireframe
+        />
+      </mesh>
+      {subsurfaceReveal > 0 ? (
+        <mesh geometry={geometry} renderOrder={30}>
+          <meshBasicMaterial
+            color={color}
+            transparent
+            opacity={Math.max(0, Math.min(0.4, style.opacity * subsurfaceReveal))}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+            depthTest={false}
+          />
+        </mesh>
+      ) : null}
+    </group>
+  );
+}
+
 function SectionPlaneLayer3D({
   sectionPlane,
   style,
@@ -2508,6 +2763,19 @@ function EsriDrape({
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, y, 0]}>
       <planeGeometry args={[width, depth]} />
       {material}
+    </mesh>
+  );
+}
+
+function TerrainDepthOccluder({
+  geometry,
+}: {
+  geometry: THREE.BufferGeometry | null;
+}) {
+  if (!geometry) return null;
+  return (
+    <mesh geometry={geometry} renderOrder={3}>
+      <meshBasicMaterial color="#000000" colorWrite={false} depthWrite />
     </mesh>
   );
 }
@@ -2766,7 +3034,9 @@ function ColorRampEditor({
 
       {/* Preset palette row */}
       <div style={{ display: "flex", gap: 4 }}>
-        {(Object.entries(PALETTE_STOPS) as [string, ColorStop[]][]).map(([key, ps]) => (
+        {CONTINUOUS_PALETTES.map((key) => {
+          const ps = PALETTE_STOPS[key];
+          return (
           <button key={key} type="button" title={key}
             onClick={() => { onStopsChange([...ps]); }}
             style={{
@@ -2777,7 +3047,8 @@ function ColorRampEditor({
               boxSizing: "border-box",
             }}
           />
-        ))}
+          );
+        })}
       </div>
 
       {/* Clip range — dual compact sliders with value labels */}
@@ -2830,6 +3101,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     totalArtifacts: 0,
     sourceLayers: [],
     heatmapSurfaces: [],
+    geologicSurfaces: [],
     sectionPlanes: [],
   });
   const [ui, setUi] = useState<SceneUiState>(DEFAULT_UI);
@@ -2844,6 +3116,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const [expandedLayers, setExpandedLayers] = useState<Record<string, boolean>>({
     esri_drape: false,
     terrain_points: false,
+    geologic_surface: true,
     contours: false,
     trajectories: false,
     grade_segments: true,
@@ -2927,7 +3200,15 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               ? (uiRaw.imagery_provider as ImageryProviderId)
               : DEFAULT_UI.imageryProvider,
           selectedMeasure: typeof uiRaw.selected_measure === "string" ? uiRaw.selected_measure : "",
-          palette: uiRaw.palette === "viridis" || uiRaw.palette === "turbo" || uiRaw.palette === "red_blue" || uiRaw.palette === "inferno" ? uiRaw.palette : "inferno",
+          palette:
+            uiRaw.palette === "viridis" ||
+            uiRaw.palette === "turbo" ||
+            uiRaw.palette === "red_blue" ||
+            uiRaw.palette === "earth" ||
+            uiRaw.palette === "tableau" ||
+            uiRaw.palette === "inferno"
+              ? uiRaw.palette
+              : "inferno",
           measureColorMode:
             uiRaw.measure_color_mode === "categorical" || uiRaw.measure_color_mode === "continuous"
               ? uiRaw.measure_color_mode
@@ -2957,10 +3238,18 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           clampLowPct: typeof uiRaw.clamp_low_pct === "number" ? uiRaw.clamp_low_pct : DEFAULT_UI.clampLowPct,
           clampHighPct: typeof uiRaw.clamp_high_pct === "number" ? uiRaw.clamp_high_pct : DEFAULT_UI.clampHighPct,
           radiusScale: typeof uiRaw.radius_scale === "number" ? uiRaw.radius_scale : DEFAULT_UI.radiusScale,
+          verticalExaggeration:
+            typeof uiRaw.vertical_exaggeration === "number"
+              ? Math.max(1, Math.min(10, uiRaw.vertical_exaggeration))
+              : DEFAULT_UI.verticalExaggeration,
           traceWidth: typeof uiRaw.trace_width === "number" ? uiRaw.trace_width : DEFAULT_UI.traceWidth,
           segmentWidth: typeof uiRaw.segment_width === "number" ? uiRaw.segment_width : DEFAULT_UI.segmentWidth,
           sampleSize: typeof uiRaw.sample_size === "number" ? uiRaw.sample_size : DEFAULT_UI.sampleSize,
           terrainOpacity: typeof uiRaw.terrain_opacity === "number" ? uiRaw.terrain_opacity : DEFAULT_UI.terrainOpacity,
+          subsurfaceReveal:
+            typeof uiRaw.subsurface_reveal === "number"
+              ? Math.max(0, Math.min(0.4, uiRaw.subsurface_reveal))
+              : DEFAULT_UI.subsurfaceReveal,
           drapeOpacity: typeof uiRaw.drape_opacity === "number" ? uiRaw.drape_opacity : DEFAULT_UI.drapeOpacity,
           contourColor: typeof uiRaw.contour_color === "string" ? uiRaw.contour_color : DEFAULT_UI.contourColor,
           contourOpacity: typeof uiRaw.contour_opacity === "number" ? uiRaw.contour_opacity : DEFAULT_UI.contourOpacity,
@@ -3041,10 +3330,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             clamp_low_pct: ui.clampLowPct,
             clamp_high_pct: ui.clampHighPct,
             radius_scale: ui.radiusScale,
+            vertical_exaggeration: ui.verticalExaggeration,
             trace_width: ui.traceWidth,
             segment_width: ui.segmentWidth,
             sample_size: ui.sampleSize,
             terrain_opacity: ui.terrainOpacity,
+            subsurface_reveal: ui.subsurfaceReveal,
             drape_opacity: ui.drapeOpacity,
             contour_color: ui.contourColor,
             contour_opacity: ui.contourOpacity,
@@ -3113,6 +3404,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
           totalArtifacts: 0,
           sourceLayers: [],
           heatmapSurfaces: [],
+          geologicSurfaces: [],
           sectionPlanes: [],
         });
         setStatus(inputLinks.length ? "No upstream 3D artifacts yet. Queue run, run worker, then refresh." : "No compatible inputs wired into this 3D viewer.");
@@ -3134,6 +3426,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
       const allTerrain: TerrainPoint[] = [];
       const allSourceLayers: SourceLayer[] = [];
       const allHeatmapSurfaces: HeatmapSurfaceGrid[] = [];
+      const allGeologicSurfaces: GeologicSurfaceGrid[] = [];
       const allSectionPlanes: SectionPlaneGrid[] = [];
       const seenSourceLayerIds = new Set<string>();
       const terrainCandidates: Array<{
@@ -3205,6 +3498,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
 
           const parsed = parseSceneJson(txt, artManifest);
           loaded += 1;
+          allGeologicSurfaces.push(...parsed.geologicSurfaces);
           allSectionPlanes.push(...parsed.sectionPlanes);
           {
             const ml = artManifest;
@@ -3220,7 +3514,11 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 ? (ml.presentation.editable as unknown[])
                     .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
                 : [];
-            const measureCandidates = parsed.measureCandidates.slice();
+            const measureCandidates = (
+              parsed.geologicSurfaces.length > 0
+                ? ["formation", ...parsed.measureCandidates]
+                : parsed.measureCandidates
+            ).slice();
 
             const taggedSegs   = parsed.drillSegments.map(s => ({...s, sourceLayerId: makeId("grade_segments")}));
             const taggedPts    = parsed.assayPoints.map(p   => ({...p, sourceLayerId: makeId("assay_points")}));
@@ -3235,11 +3533,21 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
             allContours.push(...taggedContours);
             const taggedBlocks = parsed.blockVoxels.map(b => ({...b, sourceLayerId: makeId("block_voxels")}));
             allBlocks.push(...taggedBlocks);
+            const taggedGeologicSurfaces = parsed.geologicSurfaces.map((surface) => ({
+              ...surface,
+              id: makeId("geologic_surface"),
+            }));
+            allGeologicSurfaces.splice(
+              allGeologicSurfaces.length - parsed.geologicSurfaces.length,
+              parsed.geologicSurfaces.length,
+              ...taggedGeologicSurfaces
+            );
 
             for (const [baseType, hasItems] of [
               ["assay_points",   parsed.assayPoints.length > 0],
               ["grade_segments", parsed.drillSegments.length > 0],
               ["trajectories",   parsed.traces.length > 0],
+              ["geologic_surface", parsed.geologicSurfaces.length > 0],
               ["contours",       parsed.contourSegments.length > 0],
               ["block_voxels",   parsed.blockVoxels.length > 0],
               ["section_plane",  parsed.sectionPlanes.length > 0],
@@ -3256,6 +3564,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                 label:
                   baseType === "contours"
                     ? `Contours (${fmtKind(nodeKind)})`
+                    : baseType === "geologic_surface"
+                      ? `Geologic surface (${fmtKind(nodeKind)})`
                     : baseType === "block_voxels"
                       ? `Block voxels (${fmtKind(nodeKind)})`
                       : baseType === "assay_points" && nodeKind === "block_grade_model"
@@ -3263,12 +3573,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                         : fmtKind(nodeKind),
                 dotColor: baseType === "assay_points" ? "#60a5fa"
                         : baseType === "grade_segments" ? "#f97316"
+                        : baseType === "geologic_surface" ? "#f59e0b"
                         : baseType === "contours" ? "#34d399"
                         : baseType === "block_voxels" ? "#f43f5e"
                         : baseType === "section_plane" ? "#f59e0b"
                         : "#a78bfa",
                 measureCandidates,
-                editable,
+                editable:
+                  baseType === "geologic_surface"
+                    ? Array.from(new Set([...editable, "measure", "palette", "style"]))
+                    : editable,
               });
             }
           }
@@ -3337,9 +3651,16 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         totalArtifacts: loaded,
         sourceLayers: allSourceLayers,
         heatmapSurfaces: allHeatmapSurfaces,
+        geologicSurfaces: allGeologicSurfaces,
         sectionPlanes: allSectionPlanes,
       });
-      setStatus(`${allTraces.length + allSegs.length + allContours.length} line segment(s), ${allPoints.length} point(s), ${allBlocks.length} block voxel(s), ${allTerrain.length} terrain samples from ${loaded} artifact(s).`);
+      setStatus(
+        `${allTraces.length + allSegs.length + allContours.length} line segment(s), ` +
+        `${allPoints.length} point(s), ` +
+        `${allBlocks.length} block voxel(s), ` +
+        `${allGeologicSurfaces.length} geologic surface(s), ` +
+        `${allTerrain.length} terrain samples from ${loaded} artifact(s).`
+      );
     })();
     return () => {
       cancelled = true;
@@ -3583,8 +3904,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const toLocal = useMemo(() => {
     const [cx, cy, cz] = world.center;
     return (x: number, y: number, z: number) =>
-      new THREE.Vector3(x - cx, ui.invertDepth ? -(z - cz) : z - cz, y - cy);
-  }, [ui.invertDepth, world.center]);
+      new THREE.Vector3(
+        x - cx,
+        (ui.invertDepth ? -(z - cz) : z - cz) * ui.verticalExaggeration,
+        y - cy
+      );
+  }, [ui.invertDepth, ui.verticalExaggeration, world.center]);
 
   const layerStyle = useCallback(
     (layerId: string): LayerVizStyle => {
@@ -4022,6 +4347,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const layerLabel: Record<LayerKey, string> = {
     esri_drape: "Imagery drape",
     terrain_points: "Terrain surface",
+    geologic_surface: "Geologic surfaces",
     contours: "Contours",
     trajectories: "Trajectories",
     grade_segments: "Grade segments",
@@ -4031,6 +4357,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
   const LAYER_DOT: Record<LayerKey, string> = {
     esri_drape: "#facc15",
     terrain_points: "#4ade80",
+    geologic_surface: "#f59e0b",
     contours: "#38bdf8",
     trajectories: "#a78bfa",
     grade_segments: "#f97316",
@@ -4038,6 +4365,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     assay_points: "#60a5fa",
   };
   const styleableLayers = new Set<LayerKey>([
+    "geologic_surface",
     "trajectories",
     "grade_segments",
     "block_voxels",
@@ -4049,6 +4377,8 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
     { value: "viridis", label: "Viridis" },
     { value: "turbo", label: "Turbo" },
     { value: "red_blue", label: "Red ↔ Blue" },
+    { value: "earth", label: "Earth" },
+    { value: "tableau", label: "Tableau" },
   ];
 
   const layerLift = useCallback(
@@ -4066,10 +4396,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
         const key = raw === null ? "" : String(raw);
         const customColor = custom[key];
         if (customColor) return customColor;
-        if (typeof raw === "number" && Number.isFinite(raw)) {
-          return categoricalMeasureColor(raw, style.palette);
-        }
-        return categoricalMeasureColor(key.length, style.palette);
+        return categoricalMeasureColor(raw, style.palette);
       }
       if (typeof raw !== "number" || !Number.isFinite(raw)) return "#58a6ff";
       const tv = applyMeasureTransform(raw, style.transform);
@@ -4141,6 +4468,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
               <directionalLight position={[sceneScale, sceneScale * 0.8, sceneScale * 0.5]} intensity={0.42} />
               <directionalLight position={[-sceneScale * 0.7, sceneScale * 0.6, -sceneScale * 0.7]} intensity={0.24} />
               {ui.gridEnabled && <gridHelper args={[sceneScale * 1.25, 30, bgPalette.grid1, bgPalette.grid2]} position={[0, -sceneScale * 0.02, 0]} />}
+              <TerrainDepthOccluder geometry={drapeTerrainGeom} />
 
               {orderedLayerIds.map((layerId) => {
                 const layerBaseType = (id: string) => id.includes("__") ? id.split("__")[0] : id;
@@ -4235,6 +4563,31 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                         const r = Math.max(0.08, sceneScale * 0.0012 * ui.radiusScale * (ui.segmentWidth / 4), rFromData * ui.radiusScale);
                         return <SegmentTube key={`seg-${i}`} from={a} to={b} radius={r} color={color} />;
                       })}
+                    </group>
+                  );
+                }
+                if (baseType === "geologic_surface") {
+                  const thisSurfaceStyle = layerStyle(layerId);
+                  if (!thisSurfaceStyle.visible) return null;
+                  const surfaces = sceneData.geologicSurfaces.filter((surface) =>
+                    layerId.includes("__") ? surface.id === layerId : true
+                  );
+                  if (surfaces.length === 0) return null;
+                  return (
+                    <group key={`layer-geologic-surfaces-${layerId}`}>
+                      {surfaces.map((surface) => (
+                        <GeologicSurfaceLayer3D
+                          key={`${surface.id}-${surface.formation}`}
+                          surface={surface}
+                          style={thisSurfaceStyle}
+                          toLocal={toLocal}
+                          sceneScale={sceneScale}
+                          subsurfaceReveal={ui.subsurfaceReveal}
+                          colorForMeasure={(raw, domain) =>
+                            colorFromLayerStyle(thisSurfaceStyle, raw, domain)
+                          }
+                        />
+                      ))}
                     </group>
                   );
                 }
@@ -4476,11 +4829,12 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                     {orderedLayerIds.map((layerId) => {
                       const style = layerStyle(layerId);
                       const lBaseType = layerId.includes("__") ? layerId.split("__")[0] : layerId;
-                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "block_voxels" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface" || lBaseType === "section_plane";
+                      const styleable = lBaseType === "trajectories" || lBaseType === "grade_segments" || lBaseType === "geologic_surface" || lBaseType === "block_voxels" || lBaseType === "assay_points" || lBaseType === "contours" || lBaseType === "heatmap_surface" || lBaseType === "section_plane";
                       const sourceLayer = sceneData.sourceLayers.find(sl => sl.id === layerId);
                       const thisLayerLabel = sourceLayer?.label
                         ?? (layerId === "esri_drape" ? "Imagery drape"
                           : layerId === "terrain_points" ? "Terrain surface"
+                          : layerId === "geologic_surface" ? "Geologic surfaces"
                           : layerId === "contours" ? "Contours"
                           : layerId);
                       const thisLayerDot = sourceLayer?.dotColor ?? (LAYER_DOT[layerId as LayerKey] ?? "#484f58");
@@ -4626,6 +4980,25 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                       }
                                     />
                                   </label>
+                                  <label>
+                                    Subsurface reveal
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={0.4}
+                                      step={0.01}
+                                      value={ui.subsurfaceReveal}
+                                      onChange={(e) =>
+                                        setUi((p) => ({
+                                          ...p,
+                                          subsurfaceReveal: Math.max(0, Math.min(0.4, Number(e.target.value) || 0)),
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                  <div className="me-section-note">
+                                    Controls the faint x-ray visibility of underground layers through the ground surface.
+                                  </div>
                                 </>
                               ) : null}
                               {lBaseType === "contours" ? (
@@ -4725,6 +5098,13 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   </div>
                                 </>
                               ) : null}
+                              {lBaseType === "geologic_surface" ? (
+                                <>
+                                  <div style={{ fontSize: 9.5, color: "#8b949e", marginBottom: 2, lineHeight: 1.4 }}>
+                                    Stratigraphic horizons render as translucent meshes. Colour them by formation with categorical mode, then use opacity to tune overlap readability.
+                                  </div>
+                                </>
+                              ) : null}
                               {lBaseType === "trajectories" ? (
                                 <>
                                   <label>
@@ -4771,7 +5151,7 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                     </div>
                                     <select style={ctlSelect} value={style.attributeKey}
                                       onChange={(e) => setLayerStyle(layerId, { attributeKey: e.target.value })}>
-                                      <option value="">(constant color)</option>
+                                      <option value="">{lBaseType === "geologic_surface" ? "(formation default)" : "(constant color)"}</option>
                                       {layerMeasureCandidates(layerId).map((m) => (
                                         <option key={`${layerId}-${m}`} value={m}>{m}</option>
                                       ))}
@@ -4866,17 +5246,26 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                                   ) : (
                                     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                                       <div style={{ display: "flex", gap: 4 }}>
-                                        {(Object.entries(PALETTE_STOPS) as [string, ColorStop[]][]).map(([key, ps]) => (
-                                          <button key={key} type="button" title={key}
-                                            onClick={() => setLayerStyle(layerId, { palette: key as LayerVizStyle["palette"] })}
+                                        {paletteOptions.map(({ value, label }) => {
+                                          const ps = PALETTE_STOPS[value] ?? PALETTE_STOPS.inferno;
+                                          const background =
+                                            style.colorMode === "categorical"
+                                              ? `linear-gradient(90deg, ${(CATEGORICAL_PALETTES[value] ?? CATEGORICAL_PALETTES.tableau).join(", ")})`
+                                              : stopsToGradientCss(ps);
+                                          return (
+                                          <button key={value} type="button" title={label}
+                                            onClick={() => setLayerStyle(layerId, { palette: value as LayerVizStyle["palette"] })}
                                             style={{
                                               flex: 1, height: 16, borderRadius: 3, cursor: "pointer", padding: 0,
-                                              background: stopsToGradientCss(ps),
-                                              border: style.palette === key ? "2px solid #58a6ff" : "1px solid rgba(255,255,255,0.1)",
+                                              background,
+                                              border: style.palette === value ? "2px solid #58a6ff" : "1px solid rgba(255,255,255,0.1)",
                                               boxSizing: "border-box",
                                             }}
-                                          />
-                                        ))}
+                                          >
+                                            <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)" }}>{label}</span>
+                                          </button>
+                                          );
+                                        })}
                                       </div>
                                       <label style={{ fontSize: 11, color: "#8b949e", display: "grid", gap: 3 }}>
                                         Category map (JSON)
@@ -5089,6 +5478,22 @@ export function Map3DThreePanel({ graphId, activeBranchId, active = true, edges,
                   <div style={{ display: "grid", gap: 6 }}>
                     <div className="me-section-note">X = easting · Y = elevation · Z = northing</div>
                     <label><input type="checkbox" checked={ui.invertDepth} onChange={(e) => setUi((p) => ({ ...p, invertDepth: e.target.checked }))} /> Invert vertical axis (depth-down view)</label>
+                    <label>
+                      Vertical exaggeration ({ui.verticalExaggeration.toFixed(1)}x)
+                      <input
+                        type="range"
+                        min={1}
+                        max={10}
+                        step={0.25}
+                        value={ui.verticalExaggeration}
+                        onChange={(e) =>
+                          setUi((p) => ({
+                            ...p,
+                            verticalExaggeration: Math.max(1, Math.min(10, Number(e.target.value) || 1)),
+                          }))
+                        }
+                      />
+                    </label>
                     <label>Radius scale<input type="range" min={0.25} max={4} step={0.05} value={ui.radiusScale} onChange={(e) => setUi((p) => ({ ...p, radiusScale: Number(e.target.value) || 1 }))} /></label>
                   </div>
                 </details>

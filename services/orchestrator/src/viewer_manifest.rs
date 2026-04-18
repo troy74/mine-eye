@@ -6,6 +6,38 @@ use mine_eye_store::PgStore;
 use serde::Serialize;
 use uuid::Uuid;
 
+fn artifact_matches_viewer_edge(from_port: &str, source_kind: &str, key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    let port = from_port.to_ascii_lowercase();
+    let kind = source_kind.to_ascii_lowercase();
+
+    match port.as_str() {
+        "surfaces" => {
+            lower.contains("/surface_")
+                && !lower.ends_with("/surface_report.json")
+                && !lower.ends_with("/surface_samples.json")
+        }
+        "interface_points" => lower.ends_with("/interface_points.json"),
+        "trajectory" => lower.ends_with("/trajectory.json"),
+        "block_voxels" => lower.ends_with("/lith_block_model_voxels.json"),
+        "block_centers" => lower.ends_with("/lith_block_model_centers.json"),
+        "report" => lower.ends_with("/report.json") || lower.contains("_report."),
+        "imagery_out" | "imagery" => {
+            lower.ends_with(".json") && (kind == "imagery_provider" || kind == "tilebroker")
+        }
+        _ => {
+            if kind == "stratigraphic_surface_model" {
+                lower.contains("/surface_") && !lower.ends_with("/surface_report.json")
+            } else if kind == "lith_block_model_build" {
+                lower.ends_with("/lith_block_model_voxels.json")
+                    || lower.ends_with("/lith_block_model_centers.json")
+            } else {
+                true
+            }
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct ViewerManifestLayer {
     pub source_node_id: Uuid,
@@ -67,6 +99,9 @@ pub async fn build_viewer_manifest(
         for (key, hash, media_type) in rows {
             let lower = key.to_ascii_lowercase();
             if !(lower.ends_with(".json") || lower.ends_with(".geojson")) {
+                continue;
+            }
+            if !artifact_matches_viewer_edge(&edge.from_port, &source_kind, &key) {
                 continue;
             }
             let presentation =
@@ -163,11 +198,23 @@ async fn layer_presentation_from_artifact(
         out["renderer"] = serde_json::json!("trace_polyline");
         out["display_pointer"] = serde_json::json!("scene3d.trace_polyline");
         out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
+    } else if sk == "vertical_trajectory" {
+        out["renderer"] = serde_json::json!("trace_polyline");
+        out["display_pointer"] = serde_json::json!("scene3d.trace_polyline");
+        out["editable"] = serde_json::json!(["visible", "opacity", "width", "color"]);
     } else if sk == "block_grade_model" && lower.contains("voxels") {
         out["renderer"] = serde_json::json!("block_voxels");
         out["display_pointer"] = serde_json::json!("scene3d.block_voxels");
         out["editable"] = serde_json::json!(["visible", "opacity", "measure", "palette", "cutoff"]);
+    } else if sk == "lith_block_model_build" && lower.contains("voxels") {
+        out["renderer"] = serde_json::json!("block_voxels");
+        out["display_pointer"] = serde_json::json!("scene3d.block_voxels");
+        out["editable"] = serde_json::json!(["visible", "opacity", "measure", "palette"]);
     } else if sk == "block_grade_model" && lower.contains("centers") {
+        out["renderer"] = serde_json::json!("sample_points");
+        out["display_pointer"] = serde_json::json!("scene3d.sample_points");
+        out["editable"] = serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
+    } else if sk == "lith_block_model_build" && lower.contains("centers") {
         out["renderer"] = serde_json::json!("sample_points");
         out["display_pointer"] = serde_json::json!("scene3d.sample_points");
         out["editable"] = serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
@@ -249,6 +296,24 @@ async fn layer_presentation_from_artifact(
                 out["display_pointer"] = serde_json::json!("scene3d.terrain");
                 out["editable"] = serde_json::json!(["visible", "opacity"]);
                 out["has_surface_grid"] = serde_json::json!(true);
+            }
+            "geology.interface_points.v1" => {
+                out["renderer"] = serde_json::json!("sample_points");
+                out["display_pointer"] = serde_json::json!("scene3d.sample_points");
+                out["editable"] =
+                    serde_json::json!(["visible", "opacity", "size", "measure", "palette"]);
+            }
+            "geology.stratigraphic_surface.v1" | "geology.stratigraphic_volume_set.v1" => {
+                out["renderer"] = serde_json::json!("geologic_surface");
+                out["display_pointer"] = serde_json::json!("scene3d.surface");
+                out["editable"] =
+                    serde_json::json!(["visible", "opacity", "measure", "palette", "style"]);
+                out["has_surface_grid"] = serde_json::json!(true);
+            }
+            "geology.lith_block_model.v1" => {
+                out["renderer"] = serde_json::json!("block_voxels");
+                out["display_pointer"] = serde_json::json!("scene3d.block_voxels");
+                out["editable"] = serde_json::json!(["visible", "opacity", "measure", "palette"]);
             }
             _ => {}
         }

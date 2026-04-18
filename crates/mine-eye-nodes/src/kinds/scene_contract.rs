@@ -21,6 +21,14 @@ pub async fn run_scene3d_layer_stack(
             || display_pointer == "scene3d.imagery_drape"
         {
             "imagery_drape"
+        } else if schema_id == "geology.interface_points.v1" {
+            "assay_points"
+        } else if schema_id == "geology.lith_block_model.v1" {
+            "block_voxels"
+        } else if schema_id == "geology.stratigraphic_surface.v1"
+            || schema_id == "geology.stratigraphic_volume_set.v1"
+        {
+            "geologic_surface"
         } else if v.get("surface_grid").is_some() || display_pointer == "scene3d.terrain" {
             "terrain"
         } else if display_pointer == "scene3d.contour_lines" {
@@ -52,6 +60,9 @@ pub async fn run_scene3d_layer_stack(
         let ui_caps = match kind {
             "imagery_drape" => serde_json::json!(["visible", "opacity", "provider"]),
             "terrain" => serde_json::json!(["visible", "opacity"]),
+            "geologic_surface" => {
+                serde_json::json!(["visible", "opacity", "palette", "measure", "style"])
+            }
             "contours" => {
                 serde_json::json!(["visible", "opacity", "color", "width", "interval_step"])
             }

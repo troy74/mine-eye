@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.lithology_intervals.v1.schema.json",
+  "title": "geology.lithology_intervals.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "holes",
+    "intervals"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.lithology_intervals.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "holes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "hole_id",
+          "x",
+          "y",
+          "z",
+          "total_depth_m",
+          "trajectory_mode"
+        ],
+        "properties": {
+          "hole_id": { "type": "string" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "z": { "type": "number" },
+          "total_depth_m": { "type": "number", "minimum": 0 },
+          "trajectory_mode": {
+            "type": "string",
+            "enum": ["surveyed", "vertical", "inferred"]
+          },
+          "attributes": { "type": "object" },
+          "qa_flags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "intervals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "hole_id",
+          "from_m",
+          "to_m",
+          "formation"
+        ],
+        "properties": {
+          "hole_id": { "type": "string" },
+          "from_m": { "type": "number", "minimum": 0 },
+          "to_m": { "type": "number", "minimum": 0 },
+          "formation": { "type": "string" },
+          "group": { "type": ["string", "null"] },
+          "lithology_code": { "type": ["string", "null"] },
+          "attributes": { "type": "object" },
+          "qa_flags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "formation_order": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

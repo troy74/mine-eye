@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.lith_block_model.v1.schema.json",
+  "title": "geology.lith_block_model.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "blocks"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.lith_block_model.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["x", "y", "z", "dx", "dy", "dz"],
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "z": { "type": "number" },
+          "dx": { "type": "number" },
+          "dy": { "type": "number" },
+          "dz": { "type": "number" },
+          "attributes": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "measure_candidates": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "stats": { "type": "object" },
+    "display_contract": { "type": "object" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

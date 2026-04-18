@@ -111,6 +111,52 @@
       "plugin_source": "core"
     },
     {
+      "kind": "lithology_ingest",
+      "category": "input",
+      "label": "Lithology ingest",
+      "role": "Acquisition · downhole lithology / stratigraphic intervals",
+      "menu": {
+        "enabled": true,
+        "order": 35
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "lithology",
+            "label": "Lithology intervals",
+            "semantic": "interval_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "lithology",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "orientation_ingest",
+      "category": "input",
+      "label": "Orientation ingest",
+      "role": "Acquisition · structural orientations (formation + XYZ + dip/azimuth or pole vector)",
+      "menu": {
+        "enabled": true,
+        "order": 36
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": [
+          {
+            "id": "formation_orientations",
+            "label": "Formation orientations",
+            "semantic": "point_set"
+          }
+        ]
+      },
+      "framework_group": "acquisition",
+      "submenu": "geology",
+      "plugin_source": "core"
+    },
+    {
       "kind": "observation_ingest",
       "category": "input",
       "label": "Observation ingest",
@@ -651,6 +697,41 @@
       "plugin_source": "core"
     },
     {
+      "kind": "vertical_trajectory",
+      "category": "transform",
+      "label": "Vertical trajectory",
+      "role": "Transform · collars (+ optional lithology depth extent) → straight downhole trajectories",
+      "menu": {
+        "enabled": true,
+        "order": 45
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "collars_in",
+            "label": "Collars",
+            "semantic": "point_set"
+          },
+          {
+            "id": "lithology_in",
+            "label": "Lithology intervals (optional depth extent)",
+            "semantic": "interval_set",
+            "optional": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "trajectory",
+            "label": "Trajectory",
+            "semantic": "trajectory_set"
+          }
+        ]
+      },
+      "framework_group": "trajectory",
+      "submenu": "desurvey",
+      "plugin_source": "core"
+    },
+    {
       "kind": "drillhole_model",
       "category": "model",
       "label": "Drillhole model",
@@ -687,6 +768,359 @@
       },
       "framework_group": "mesh_solid",
       "submenu": "drillhole",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "formation_interface_extract",
+      "category": "transform",
+      "label": "Formation interface extract",
+      "role": "Transform · trajectory + lithology intervals → 3D formation contact points",
+      "menu": {
+        "enabled": true,
+        "order": 52
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "trajectory_in",
+            "label": "Trajectory",
+            "semantic": "trajectory_set"
+          },
+          {
+            "id": "lithology_in",
+            "label": "Lithology intervals",
+            "semantic": "interval_set"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "interface_points",
+            "label": "Interface points",
+            "semantic": "point_set"
+          },
+          {
+            "id": "report",
+            "label": "Interface report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "formation_catalog_build",
+      "category": "transform",
+      "label": "Formation catalog build",
+      "role": "Transform · lithology intervals → canonical formation catalog with normalized ids and aliases",
+      "menu": {
+        "enabled": true,
+        "order": 53
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "lithology_intervals_in",
+            "label": "Lithology intervals",
+            "semantic": "interval_set"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "formation_catalog_out",
+            "label": "Formation catalog",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "stratigraphic_order_define",
+      "category": "transform",
+      "label": "Stratigraphic order define",
+      "role": "Transform · formation catalog (+ optional lithology evidence) → ordered formation stack",
+      "menu": {
+        "enabled": true,
+        "order": 54
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "formation_catalog_in",
+            "label": "Formation catalog",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "lithology_in",
+            "label": "Lithology intervals (optional)",
+            "semantic": "interval_set",
+            "optional": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "stratigraphic_order_out",
+            "label": "Stratigraphic order",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "model_domain_define",
+      "category": "transform",
+      "label": "Model domain define",
+      "role": "Transform · AOI/terrain/constraints → canonical modelling bounds and grid strategy",
+      "menu": {
+        "enabled": true,
+        "order": 55
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "aoi_in",
+            "label": "AOI (optional)",
+            "semantic": "spatial_extent",
+            "optional": true
+          },
+          {
+            "id": "terrain_in",
+            "label": "Terrain surface (optional)",
+            "semantic": "surface",
+            "optional": true
+          },
+          {
+            "id": "interface_points_in",
+            "label": "Interface points (optional)",
+            "semantic": "point_set",
+            "optional": true
+          },
+          {
+            "id": "orientations_in",
+            "label": "Orientations (optional)",
+            "semantic": "point_set",
+            "optional": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "model_domain_out",
+            "label": "Model domain",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "constraint_merge",
+      "category": "transform",
+      "label": "Constraint merge",
+      "role": "Transform · interface points + orientations + catalog → interpolation constraints",
+      "menu": {
+        "enabled": true,
+        "order": 56
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "interface_points_in",
+            "label": "Interface points",
+            "semantic": "point_set"
+          },
+          {
+            "id": "orientations_in",
+            "label": "Orientations (optional)",
+            "semantic": "point_set",
+            "optional": true
+          },
+          {
+            "id": "formation_catalog_in",
+            "label": "Formation catalog",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "stratigraphic_order_in",
+            "label": "Stratigraphic order (optional)",
+            "semantic": "semantic_json",
+            "optional": true
+          }
+        ],
+        "outputs": [
+          {
+            "id": "constraints_out",
+            "label": "Interpolation constraints",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "structural_frame_builder",
+      "category": "transform",
+      "label": "Structural frame builder",
+      "role": "Transform · catalog + order + constraints + domain → structural modelling frame",
+      "menu": {
+        "enabled": true,
+        "order": 57
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "formation_catalog_in",
+            "label": "Formation catalog",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "stratigraphic_order_in",
+            "label": "Stratigraphic order",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "constraints_in",
+            "label": "Interpolation constraints",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "model_domain_in",
+            "label": "Model domain",
+            "semantic": "semantic_json"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "structural_frame_out",
+            "label": "Structural frame",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "stratigraphic_interpolator",
+      "category": "model",
+      "label": "Stratigraphic interpolator",
+      "role": "Model · structural frame + constraints + domain → first-pass stratigraphic scalar field",
+      "menu": {
+        "enabled": true,
+        "order": 58
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "structural_frame_in",
+            "label": "Structural frame",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "constraints_in",
+            "label": "Interpolation constraints",
+            "semantic": "semantic_json"
+          },
+          {
+            "id": "model_domain_in",
+            "label": "Model domain",
+            "semantic": "semantic_json"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "scalar_field_out",
+            "label": "Scalar field",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "lith_block_model_build",
+      "category": "model",
+      "label": "Lith block model build",
+      "role": "Model · scalar field → categorical lithology voxels and centres for 3D review",
+      "menu": {
+        "enabled": true,
+        "order": 59
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "scalar_field_in",
+            "label": "Scalar field",
+            "semantic": "semantic_json"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "block_voxels",
+            "label": "Lith block voxels",
+            "semantic": "mesh"
+          },
+          {
+            "id": "block_centers",
+            "label": "Lith block centers",
+            "semantic": "point_set"
+          },
+          {
+            "id": "report",
+            "label": "Block model report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
+      "plugin_source": "core"
+    },
+    {
+      "kind": "stratigraphic_surface_model",
+      "category": "model",
+      "label": "Stratigraphic surface model",
+      "role": "Model · interface points → gridded contact surfaces per formation",
+      "menu": {
+        "enabled": true,
+        "order": 54
+      },
+      "ports": {
+        "inputs": [
+          {
+            "id": "interface_points_in",
+            "label": "Interface points",
+            "semantic": "point_set"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "surfaces",
+            "label": "Stratigraphic surfaces",
+            "semantic": "surface"
+          },
+          {
+            "id": "report",
+            "label": "Surface report",
+            "semantic": "semantic_json"
+          }
+        ]
+      },
+      "framework_group": "stratigraphy",
+      "submenu": "stratigraphy",
       "plugin_source": "core"
     },
     {

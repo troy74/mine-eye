@@ -20,6 +20,7 @@ This is the core parity rule for web, iOS, and desktop clients.
 `mine-eye` is an early-stage, end-to-end framework for exploration data workflows:
 
 - ingest collars, surveys, assays, and surface samples
+- normalize borehole lithology/contact data into interface-ready artifacts for future formation modelling
 - run transform/model nodes (desurvey, drillhole model, heatmap, terrain helpers)
 - compose higher-level workflow wrappers with `node_group` while keeping strict typed ports at the canvas boundary
 - route outputs through typed graph ports
@@ -37,7 +38,9 @@ This is the core parity rule for web, iOS, and desktop clients.
 - `crates/mine-eye-nodes` — node executors (ingest/transform/model/visualization)
 - `crates/mine-eye-store` — Postgres persistence layer and migrations
 - `contracts/scene3d` — JSON schema contracts for AOI/terrain/imagery/layer-stack payloads
+- `contracts/geology` — JSON schema contracts for borehole lithology, interface points, stratigraphic surfaces, and touching-volume outputs
 - `sample-data` — sample inputs for local testing
+- `sample-data/kimberlina_borehole_dataset` — compact public borehole fixture subset for GemPy-inspired stratigraphy/interface tests
 - `ARCHITECTURE.md` — architecture and design principles
 
 ### Node Kind Taxonomy (Current)
@@ -51,6 +54,7 @@ This is the core parity rule for web, iOS, and desktop clients.
 - `imagery_raster` (imagery provider + tilebroker contracts)
 - `trajectory` (desurvey)
 - `drillhole` (merge/model)
+- near-term extension: add a dedicated stratigraphy/formation-modelling path that consumes collars + lithology/contact intervals + surface controls on the Rust middleware side
 - `resource_model` (block grade modeling + resource summaries)
 - `magnetic_model` (airborne magnetics cleanup, gridding, derivatives)
 - `magnetic_depth` (Euler deconvolution — 3D depth/susceptibility voxels from magnetic grid)

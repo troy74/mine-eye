@@ -18,6 +18,8 @@ type Props = {
   onSelectProject: (p: StoredProject) => void;
   onNewProject: () => void;
   onSeedDemo: () => void;
+  onSeedKimberlinaSurfaces: () => void;
+  onSeedKimberlinaPreview: () => void;
   graphId: string | null;
   projectEpsg: number;
   workspaceUsedEpsgs?: number[];
@@ -42,6 +44,8 @@ export function LeftSidebar({
   onSelectProject,
   onNewProject,
   onSeedDemo,
+  onSeedKimberlinaSurfaces,
+  onSeedKimberlinaPreview,
   graphId,
   projectEpsg,
   workspaceUsedEpsgs = [],
@@ -109,6 +113,14 @@ export function LeftSidebar({
           </button>
           <button type="button" style={{ ...btn, flex: 1 }} onClick={onSeedDemo}>
             Seed demo
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <button type="button" style={{ ...btn, flex: 1 }} onClick={onSeedKimberlinaSurfaces}>
+            Geology surfaces
+          </button>
+          <button type="button" style={{ ...btn, flex: 1 }} onClick={onSeedKimberlinaPreview}>
+            Geology + blocks
           </button>
         </div>
         {active ? (

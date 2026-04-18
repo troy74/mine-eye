@@ -6,6 +6,7 @@ This file is intentionally a living summary, updated as project/area knowledge i
 - Focus: early-stage to advanced exploration workflows where spatial integrity and reproducibility are critical.
 - Typical data domains:
   - collars, surveys, assays
+  - borehole lithology / stratigraphic contact intervals
   - surface geochemistry and point samples
   - DEM/terrain and imagery drapes
   - interpolated surfaces and contour products
@@ -13,6 +14,7 @@ This file is intentionally a living summary, updated as project/area knowledge i
 ## Common Geological Tasks Supported
 - Define/verify AOI from inferred geospatial extents.
 - Build desurveyed trajectories and drillhole geometry.
+- Convert borehole intervals into formation interface points for downstream stratigraphic modelling.
 - Generate assay-driven surfaces/heatmaps and contour derivatives.
 - Validate CRS, bounds, and geometry consistency before interpretation.
 

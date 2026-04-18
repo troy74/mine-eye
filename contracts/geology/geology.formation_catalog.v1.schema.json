@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.formation_catalog.v1.schema.json",
+  "title": "geology.formation_catalog.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "formations"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.formation_catalog.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "formations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["formation_id", "name", "canonical_name"],
+        "properties": {
+          "formation_id": { "type": "string" },
+          "name": { "type": "string" },
+          "canonical_name": { "type": "string" },
+          "group": { "type": ["string", "null"] },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "lithology_codes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "is_basement": { "type": "boolean" },
+          "attributes": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "properties": {
+        "case_sensitive": { "type": "boolean" },
+        "trim_whitespace": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -11,12 +11,35 @@ export function preferredArtifactSuffixes(kind: string): string[] {
       return ["surface_samples.json"];
     case "assay_ingest":
       return ["assays.json"];
+    case "lithology_ingest":
+      return ["lithology_intervals.json"];
+    case "orientation_ingest":
+      return ["formation_orientations.json"];
     case "observation_ingest":
       return ["observation_table_pointer.json"];
     case "magnetic_model":
       return ["magnetic_points.preview.json", "magnetic_grid.preview.json", "magnetic_points.json"];
     case "desurvey_trajectory":
+    case "vertical_trajectory":
       return ["trajectory.json"];
+    case "formation_interface_extract":
+      return ["interface_points.json"];
+    case "formation_catalog_build":
+      return ["formation_catalog.json"];
+    case "stratigraphic_order_define":
+      return ["stratigraphic_order.json"];
+    case "model_domain_define":
+      return ["model_domain.json"];
+    case "constraint_merge":
+      return ["interpolation_constraints.json"];
+    case "structural_frame_builder":
+      return ["structural_frame.json"];
+    case "stratigraphic_interpolator":
+      return ["scalar_field.json"];
+    case "lith_block_model_build":
+      return ["lith_block_model_report.json", "lith_block_model_voxels.json"];
+    case "stratigraphic_surface_model":
+      return ["surface_report.json"];
     case "drillhole_model":
       return ["drillhole_meshes.json"];
     case "assay_heatmap":

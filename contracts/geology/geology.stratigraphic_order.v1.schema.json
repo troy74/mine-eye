@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.stratigraphic_order.v1.schema.json",
+  "title": "geology.stratigraphic_order.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "groups"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.stratigraphic_order.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_id", "formations_top_to_bottom"],
+        "properties": {
+          "group_id": { "type": "string" },
+          "group_name": { "type": ["string", "null"] },
+          "relation_type": {
+            "type": "string",
+            "enum": ["conformable", "unconformity", "faulted", "intrusive"]
+          },
+          "formations_top_to_bottom": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "global_order_top_to_bottom": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

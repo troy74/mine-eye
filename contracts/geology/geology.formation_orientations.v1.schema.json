@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.formation_orientations.v1.schema.json",
+  "title": "geology.formation_orientations.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "orientations"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.formation_orientations.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "orientations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["orientation_id", "formation", "x", "y", "z"],
+        "properties": {
+          "orientation_id": { "type": "string" },
+          "formation": { "type": "string" },
+          "group": { "type": ["string", "null"] },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "z": { "type": "number" },
+          "dip_deg": { "type": ["number", "null"] },
+          "azimuth_deg": { "type": ["number", "null"] },
+          "polarity": {
+            "type": "string",
+            "enum": ["normal", "reversed", "unknown"]
+          },
+          "pole_vector": {
+            "type": "array",
+            "prefixItems": [
+              { "type": "number" },
+              { "type": "number" },
+              { "type": "number" }
+            ],
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": ["observed", "derived_surface", "derived_interval", "inferred"]
+          },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "attributes": { "type": "object" },
+          "qa_flags": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}

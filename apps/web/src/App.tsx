@@ -352,6 +352,84 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
     }
   };
 
+  const seedKimberlinaSurfaces = async () => {
+    setStatus("Seeding Kimberlina geology surfaces…");
+    try {
+      const r = await fetch(api("/demo/seed-kimberlina-geology"), { method: "POST" });
+      if (!r.ok) {
+        setStatus(`Seed failed: ${r.status}`);
+        return;
+      }
+      const data: SeedResponse = await r.json();
+      const sp: StoredProject = {
+        localId: crypto.randomUUID(),
+        name: "Kimberlina geology surfaces",
+        workspaceId: data.workspace_id,
+        graphId: data.graph_id,
+        createdAt: Date.now(),
+      };
+      upsertProject(sp);
+      setProjects(loadProjects());
+      setActiveProjectId(sp.localId);
+      setActiveProjectIdState(sp.localId);
+      setGraphId(data.graph_id);
+      setMainTab("workspace");
+      setOpenViewerNodeIds([]);
+      setOpenEditorNodeIds([]);
+      setOpenAoiEditorNodeIds([]);
+      setEditorTabs({});
+      setPendingProjectEpsg(null);
+      setStatus(
+        "Kimberlina geology surfaces graph ready. Use Run pipeline, start worker if needed, then refresh. Project saved in this browser."
+      );
+      setGraphRefreshToken((t) => t + 1);
+      void refreshArtifacts(data.graph_id);
+      void refreshGraphEdges(data.graph_id);
+      void refreshBranching(data.graph_id);
+    } catch (e) {
+      setStatus(`Seed failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const seedKimberlinaPreview = async () => {
+    setStatus("Seeding Kimberlina geology block preview…");
+    try {
+      const r = await fetch(api("/demo/seed-kimberlina-geology-preview"), { method: "POST" });
+      if (!r.ok) {
+        setStatus(`Seed failed: ${r.status}`);
+        return;
+      }
+      const data: SeedResponse = await r.json();
+      const sp: StoredProject = {
+        localId: crypto.randomUUID(),
+        name: "Kimberlina geology block preview",
+        workspaceId: data.workspace_id,
+        graphId: data.graph_id,
+        createdAt: Date.now(),
+      };
+      upsertProject(sp);
+      setProjects(loadProjects());
+      setActiveProjectId(sp.localId);
+      setActiveProjectIdState(sp.localId);
+      setGraphId(data.graph_id);
+      setMainTab("workspace");
+      setOpenViewerNodeIds([]);
+      setOpenEditorNodeIds([]);
+      setOpenAoiEditorNodeIds([]);
+      setEditorTabs({});
+      setPendingProjectEpsg(null);
+      setStatus(
+        "Kimberlina geology block-preview graph ready. Use Run pipeline, start worker if needed, then refresh. Project saved in this browser."
+      );
+      setGraphRefreshToken((t) => t + 1);
+      void refreshArtifacts(data.graph_id);
+      void refreshGraphEdges(data.graph_id);
+      void refreshBranching(data.graph_id);
+    } catch (e) {
+      setStatus(`Seed failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const newProject = async () => {
     const name = window.prompt("New project name?");
     if (!name?.trim()) return;
@@ -876,6 +954,8 @@ function AuthenticatedApp({ authUserId }: { authUserId: string }) {
               onSelectProject={selectProject}
               onNewProject={() => void newProject()}
               onSeedDemo={() => void seedDemo()}
+              onSeedKimberlinaSurfaces={() => void seedKimberlinaSurfaces()}
+              onSeedKimberlinaPreview={() => void seedKimberlinaPreview()}
               graphId={graphId}
               projectEpsg={projectEpsg}
               workspaceUsedEpsgs={workspaceUsedEpsgs}

@@ -410,7 +410,7 @@ fn openai_tools_spec() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "apply_upload_to_ingest_node",
-                "description": "Patch ingest node UI config from uploaded CSV (headers, rows, mapping). Works for collar_ingest, survey_ingest, assay_ingest, surface_sample_ingest.",
+                "description": "Patch ingest node UI config from uploaded CSV (headers, rows, mapping). Works for collar_ingest, survey_ingest, assay_ingest, lithology_ingest, orientation_ingest, and surface_sample_ingest.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -1210,7 +1210,12 @@ async fn tool_apply_upload_to_ingest_node(
     let kind = node.config.kind.as_str();
     if !matches!(
         kind,
-        "collar_ingest" | "survey_ingest" | "assay_ingest" | "surface_sample_ingest"
+        "collar_ingest"
+            | "survey_ingest"
+            | "assay_ingest"
+            | "lithology_ingest"
+            | "orientation_ingest"
+            | "surface_sample_ingest"
     ) {
         return Err(format!(
             "node {} kind '{}' is not an ingest node supported by this tool",
@@ -1314,7 +1319,12 @@ async fn tool_graph_audit_bundle(
         }
         if matches!(
             n.config.kind.as_str(),
-            "collar_ingest" | "survey_ingest" | "assay_ingest" | "surface_sample_ingest"
+            "collar_ingest"
+                | "survey_ingest"
+                | "assay_ingest"
+                | "lithology_ingest"
+                | "orientation_ingest"
+                | "surface_sample_ingest"
         ) && last_error
             .to_ascii_lowercase()
             .contains("missing input_payload")
@@ -2711,6 +2721,25 @@ fn infer_ingest_mapping(kind: &str, headers: &[String]) -> serde_json::Value {
             "to_m": pick_header(headers, &["to", "to_m", "depth_to", "end"]),
             "value": pick_header(headers, &["au", "au_ppm", "grade", "value", "cu", "zn", "pb", "ag"])
         }),
+        "lithology_ingest" => json!({
+            "hole_id": pick_header(headers, &["hole_id", "holeid", "hole", "bhid", "id", "name"]),
+            "from_m": pick_header(headers, &["from", "from_m", "top", "depth_from", "start", "md"]),
+            "to_m": pick_header(headers, &["to", "to_m", "base", "depth_to", "end"]),
+            "formation": pick_header(headers, &["formation", "lithology", "unit", "strat", "rock"]),
+            "group": pick_header(headers, &["group", "group_name", "series"]),
+            "lithology_code": pick_header(headers, &["code", "lithology_code", "unit_code"])
+        }),
+        "orientation_ingest" => json!({
+            "formation": pick_header(headers, &["formation", "unit", "strat", "lithology"]),
+            "x": pick_header(headers, &["x", "easting", "east", "lon", "longitude"]),
+            "y": pick_header(headers, &["y", "northing", "north", "lat", "latitude"]),
+            "z": pick_header(headers, &["z", "elev", "elevation", "rl"]),
+            "dip_deg": pick_header(headers, &["dip", "dip_deg", "inclination"]),
+            "azimuth_deg": pick_header(headers, &["azimuth", "azimuth_deg", "azi", "bearing"]),
+            "pole_x": pick_header(headers, &["pole_x", "nx", "normal_x"]),
+            "pole_y": pick_header(headers, &["pole_y", "ny", "normal_y"]),
+            "pole_z": pick_header(headers, &["pole_z", "nz", "normal_z"])
+        }),
         "surface_sample_ingest" => json!({
             "sample_id": pick_header(headers, &["sample_id", "id", "sample"]),
             "x": pick_header(headers, &["x", "easting", "east", "lon", "longitude"]),
@@ -2726,6 +2755,8 @@ fn required_mapping_keys(kind: &str) -> Vec<&'static str> {
         "collar_ingest" => vec!["hole_id", "x", "y"],
         "survey_ingest" => vec!["hole_id", "depth_or_length_m", "azimuth_deg", "dip_deg"],
         "assay_ingest" => vec!["hole_id", "from_m", "to_m"],
+        "lithology_ingest" => vec!["hole_id", "from_m", "to_m", "formation"],
+        "orientation_ingest" => vec!["formation", "x", "y", "z"],
         "surface_sample_ingest" => vec!["x", "y"],
         _ => vec![],
     }
@@ -2754,6 +2785,8 @@ fn node_prompt_fragment(kind: &str) -> &'static str {
         "collar_ingest" => "Load collar table with hole_id + x/y (+optional z). Set ui.csv_headers/csv_rows and ui.mapping to enable ingest payload synthesis.",
         "survey_ingest" => "Load survey stations with hole_id + depth_or_length_m + azimuth_deg + dip_deg. Missing any required mapping blocks desurvey.",
         "assay_ingest" => "Load interval assays with hole_id + from_m + to_m and preserve geochem columns in attributes for downstream model/visualisation.",
+        "lithology_ingest" => "Load lithology/stratigraphic intervals with hole_id + from_m + to_m + formation so downstream interface extraction can generate 3D contacts.",
+        "orientation_ingest" => "Load structural orientations with formation + x/y/z and either dip_deg+azimuth_deg or pole_x/pole_y/pole_z so later GemPy-style modelling can consume explicit orientation constraints.",
         "ip_survey_ingest" => "Load TDIP/DCIP quadrupole rows with inline A/B/M/N electrode geometry or structured payload rows. Produces a canonical IP observations contract plus electrode points.",
         "ip_qc_normalize" => "Run conservative IP QC before modelling. Rejects malformed quadrupoles, high-reciprocity-error rows, and out-of-bounds chargeability values while preserving a hardened observations contract.",
         "ip_pseudosection" => "Convert cleaned IP observation rows into pseudo-depth points and rows for fast section-style QC in the existing 3D/table tooling.",
@@ -2765,6 +2798,16 @@ fn node_prompt_fragment(kind: &str) -> &'static str {
         "ip_section_slice" => "Render a vertical coloured section plane from pseudosection or inversion-result data so line-oriented IP interpretation is clear in 3D.",
         "surface_sample_ingest" => "Load surface samples with x/y (+optional z/sample_id). Use project CRS when available.",
         "desurvey_trajectory" => "Requires collars_in (point_set) and surveys_in (trajectory_set). Produces 3D trajectory segments.",
+        "vertical_trajectory" => "Requires collars_in and creates straight downhole trajectories, optionally sized from lithology interval extents when no surveys exist.",
+        "formation_interface_extract" => "Requires trajectory_in + lithology_in to generate 3D formation contact points for viewer and future stratigraphic surface modelling.",
+        "formation_catalog_build" => "Build a canonical formation catalog from lithology intervals so later nodes can normalize names, ids, and basement/group metadata consistently.",
+        "stratigraphic_order_define" => "Build an explicit top-to-bottom formation order from the catalog and any interval evidence so structural modelling semantics are no longer implicit.",
+        "model_domain_define" => "Define the modelling bounds and grid strategy from AOI, terrain, interface points, or orientations so later interpolation works against one canonical domain.",
+        "constraint_merge" => "Merge interface points and orientations into one compute-facing interpolation constraints artifact with normalized formation names and diagnostics.",
+        "structural_frame_builder" => "Assemble formation catalog, stratigraphic order, constraints, and model domain into one structural-frame artifact that downstream underground modelling can consume directly.",
+        "stratigraphic_interpolator" => "Run a first-pass deterministic underground stratigraphic interpolation from the structural frame, constraints, and domain to emit a scalar-field style geology artifact.",
+        "lith_block_model_build" => "Convert the scalar-field stratigraphy result into categorical lithology block voxels and centers so the underground model can be inspected immediately in 3D.",
+        "stratigraphic_surface_model" => "Requires interface_points_in and emits one gridded contact surface artifact per formation for immediate 3D surface visualisation.",
         "drillhole_model" => "Requires trajectory_in + assays_in to generate assay points/meshes for 3D display.",
         "threejs_display_node" => "Primary active 3D viewer. Feed mesh/surface/raster/table-compatible layers via typed ports.",
         "aoi" => "Canonical AOI extent. Seed from collars/samples or manual bbox; use for DEM/imagery constraints.",

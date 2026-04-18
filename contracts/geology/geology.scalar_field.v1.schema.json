@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mine-eye/contracts/geology.scalar_field.v1.schema.json",
+  "title": "geology.scalar_field.v1",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "crs",
+    "domain",
+    "formations_top_to_bottom",
+    "surface_grids"
+  ],
+  "properties": {
+    "schema_id": { "const": "geology.scalar_field.v1" },
+    "schema_version": { "type": "integer", "const": 1 },
+    "crs": {
+      "type": "object",
+      "required": ["epsg"],
+      "properties": {
+        "epsg": { "type": "integer" },
+        "vertical_datum": { "type": "string" },
+        "units": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "domain": { "type": "object" },
+    "formations_top_to_bottom": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "surface_grids": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["formation", "surface_role", "surface_grid"],
+        "properties": {
+          "formation": { "type": "string" },
+          "surface_role": { "type": "string" },
+          "surface_grid": { "type": "object" },
+          "stats": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "diagnostics": { "type": "object" },
+    "provenance": { "type": "object" }
+  },
+  "additionalProperties": true
+}
